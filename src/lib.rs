@@ -1,5 +1,6 @@
 //! A bounded e-graph search and independent checker for small EVM expressions.
 
+pub mod campaign;
 pub mod contest;
 pub mod evm;
 pub mod expr;

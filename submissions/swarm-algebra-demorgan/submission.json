@@ -1,0 +1,6 @@
+{
+  "ruleset": "evm-golf-v1-cancun",
+  "challenge": "demorgan",
+  "author": "swarm-algebra",
+  "candidate": "(not (and x y))"
+}

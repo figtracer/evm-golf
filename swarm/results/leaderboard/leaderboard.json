@@ -1,0 +1,632 @@
+[
+  {
+    "id": "attempt-006",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "carry-add",
+      "author": "swarm-algebra",
+      "candidate": "(+ x y)"
+    },
+    "result": {
+      "original": "(+ (xor x y) (shl1 (and x y)))",
+      "candidate": "(+ x y)",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "6020355f351660011b6020355f351801",
+        "runtime_hex": "6020355f351660011b6020355f3518015f5260205ff3",
+        "body_gas": 37,
+        "runtime_bytes": 22
+      },
+      "optimized": {
+        "body_hex": "6020355f3501",
+        "runtime_hex": "6020355f35015f5260205ff3",
+        "body_gas": 14,
+        "runtime_bytes": 12
+      },
+      "gas_saved": 23,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-013",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "carry-add",
+      "author": "swarm-bitwise",
+      "candidate": "(+ x y)"
+    },
+    "result": {
+      "original": "(+ (xor x y) (shl1 (and x y)))",
+      "candidate": "(+ x y)",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "6020355f351660011b6020355f351801",
+        "runtime_hex": "6020355f351660011b6020355f3518015f5260205ff3",
+        "body_gas": 37,
+        "runtime_bytes": 22
+      },
+      "optimized": {
+        "body_hex": "6020355f3501",
+        "runtime_hex": "6020355f35015f5260205ff3",
+        "body_gas": 14,
+        "runtime_bytes": 12
+      },
+      "gas_saved": 23,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-020",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "carry-add",
+      "author": "swarm-cost",
+      "candidate": "(+ x y)"
+    },
+    "result": {
+      "original": "(+ (xor x y) (shl1 (and x y)))",
+      "candidate": "(+ x y)",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "6020355f351660011b6020355f351801",
+        "runtime_hex": "6020355f351660011b6020355f3518015f5260205ff3",
+        "body_gas": 37,
+        "runtime_bytes": 22
+      },
+      "optimized": {
+        "body_hex": "6020355f3501",
+        "runtime_hex": "6020355f35015f5260205ff3",
+        "body_gas": 14,
+        "runtime_bytes": 12
+      },
+      "gas_saved": 23,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-005",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "combined",
+      "author": "swarm-algebra",
+      "candidate": "(shl1 x)"
+    },
+    "result": {
+      "original": "(+ (* x 2) (- y y))",
+      "candidate": "(shl1 x)",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "6020356020350360025f350201",
+        "runtime_hex": "6020356020350360025f3502015f5260205ff3",
+        "body_gas": 31,
+        "runtime_bytes": 19
+      },
+      "optimized": {
+        "body_hex": "5f3560011b",
+        "runtime_hex": "5f3560011b5f5260205ff3",
+        "body_gas": 11,
+        "runtime_bytes": 11
+      },
+      "gas_saved": 20,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-012",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "combined",
+      "author": "swarm-bitwise",
+      "candidate": "(shl1 x)"
+    },
+    "result": {
+      "original": "(+ (* x 2) (- y y))",
+      "candidate": "(shl1 x)",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "6020356020350360025f350201",
+        "runtime_hex": "6020356020350360025f3502015f5260205ff3",
+        "body_gas": 31,
+        "runtime_bytes": 19
+      },
+      "optimized": {
+        "body_hex": "5f3560011b",
+        "runtime_hex": "5f3560011b5f5260205ff3",
+        "body_gas": 11,
+        "runtime_bytes": 11
+      },
+      "gas_saved": 20,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-019",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "combined",
+      "author": "swarm-cost",
+      "candidate": "(shl1 x)"
+    },
+    "result": {
+      "original": "(+ (* x 2) (- y y))",
+      "candidate": "(shl1 x)",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "6020356020350360025f350201",
+        "runtime_hex": "6020356020350360025f3502015f5260205ff3",
+        "body_gas": 31,
+        "runtime_bytes": 19
+      },
+      "optimized": {
+        "body_hex": "5f3560011b",
+        "runtime_hex": "5f3560011b5f5260205ff3",
+        "body_gas": 11,
+        "runtime_bytes": 11
+      },
+      "gas_saved": 20,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-004",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "demorgan",
+      "author": "swarm-algebra",
+      "candidate": "(not (and x y))"
+    },
+    "result": {
+      "original": "(or (not x) (not y))",
+      "candidate": "(not (and x y))",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "602035195f351917",
+        "runtime_hex": "602035195f3519175f5260205ff3",
+        "body_gas": 20,
+        "runtime_bytes": 14
+      },
+      "optimized": {
+        "body_hex": "6020355f351619",
+        "runtime_hex": "6020355f3516195f5260205ff3",
+        "body_gas": 17,
+        "runtime_bytes": 13
+      },
+      "gas_saved": 3,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-011",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "demorgan",
+      "author": "swarm-bitwise",
+      "candidate": "(not (and x y))"
+    },
+    "result": {
+      "original": "(or (not x) (not y))",
+      "candidate": "(not (and x y))",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "602035195f351917",
+        "runtime_hex": "602035195f3519175f5260205ff3",
+        "body_gas": 20,
+        "runtime_bytes": 14
+      },
+      "optimized": {
+        "body_hex": "6020355f351619",
+        "runtime_hex": "6020355f3516195f5260205ff3",
+        "body_gas": 17,
+        "runtime_bytes": 13
+      },
+      "gas_saved": 3,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-018",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "demorgan",
+      "author": "swarm-cost",
+      "candidate": "(not (and x y))"
+    },
+    "result": {
+      "original": "(or (not x) (not y))",
+      "candidate": "(not (and x y))",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "602035195f351917",
+        "runtime_hex": "602035195f3519175f5260205ff3",
+        "body_gas": 20,
+        "runtime_bytes": 14
+      },
+      "optimized": {
+        "body_hex": "6020355f351619",
+        "runtime_hex": "6020355f3516195f5260205ff3",
+        "body_gas": 17,
+        "runtime_bytes": 13
+      },
+      "gas_saved": 3,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-001",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "double",
+      "author": "swarm-algebra",
+      "candidate": "(shl1 x)"
+    },
+    "result": {
+      "original": "(* x 2)",
+      "candidate": "(shl1 x)",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "60025f3502",
+        "runtime_hex": "60025f35025f5260205ff3",
+        "body_gas": 13,
+        "runtime_bytes": 11
+      },
+      "optimized": {
+        "body_hex": "5f3560011b",
+        "runtime_hex": "5f3560011b5f5260205ff3",
+        "body_gas": 11,
+        "runtime_bytes": 11
+      },
+      "gas_saved": 2,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-008",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "double",
+      "author": "swarm-bitwise",
+      "candidate": "(shl1 x)"
+    },
+    "result": {
+      "original": "(* x 2)",
+      "candidate": "(shl1 x)",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "60025f3502",
+        "runtime_hex": "60025f35025f5260205ff3",
+        "body_gas": 13,
+        "runtime_bytes": 11
+      },
+      "optimized": {
+        "body_hex": "5f3560011b",
+        "runtime_hex": "5f3560011b5f5260205ff3",
+        "body_gas": 11,
+        "runtime_bytes": 11
+      },
+      "gas_saved": 2,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-015",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "double",
+      "author": "swarm-cost",
+      "candidate": "(shl1 x)"
+    },
+    "result": {
+      "original": "(* x 2)",
+      "candidate": "(shl1 x)",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "60025f3502",
+        "runtime_hex": "60025f35025f5260205ff3",
+        "body_gas": 13,
+        "runtime_bytes": 11
+      },
+      "optimized": {
+        "body_hex": "5f3560011b",
+        "runtime_hex": "5f3560011b5f5260205ff3",
+        "body_gas": 11,
+        "runtime_bytes": 11
+      },
+      "gas_saved": 2,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-003",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "mask-partition",
+      "author": "swarm-algebra",
+      "candidate": "x"
+    },
+    "result": {
+      "original": "(or (and x y) (and x (not y)))",
+      "candidate": "x",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "602035195f35166020355f351617",
+        "runtime_hex": "602035195f35166020355f3516175f5260205ff3",
+        "body_gas": 34,
+        "runtime_bytes": 20
+      },
+      "optimized": {
+        "body_hex": "5f35",
+        "runtime_hex": "5f355f5260205ff3",
+        "body_gas": 5,
+        "runtime_bytes": 8
+      },
+      "gas_saved": 29,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-010",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "mask-partition",
+      "author": "swarm-bitwise",
+      "candidate": "x"
+    },
+    "result": {
+      "original": "(or (and x y) (and x (not y)))",
+      "candidate": "x",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "602035195f35166020355f351617",
+        "runtime_hex": "602035195f35166020355f3516175f5260205ff3",
+        "body_gas": 34,
+        "runtime_bytes": 20
+      },
+      "optimized": {
+        "body_hex": "5f35",
+        "runtime_hex": "5f355f5260205ff3",
+        "body_gas": 5,
+        "runtime_bytes": 8
+      },
+      "gas_saved": 29,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-017",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "mask-partition",
+      "author": "swarm-cost",
+      "candidate": "x"
+    },
+    "result": {
+      "original": "(or (and x y) (and x (not y)))",
+      "candidate": "x",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "602035195f35166020355f351617",
+        "runtime_hex": "602035195f35166020355f3516175f5260205ff3",
+        "body_gas": 34,
+        "runtime_bytes": 20
+      },
+      "optimized": {
+        "body_hex": "5f35",
+        "runtime_hex": "5f355f5260205ff3",
+        "body_gas": 5,
+        "runtime_bytes": 8
+      },
+      "gas_saved": 29,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-007",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "masked-select",
+      "author": "swarm-algebra",
+      "candidate": "(xor 255 (and x (xor 255 y)))"
+    },
+    "result": {
+      "original": "(or (and x y) (and (not x) 255))",
+      "candidate": "(xor 255 (and x (xor 255 y)))",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "60ff5f3519166020355f351617",
+        "runtime_hex": "60ff5f3519166020355f3516175f5260205ff3",
+        "body_gas": 31,
+        "runtime_bytes": 19
+      },
+      "optimized": {
+        "body_hex": "60203560ff185f351660ff18",
+        "runtime_hex": "60203560ff185f351660ff185f5260205ff3",
+        "body_gas": 26,
+        "runtime_bytes": 18
+      },
+      "gas_saved": 5,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-014",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "masked-select",
+      "author": "swarm-bitwise",
+      "candidate": "(xor 255 (and x (xor y 255)))"
+    },
+    "result": {
+      "original": "(or (and x y) (and (not x) 255))",
+      "candidate": "(xor 255 (and x (xor y 255)))",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "60ff5f3519166020355f351617",
+        "runtime_hex": "60ff5f3519166020355f3516175f5260205ff3",
+        "body_gas": 31,
+        "runtime_bytes": 19
+      },
+      "optimized": {
+        "body_hex": "60ff602035185f351660ff18",
+        "runtime_hex": "60ff602035185f351660ff185f5260205ff3",
+        "body_gas": 26,
+        "runtime_bytes": 18
+      },
+      "gas_saved": 5,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-021",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "masked-select",
+      "author": "swarm-cost",
+      "candidate": "(xor 255 (and x (xor y 255)))"
+    },
+    "result": {
+      "original": "(or (and x y) (and (not x) 255))",
+      "candidate": "(xor 255 (and x (xor y 255)))",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "60ff5f3519166020355f351617",
+        "runtime_hex": "60ff5f3519166020355f3516175f5260205ff3",
+        "body_gas": 31,
+        "runtime_bytes": 19
+      },
+      "optimized": {
+        "body_hex": "60ff602035185f351660ff18",
+        "runtime_hex": "60ff602035185f351660ff185f5260205ff3",
+        "body_gas": 26,
+        "runtime_bytes": 18
+      },
+      "gas_saved": 5,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-002",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "xor-cancel",
+      "author": "swarm-algebra",
+      "candidate": "x"
+    },
+    "result": {
+      "original": "(xor (xor x y) y)",
+      "candidate": "x",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "6020356020355f351818",
+        "runtime_hex": "6020356020355f3518185f5260205ff3",
+        "body_gas": 23,
+        "runtime_bytes": 16
+      },
+      "optimized": {
+        "body_hex": "5f35",
+        "runtime_hex": "5f355f5260205ff3",
+        "body_gas": 5,
+        "runtime_bytes": 8
+      },
+      "gas_saved": 18,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-009",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "xor-cancel",
+      "author": "swarm-bitwise",
+      "candidate": "x"
+    },
+    "result": {
+      "original": "(xor (xor x y) y)",
+      "candidate": "x",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "6020356020355f351818",
+        "runtime_hex": "6020356020355f3518185f5260205ff3",
+        "body_gas": 23,
+        "runtime_bytes": 16
+      },
+      "optimized": {
+        "body_hex": "5f35",
+        "runtime_hex": "5f355f5260205ff3",
+        "body_gas": 5,
+        "runtime_bytes": 8
+      },
+      "gas_saved": 18,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  },
+  {
+    "id": "attempt-016",
+    "submission": {
+      "ruleset": "evm-golf-v1-cancun",
+      "challenge": "xor-cancel",
+      "author": "swarm-cost",
+      "candidate": "x"
+    },
+    "result": {
+      "original": "(xor (xor x y) y)",
+      "candidate": "x",
+      "evm_version": "Cancun",
+      "baseline": {
+        "body_hex": "6020356020355f351818",
+        "runtime_hex": "6020356020355f3518185f5260205ff3",
+        "body_gas": 23,
+        "runtime_bytes": 16
+      },
+      "optimized": {
+        "body_hex": "5f35",
+        "runtime_hex": "5f355f5260205ff3",
+        "body_gas": 5,
+        "runtime_bytes": 8
+      },
+      "gas_saved": 18,
+      "lean_version": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)",
+      "verification": "Lean: expression equality and both bytecode bodies match the reference; revm: concrete cross-check",
+      "concrete_cases": 128
+    }
+  }
+]

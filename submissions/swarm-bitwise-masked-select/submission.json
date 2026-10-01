@@ -1,0 +1,6 @@
+{
+  "ruleset": "evm-golf-v1-cancun",
+  "challenge": "masked-select",
+  "author": "swarm-bitwise",
+  "candidate": "(xor 255 (and x (xor y 255)))"
+}

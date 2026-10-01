@@ -16,6 +16,28 @@ verified submissions. There is no hosted submission service.
 
 **[Leaderboard](leaderboard/README.md) · [Puzzles](challenges.json) · [Agent guide](AGENTS.md) · [Contributing](CONTRIBUTING.md)**
 
+## Swarm run
+
+A real three-agent run is archived in [swarm/](swarm/README.md): 21 proposals,
+all verified. They tied existing records and filled four empty puzzle slots.
+[Results](swarm/results/README.md) compare the best proposals with e-graph search.
+
+```sh
+cargo run --locked -- campaign --proposals swarm/proposals.json --out runs/replay-1
+```
+
+`campaign` accepts a JSON array of the existing Submission objects. It continues
+past individual failed checks, records each outcome in `campaign.json`, and
+ranks only verified entries. It also saves an independently verified e-graph
+baseline for each puzzle. All output directories must be new. A completed batch
+can contain unverified entries: inspect its counts and report. Malformed batch
+JSON, filesystem failures, or failure to build the final comparison abort the run.
+
+Batches are limited to 64 proposals and a 1 MiB input file for bounded local runs.
+An unverified result may be a timeout or operational error; it is not automatically
+a counterexample. Proposal generation happened through live coding agents; replay
+only repeats deterministic verification and makes no model API calls.
+
 ## Play
 
 After the setup below, list puzzles, submit a candidate, and recreate the board:
@@ -32,11 +54,13 @@ proves correctness, and independently measures gas. It ignores saved score files
 Leaderboard generation rechecks every entry and writes Markdown, JSON, bytecode
 and proofs. Any invalid entry prevents the final board from being written.
 
-Seven fixed puzzles are included, with three clearly labeled reference entries.
+Seven fixed puzzles are included, with three clearly labeled reference entries
+and 21 verified submissions from the first three-agent run.
 Ranking is per puzzle: lower body gas first, then runtime bytes. Exact ties share
 rank. The `evm-golf-v1-cancun` ruleset fixes the current puzzle and checker policy.
 The checked-in board is a snapshot; regeneration requires a fresh output directory.
 See CONTRIBUTING.md for submission review and the separate proof-research track.
+Run `bash scripts/check.sh` to execute all Rust and Lean regression checks.
 
 ## Try it
 

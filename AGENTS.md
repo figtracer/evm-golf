@@ -36,6 +36,14 @@ Every submission is reverified; saved result.json scores are ignored. One failed
 submission prevents generation of the final board. Failure artifacts remain for
 diagnosis. The command reads immediate child directories with submission.json.
 
+## Batch experiments
+
+A coordinator can collect proposal JSON objects into an array and use
+`cargo run --locked -- campaign --proposals <array.json> --out runs/campaign-1`.
+This records individual unverified attempts and continues to later proposals.
+Only verified entries reach the board. The command does not launch model agents;
+see swarm/README.md for the live contestant protocol and recorded run.
+
 ## Develop the tool
 
 Keep the existing CLI commands compatible. Run `cargo fmt --check`,

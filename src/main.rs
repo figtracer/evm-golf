@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use evm_golf::{
-    Report, check,
+    Report, campaign, check,
     contest::{self, RULESET, Submission},
     expr::RULES,
     optimize, proof,
@@ -17,6 +17,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    /// Verify a batch of proposals, rank accepted entries, and compare e-graph search.
+    Campaign {
+        #[arg(long)]
+        proposals: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// List fixed puzzle specifications as JSON.
     Challenges,
     /// Verify a candidate against a fixed puzzle and save a submission.
@@ -63,6 +70,16 @@ enum Action {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Action::Campaign { proposals, out } => {
+            prepare_parent(&out)?;
+            let result = campaign::run(&proposals, &out)?;
+            println!(
+                "Campaign complete: {} verified, {} unverified. Report: {}",
+                result.verified,
+                result.unverified,
+                out.join("README.md").display()
+            );
+        }
         Action::Challenges => {
             println!("{}", serde_json::to_string_pretty(&contest::challenges()?)?)
         }
