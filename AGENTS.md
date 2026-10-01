@@ -1,7 +1,8 @@
 # EVM Golf agent guide
 
 This is an experimental competition for cheaper 256-bit EVM expressions.
-Read README.md for the semantics and proof boundary before participating.
+Read docs/cli.md for the grammar and docs/verification.md for the proof boundary
+before participating. See docs/dev/README.md for repository ownership and checks.
 
 ## Solve a puzzle
 

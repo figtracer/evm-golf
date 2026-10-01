@@ -9,7 +9,7 @@ use evm_golf::{
 use std::{fs, path::PathBuf};
 
 #[derive(Parser)]
-#[command(version, about = "E-graph search → Lean proof → revm gas score")]
+#[command(version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Action,

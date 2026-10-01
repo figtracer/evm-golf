@@ -1,0 +1,74 @@
+# Developer documentation
+
+## Repository layout
+
+| Path | Responsibility |
+| --- | --- |
+| `src/expr.rs` | Grammar, wrapping evaluation, rewrite rules, cost-guided search |
+| `src/evm.rs` | Bytecode generation, revm execution, gas checks |
+| `src/proof.rs` | Lean source generation and pinned-toolchain verification |
+| `src/contest.rs` | Fixed puzzles, submissions, ranking |
+| `src/campaign.rs` | Batch attempts, failure evidence, optimizer comparisons |
+| `src/main.rs` | CLI arguments and output |
+| `lean/Model.lean` | The limited bytecode semantics used by the proofs |
+| `tests/` | Execution, CLI, proof, and campaign regression tests |
+| `challenges.json` | Puzzle IDs, descriptions, and reference expressions |
+| `submissions/` | Candidate inputs used to regenerate the leaderboard |
+| `leaderboard/` | Verified score and proof snapshot |
+| `swarm/` | Recorded experiment and replay inputs |
+| `scripts/` | Toolchain setup and repository checks |
+
+This is a single Cargo package. The library exposes the optimizer, checker,
+contest, and campaign modules used by the CLI.
+
+## Building and testing
+
+Follow the [setup guide](../getting-started.md), then run:
+
+```sh
+cargo build --locked
+bash scripts/check.sh
+```
+
+The check script runs formatting, Clippy, the normal tests, and the tests that
+require Lean. The individual commands are:
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo test --locked -- --ignored
+```
+
+The normal suite covers expression validation, arithmetic boundaries, gas and
+bytecode execution, and submission schemas. The Lean suite covers valid proofs,
+false equivalences, incorrect bytecode, overwrite refusal, rule verification,
+score recomputation, ranking, and campaigns containing failed proposals.
+
+Do not treat a normal `cargo test` run as validation of the Lean path. Those
+integration tests are explicitly ignored until requested with `--ignored`.
+
+## Compatibility
+
+Keep existing CLI arguments and persisted submission formats compatible.
+Preserve accepted evidence when generating new output: use a fresh directory,
+review the results, then update the checked-in snapshot.
+
+Changes to puzzle semantics, the compiler, scoring, or proof policy require a
+new `RULESET` in `src/contest.rs` and reverified entries. Workflow and documentation
+changes that preserve these contracts can retain the existing ruleset.
+
+## Research
+
+Useful extensions include stack reuse, realistic compiler fragments, and
+agent-written proof lemmas. The current checker does not accept custom proof
+programs and does not benchmark Z3 or cvc5.
+
+For solver comparisons, preserve the exact rule, word width, preconditions,
+versions, invocation, resource limits, and observed result. Use the same statement
+for every method and distinguish proof-generation time from checking time.
+Keep counterexamples, timeouts, unknown results, and verified proofs separate.
+
+The [recorded agent run](../../swarm/README.md) is an informed smoke test with
+visible reference solutions. It establishes neither novel optimization nor a
+general advantage over e-graphs or SMT solvers.

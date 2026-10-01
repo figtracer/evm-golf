@@ -3,7 +3,10 @@ name = "evm-golf"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "A local EVM expression golf experiment with e-graphs and Lean verification"
+description = "EVM expression optimization and verification toolkit, written in Rust."
+repository = "https://github.com/figtracer/evm-golf"
+readme = "README.md"
+keywords = ["evm", "optimization", "egraphs", "lean"]
 publish = false
 
 [dependencies]
