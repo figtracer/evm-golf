@@ -1,6 +1,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use evm_golf::{Report, check, expr::RULES, optimize, proof};
+use evm_golf::{
+    Report, check,
+    contest::{self, RULESET, Submission},
+    expr::RULES,
+    optimize, proof,
+};
 use std::{fs, path::PathBuf};
 
 #[derive(Parser)]
@@ -12,6 +17,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    /// List fixed puzzle specifications as JSON.
+    Challenges,
+    /// Verify a candidate against a fixed puzzle and save a submission.
+    Submit {
+        challenge: String,
+        candidate: String,
+        #[arg(long)]
+        author: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Reverify all submission directories and generate Markdown + JSON rankings.
+    Leaderboard {
+        #[arg(long, default_value = "submissions")]
+        submissions: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Find a cheaper equivalent expression, then verify it.
     Optimize {
         expression: String,
@@ -40,6 +63,34 @@ enum Action {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Action::Challenges => {
+            println!("{}", serde_json::to_string_pretty(&contest::challenges()?)?)
+        }
+        Action::Submit {
+            challenge,
+            candidate,
+            author,
+            out,
+        } => {
+            prepare_parent(&out)?;
+            let submission = Submission {
+                ruleset: RULESET.to_owned(),
+                challenge,
+                candidate,
+                author,
+            };
+            print_report(&contest::submit(&submission, &out)?);
+            println!("Submission: {}", out.display());
+        }
+        Action::Leaderboard { submissions, out } => {
+            prepare_parent(&out)?;
+            let entries = contest::leaderboard(&submissions, &out)?;
+            println!(
+                "Reverified {} submissions. Leaderboard: {}",
+                entries.len(),
+                out.join("README.md").display()
+            );
+        }
         Action::Optimize { expression, out } => {
             prepare_parent(&out)?;
             print_report(&optimize(&expression, &out)?);

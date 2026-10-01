@@ -11,7 +11,32 @@ Only then does revm cross-check execution and gas and the CLI save an accepted
 
 This is a working foundation for agent experiments. Search is currently a
 deterministic e-graph, not an LLM swarm. Agents can already propose expressions
-through the `check` command. There is no hosted leaderboard yet.
+through the `check` command. A GitHub-readable leaderboard is generated from
+verified submissions. There is no hosted submission service.
+
+**[Leaderboard](leaderboard/README.md) · [Puzzles](challenges.json) · [Agent guide](AGENTS.md) · [Contributing](CONTRIBUTING.md)**
+
+## Play
+
+After the setup below, list puzzles, submit a candidate, and recreate the board:
+
+```sh
+cargo run --locked -- challenges
+cargo run --locked -- submit double '(shl1 x)' --author your-name --out runs/your-entry
+cargo run --locked -- leaderboard --submissions submissions --out runs/your-board
+```
+
+To join the checked-in board, contribute the generated `submission.json` under
+`submissions/<unique-id>/`. The checker selects the reference by challenge ID,
+proves correctness, and independently measures gas. It ignores saved score files.
+Leaderboard generation rechecks every entry and writes Markdown, JSON, bytecode
+and proofs. Any invalid entry prevents the final board from being written.
+
+Seven fixed puzzles are included, with three clearly labeled reference entries.
+Ranking is per puzzle: lower body gas first, then runtime bytes. Exact ties share
+rank. The `evm-golf-v1-cancun` ruleset fixes the current puzzle and checker policy.
+The checked-in board is a snapshot; regeneration requires a fresh output directory.
+See CONTRIBUTING.md for submission review and the separate proof-research track.
 
 ## Try it
 
@@ -121,7 +146,7 @@ sandbox for running public submissions.
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-cargo test --locked --test verification -- --ignored
+cargo test --locked -- --ignored
 ```
 
 The second test command actually runs Lean. It covers acceptance of a valid
@@ -133,14 +158,18 @@ against revm, including wrapping arithmetic and SUB operand order.
 `src/expr.rs` owns the grammar, rules and cost-guided search; `src/evm.rs` owns
 code generation and revm execution; `src/proof.rs` generates and checks proofs.
 
-## Next hackathon-sized step
+## Next experiments
 
-Give several agents the same fixed puzzles and let each submit replacements via
-`check`. Rank only verified submissions per puzzle, by body gas then byte size,
-with a fixed compiler and EVM version. The persistent puzzle set gives new agents
-something reproducible to beat. A useful next technical improvement is stack
-reuse (`DUP`/`SWAP`); a useful next product improvement is a submission log and
-small leaderboard. Keep those separate from correctness checking.
+Let agents propose replacements against the same fixed puzzles using `submit`.
+The first five puzzles are warmups; carry-add and masked-select require identities
+outside the built-in e-graph rules. The reference entries are examples, not claims
+of novel optimizations. Future work includes stack reuse (`DUP`/`SWAP`), real
+compiler fragments, agent-written proof lemmas, and a measured Lean/Z3/cvc5 study.
+
+Inspired by [zkGolf](https://zk.golf/) and its
+[public challenge repo](https://github.com/zksecurity/zk-golf-challenges).
+This independent prototype uses a smaller expression language and its own stated
+proof policy. It does not inherit zkGolf's verifier or axiom acceptance rules.
 
 Built with [egg](https://github.com/egraphs-good/egg),
 [Lean](https://github.com/leanprover/lean4), and
