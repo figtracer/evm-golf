@@ -40,10 +40,12 @@ diagnosis. The command reads immediate child directories with submission.json.
 
 ## Runtime bytecode
 
-Read docs/runtime.md before using `analyze-runtime` or `optimize-runtime`.
-Runtime candidates use local stack proofs and supplied transaction tests, not
-whole-contract proofs. They are not accepted by the expression leaderboard.
-Keep runtime input corpora and generated results local too.
+Read docs/runtime.md before using runtime commands. `optimize-runtime` checks
+local stack proofs and supplied transaction tests; `--preserve-layout` supports
+dynamic jumps without moving byte offsets. `check-runtime` instead compares
+arbitrary proposed runtimes using account fixtures and has no Lean proof gate.
+Neither establishes whole-contract equivalence or produces expression leaderboard
+entries. Keep runtime input corpora and generated results local too.
 
 ## Batch experiments
 

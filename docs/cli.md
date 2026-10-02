@@ -6,8 +6,9 @@ Every `--out` directory must be new; existing output is never overwritten.
 
 | Command | Purpose |
 | --- | --- |
-| `analyze-runtime --bytecode <hex-file>` | Check supported control flow and stack heights |
+| `analyze-runtime --bytecode <hex-file> [--preserve-layout]` | Analyze compact relocation or fixed byte offsets |
 | `optimize-runtime --bytecode <hex-file> (--cases <json-file> or --sequences <json-file>) --out <dir>` | Optimize a supported runtime with local proofs and isolated calls or stateful sequences |
+| `check-runtime --original <hex-file> --candidate <hex-file> --scenarios <json-file> --out <dir>` | Compare arbitrary Cancun runtimes on supplied account fixtures; concrete tests only |
 | `optimize <expression> --out <dir>` | Search for a cheaper expression, then verify it |
 | `check <original> <candidate> --out <dir>` | Verify an independently proposed replacement |
 | `challenges` | Print the fixed puzzle specifications as JSON |
@@ -21,7 +22,8 @@ Every `--out` directory must be new; existing output is never overwritten.
 `--out runs/demo`. Use `<command> --help` for argument details.
 
 Runtime input and its verification boundary are described in the
-[runtime guide](runtime.md). These commands are separate from expression contests.
+[runtime guide](runtime.md). Add `--preserve-layout` to `optimize-runtime` for
+dynamic jumps. These commands are separate from expression contests.
 
 ## Expressions
 

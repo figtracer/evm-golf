@@ -144,3 +144,108 @@ fn cli_replays_sequences_and_retains_step_failure_evidence() {
         assert!(!dir.path().join("rejected").join(name).exists());
     }
 }
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn cli_preserves_layout_for_computed_jumps() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("runtime.hex");
+    let cases = dir.path().join("cases.json");
+    let code = "60035f35565b6002025f5260205ff3";
+    fs::write(&input, code).unwrap();
+    fs::write(
+        &cases,
+        format!(r#"[{{"calldata":"{:064x}","gas_limit":100000}}]"#, 5),
+    )
+    .unwrap();
+    let run = |mode: bool, output: &str| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_evm-golf"));
+        command
+            .args(["optimize-runtime", "--bytecode"])
+            .arg(&input)
+            .arg("--cases")
+            .arg(&cases)
+            .arg("--out")
+            .arg(dir.path().join(output));
+        if mode {
+            command.arg("--preserve-layout");
+        }
+        command.output().unwrap()
+    };
+    assert!(!run(false, "compact").status.success());
+    let result = run(true, "layout");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("layout/result.json")).unwrap())
+            .unwrap();
+    assert_eq!(report["baseline_bytes"], report["candidate_bytes"]);
+    assert_eq!(report["rewrites"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        report["cases"][0]["baseline_gas"].as_u64().unwrap()
+            - report["cases"][0]["candidate_gas"].as_u64().unwrap(),
+        2
+    );
+    assert!(report["lean_version"].is_string());
+    assert!(
+        report["verification"]
+            .as_str()
+            .unwrap()
+            .contains("no global stack-height proof")
+    );
+    let candidate = fs::read_to_string(dir.path().join("layout/candidate.hex")).unwrap();
+    assert_eq!(&candidate.trim()[..12], &code[..12]);
+}
+
+#[test]
+fn cli_checks_general_scenarios_without_claiming_a_proof() {
+    let dir = tempdir().unwrap();
+    let original = dir.path().join("original.hex");
+    let candidate = dir.path().join("candidate.hex");
+    let scenarios = dir.path().join("scenarios.json");
+    fs::write(&original, "60005000").unwrap();
+    fs::write(&candidate, "00").unwrap();
+    fs::write(
+        &scenarios,
+        r#"[{
+      "target":"0x2222222222222222222222222222222222222222",
+      "caller":"0x1111111111111111111111111111111111111111",
+      "accounts":{
+        "0x2222222222222222222222222222222222222222":{},
+        "0x1111111111111111111111111111111111111111":{"balance":"100"}
+      },
+      "transactions":[{"calldata":"","gas_limit":100000,"value":"7"}]
+    }]"#,
+    )
+    .unwrap();
+    let out = dir.path().join("checked");
+    let output = Command::new(env!("CARGO_BIN_EXE_evm-golf"))
+        .arg("check-runtime")
+        .arg("--original")
+        .arg(original)
+        .arg("--candidate")
+        .arg(candidate)
+        .arg("--scenarios")
+        .arg(scenarios)
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("No whole-contract equivalence proof")
+    );
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(out.join("result.json")).unwrap()).unwrap();
+    assert!(report["verification"].as_str().unwrap().contains("No Lean"));
+    assert_eq!(report["cases"][0]["outcome"], "success");
+    assert!(out.join("candidate.hex").exists());
+    assert!(!out.join("Rewrites.lean").exists());
+}

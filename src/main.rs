@@ -17,10 +17,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    /// Analyze the supported static-control-flow Cancun runtime subset.
+    /// Analyze supported Cancun runtime control flow.
     AnalyzeRuntime {
         #[arg(long)]
         bytecode: PathBuf,
+        /// Analyze fixed-layout rewrites without resolving dynamic jumps.
+        #[arg(long)]
+        preserve_layout: bool,
+    },
+    /// Compare arbitrary Cancun runtimes on supplied account/transaction fixtures.
+    /// This is concrete replay, not a Lean or whole-contract equivalence proof.
+    CheckRuntime {
+        #[arg(long)]
+        original: PathBuf,
+        #[arg(long)]
+        candidate: PathBuf,
+        #[arg(long)]
+        scenarios: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Optimize runtime bytecode with local Lean proofs and supplied execution cases.
     OptimizeRuntime {
@@ -35,6 +50,9 @@ enum Action {
         /// JSON transaction sequences with persistent state between calls.
         #[arg(long, required_unless_present = "cases")]
         sequences: Option<PathBuf>,
+        /// Preserve byte offsets and allow dynamic jumps, PC and CODESIZE.
+        #[arg(long)]
+        preserve_layout: bool,
         #[arg(long)]
         out: PathBuf,
     },
@@ -91,29 +109,62 @@ enum Action {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Action::AnalyzeRuntime { bytecode } => {
+        Action::AnalyzeRuntime {
+            bytecode,
+            preserve_layout,
+        } => {
             let code = runtime::from_hex(&fs::read_to_string(bytecode)?)?;
-            println!(
-                "{}",
+            let analysis = if preserve_layout {
+                serde_json::to_string_pretty(&runtime::analyze_layout(&code)?)?
+            } else {
                 serde_json::to_string_pretty(&runtime::analyze(&code)?)?
+            };
+            println!("{analysis}");
+        }
+        Action::CheckRuntime {
+            original,
+            candidate,
+            scenarios,
+            out,
+        } => {
+            let original = runtime::from_hex(&fs::read_to_string(original)?)?;
+            let candidate = runtime::from_hex(&fs::read_to_string(candidate)?)?;
+            let scenarios: Vec<runtime::scenario::Scenario> =
+                serde_json::from_str(&fs::read_to_string(scenarios)?)?;
+            prepare_parent(&out)?;
+            runtime::scenario::check(&original, &candidate, &scenarios, &out)?;
+            println!(
+                "Supplied scenarios passed concrete replay. No whole-contract equivalence proof.\nEvidence: {}",
+                out.display()
             );
         }
         Action::OptimizeRuntime {
             bytecode,
             cases,
             sequences,
+            preserve_layout,
             out,
         } => {
             let code = runtime::from_hex(&fs::read_to_string(bytecode)?)?;
             prepare_parent(&out)?;
+            let mode = if preserve_layout {
+                runtime::RuntimeMode::PreserveLayout
+            } else {
+                runtime::RuntimeMode::Compact
+            };
             let report = if let Some(cases) = cases {
                 let cases: Vec<runtime::Case> = serde_json::from_str(&fs::read_to_string(cases)?)?;
-                runtime::optimize(&code, &cases, &out)?
+                runtime::optimize_with(&code, runtime::ExecutionInputs::Cases(&cases), &out, mode)?
             } else {
                 let sequences: Vec<runtime::Sequence> = serde_json::from_str(&fs::read_to_string(
                     sequences.expect("clap requires one input"),
                 )?)?;
-                runtime::optimize_sequences(&code, &sequences, &out)?
+                runtime::optimize_with(
+                    &code,
+                    runtime::ExecutionInputs::Sequences(&sequences),
+                    &out,
+                    mode,
+                )?
             };
             println!(
                 "Runtime bytes: {} → {}; {} local rewrites; {} execution cases passed.\n{}\nEvidence: {}",

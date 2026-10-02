@@ -7,9 +7,9 @@ use anyhow::{Context as _, Result, ensure};
 use revm::{
     Context, ExecuteCommitEvm, MainBuilder, MainContext,
     bytecode::{Bytecode, opcode::OpCode},
-    context::{TxEnv, result::ExecutionResult},
+    context::{BlockEnv, TxEnv, result::ExecutionResult},
     database::InMemoryDB,
-    primitives::{Address, Bytes, TxKind, U256, hardfork::SpecId, hex},
+    primitives::{Address, B256, Bytes, TxKind, U256, hardfork::SpecId, hex},
     state::AccountInfo,
 };
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,16 @@ use std::{
 };
 
 use crate::proof;
+
+mod layout;
+pub mod scenario;
+pub use layout::LayoutAnalysis;
+
+#[derive(Debug, Clone, Copy)]
+pub enum RuntimeMode {
+    Compact,
+    PreserveLayout,
+}
 
 // EIP-170 maximum deployed runtime size. Creation bytecode is not accepted here.
 const MAX_RUNTIME_BYTES: usize = 24_576;
@@ -82,7 +92,7 @@ pub struct Sequence {
     pub transactions: Vec<Transaction>,
 }
 
-enum ExecutionInputs<'a> {
+pub enum ExecutionInputs<'a> {
     Cases(&'a [Case]),
     Sequences(&'a [Sequence]),
 }
@@ -111,6 +121,11 @@ pub struct Report {
     pub cases: Vec<CaseResult>,
     pub lean_version: Option<String>,
     pub verification: &'static str,
+}
+
+/// Analyze reachable instructions without resolving jump values or stack heights.
+pub fn analyze_layout(code: &[u8]) -> Result<LayoutAnalysis> {
+    layout::analyze(code)
 }
 
 /// Analyze all reachable paths, including both conditional edges. Unsupported
@@ -181,6 +196,25 @@ pub fn analyze(code: &[u8]) -> Result<Analysis> {
             0x50 => {
                 stack.pop();
             } // Discarded labels reveal no numeric value.
+            0x01 | 0x02 | 0x17 | 0x18 => {
+                let a = stack.pop().unwrap();
+                let b = stack.pop().unwrap();
+                let neutral = U256::from(u8::from(op == 0x02));
+                // Preserve the other PUSH identity, never just its numeric value.
+                // The neutral source is still data: relocating that same source
+                // elsewhere would invalidate the identity and must be rejected.
+                if let Some(source) = [a, b].into_iter().find(|&source| {
+                    source != UNKNOWN
+                        && push_value(&instructions[index[&usize::from(source)]].bytes)
+                            == Some(neutral)
+                }) {
+                    data_uses.insert(source);
+                    stack.push(if source == a { b } else { a });
+                } else {
+                    data_uses.extend([a, b]);
+                    stack.push(UNKNOWN);
+                }
+            }
             0x56 | 0x57 => {
                 let source = stack.pop().unwrap();
                 ensure!(
@@ -253,16 +287,33 @@ pub fn analyze(code: &[u8]) -> Result<Analysis> {
 /// Write a candidate only after local proofs and all supplied differential cases
 /// pass. Original input, case inputs, and failure evidence remain on failure.
 pub fn optimize(code: &[u8], cases: &[Case], out: &Path) -> Result<Report> {
-    optimize_with(code, ExecutionInputs::Cases(cases), out)
+    optimize_with(
+        code,
+        ExecutionInputs::Cases(cases),
+        out,
+        RuntimeMode::Compact,
+    )
 }
 
 /// Replay each sequence from fresh state, committing between its transactions.
 /// `Report::cases` follows input sequence order, then transaction order.
 pub fn optimize_sequences(code: &[u8], sequences: &[Sequence], out: &Path) -> Result<Report> {
-    optimize_with(code, ExecutionInputs::Sequences(sequences), out)
+    optimize_with(
+        code,
+        ExecutionInputs::Sequences(sequences),
+        out,
+        RuntimeMode::Compact,
+    )
 }
 
-fn optimize_with(code: &[u8], inputs: ExecutionInputs<'_>, out: &Path) -> Result<Report> {
+/// Select compact relocation or fixed-layout rewrites while retaining the same
+/// proof and concrete replay gates. Existing entry points select compact mode.
+pub fn optimize_with(
+    code: &[u8],
+    inputs: ExecutionInputs<'_>,
+    out: &Path,
+    mode: RuntimeMode,
+) -> Result<Report> {
     let (filename, serialized, verification) = match inputs {
         ExecutionInputs::Cases(cases) => {
             ensure!(
@@ -291,17 +342,32 @@ fn optimize_with(code: &[u8], inputs: ExecutionInputs<'_>, out: &Path) -> Result
             )
         }
     };
-    let analysis = analyze(code)?;
+    let (candidate, rewrites) = match mode {
+        RuntimeMode::Compact => transform(&analyze(code)?)?,
+        RuntimeMode::PreserveLayout => layout::transform(&layout::analyze(code)?)?,
+    };
+    let verification = match mode {
+        RuntimeMode::Compact => verification,
+        RuntimeMode::PreserveLayout => {
+            "Lean: local gas-erased stack rewrites only. Rust: preserved byte offsets, instruction boundaries, jump destinations and local stack signatures; no global stack-height proof. revm: supplied transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof."
+        }
+    };
     fs::create_dir(out)?;
     fs::write(out.join("original.hex"), hex::encode(code) + "\n")?;
     fs::write(out.join(filename), serialized + "\n")?;
-    let (candidate, rewrites) = transform(&analysis)?;
     fs::write(
         out.join("rewrites.json"),
         serde_json::to_string_pretty(&rewrites)? + "\n",
     )?;
     // Re-decode and revalidate the emitted control flow independently.
-    analyze(&candidate)?;
+    match mode {
+        RuntimeMode::Compact => {
+            analyze(&candidate)?;
+        }
+        RuntimeMode::PreserveLayout => {
+            layout::analyze(&candidate)?;
+        }
+    }
     let lean_version = if rewrites.is_empty() {
         None
     } else {
@@ -623,10 +689,11 @@ fn compare_results(
     })
 }
 
-// State projection deliberately excludes code identity and fee accounting (zero
-// gas price). It retains balances, nonces, and nonzero final storage values.
+// State projection excludes only the substituted target code hash and uses zero
+// gas price. Other code hashes, balances, nonces and nonzero storage are retained.
 #[derive(Debug, PartialEq, Eq)]
 struct AccountState {
+    code_hash: B256,
     balance: U256,
     nonce: u64,
     storage: BTreeMap<U256, U256>,
@@ -676,27 +743,40 @@ fn execute_transaction(
     let contract = Address::repeat_byte(0x22);
     let caller = Address::repeat_byte(0x11);
     let nonce = db.load_account(caller)?.info.nonce;
-    // A fresh context resets warmth and transient storage; the database owns
-    // persistent state. Commit also retains the sender nonce after a revert.
+    let tx = TxEnv::builder()
+        .caller(caller)
+        .kind(TxKind::Call(contract))
+        .nonce(nonce)
+        .gas_limit(gas_limit)
+        .gas_price(0)
+        .value(if value.is_empty() {
+            U256::ZERO
+        } else {
+            value.parse()?
+        })
+        .data(Bytes::from(from_hex(calldata)?))
+        .build()?;
+    execute_env(db, tx, BlockEnv::default(), 1, contract)
+}
+
+fn execute_env(
+    db: &mut InMemoryDB,
+    tx: TxEnv,
+    block: BlockEnv,
+    chain_id: u64,
+    target: Address,
+) -> Result<(ExecutionResult, BTreeMap<Address, AccountState>)> {
+    // Each transaction resets warmth/transient state; the database owns durable
+    // state. Reverted executions still commit the sender nonce via revm.
     let mut evm = Context::mainnet()
-        .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN))
+        .modify_cfg_chained(|cfg| {
+            cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN);
+            cfg.chain_id = chain_id;
+        })
+        .with_block(block)
         .with_db(&mut *db)
         .build_mainnet();
-    let result = evm.transact_commit(
-        TxEnv::builder()
-            .caller(caller)
-            .kind(TxKind::Call(contract))
-            .nonce(nonce)
-            .gas_limit(gas_limit)
-            .gas_price(0)
-            .value(if value.is_empty() {
-                U256::ZERO
-            } else {
-                value.parse()?
-            })
-            .data(Bytes::from(from_hex(calldata)?))
-            .build()?,
-    )?;
+    let result = evm.transact_commit(tx)?;
     let state = db
         .cache
         .accounts
@@ -706,6 +786,13 @@ fn execute_transaction(
             Some((
                 *address,
                 AccountState {
+                    // Only the intentionally substituted target is exempt. In
+                    // Cancun an existing target cannot delete/redeploy its code.
+                    code_hash: if *address == target {
+                        B256::ZERO
+                    } else {
+                        info.code_hash
+                    },
                     balance: info.balance,
                     nonce: info.nonce,
                     storage: account
@@ -928,15 +1015,105 @@ mod tests {
             "6008805f52565f005b00", // label alias stored to memory.
             "60058057005b00",       // label also consumed as condition.
             "6006805f55565b00",     // label also stored to storage.
-            "60055f01565b00",       // arithmetic-derived destination.
         ] {
             assert!(analyze(&bytes(code)).is_err(), "{code}");
         }
+        // Neutral arithmetic retains the original PUSH identity.
+        assert!(analyze(&bytes("60055f01565b00")).is_ok());
         // Same numeric constant, different source: only the second is a label.
         assert!(analyze(&bytes("60075f526007565b00")).is_ok());
         // Discarding an alias or leaving it below RETURN operands is harmless.
         assert!(analyze(&bytes("60068050565f5b00")).is_ok());
         assert!(analyze(&bytes("600480565b5f5ff3")).is_ok());
+    }
+
+    #[test]
+    fn neutral_arithmetic_preserves_jump_sources_in_both_operand_orders() {
+        for op in [0x01, 0x02, 0x17, 0x18] {
+            for reversed in [false, true] {
+                for conditional in [false, true] {
+                    let neutral = u8::from(op == 0x02);
+                    let mut code = bytes("600050"); // Shrinks before the label source.
+                    if conditional {
+                        code.extend(bytes("6001"));
+                    }
+                    if reversed {
+                        code.extend([0x60, neutral]);
+                    }
+                    let label = code.len();
+                    code.extend([0x61, 0, 0]);
+                    if !reversed {
+                        code.extend([0x60, neutral]);
+                    }
+                    // SWAP changes order; DUP/POP must retain the surviving tag.
+                    code.extend([0x90, 0x80, 0x50, op]);
+                    code.push(if conditional { 0x57 } else { 0x56 });
+                    code.push(0x00);
+                    let target = code.len();
+                    code.extend(bytes("5b60075f5260205ff3"));
+                    code[label + 1..label + 3].copy_from_slice(&(target as u16).to_be_bytes());
+                    let analysis = analyze(&code).unwrap();
+                    assert_eq!(analysis.jumps, BTreeMap::from([(label, target)]));
+                    let (candidate, changes) = transform(&analysis).unwrap();
+                    assert!(!changes.is_empty());
+                    assert_eq!(analyze(&candidate).unwrap().relocated_labels, 1);
+                    compare(&code, &candidate, &case("")).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn neutral_labels_share_targets_and_relocate_across_push_byte_boundaries() {
+        let mut code = bytes("6000505f35");
+        let first = code.len();
+        code.extend(bytes("6101005f0157"));
+        let second = code.len();
+        code.extend(bytes("6101005f1856"));
+        code.resize(256, 0x00);
+        code.extend(bytes("5b60075f5260205ff35b60095f5260205ff3"));
+        let analysis = analyze(&code).unwrap();
+        assert_eq!(
+            analysis.jumps,
+            BTreeMap::from([(first, 256), (second, 256)])
+        );
+        let (candidate, _) = transform(&analysis).unwrap();
+        let analyzed = analyze(&candidate).unwrap();
+        assert_eq!(analyzed.relocated_labels, 2);
+        assert!(analyzed.jumps.values().all(|&target| target < 256));
+        let one = format!("{:064x}", 1);
+        for input in ["", one.as_str()] {
+            compare(&code, &candidate, &case(input)).unwrap();
+        }
+        let source = *analyzed.jumps.keys().next().unwrap();
+        let mut stale = candidate.clone();
+        stale[source + 1..source + 3].copy_from_slice(&256u16.to_be_bytes());
+        assert!(compare(&code, &stale, &case(&one)).is_err());
+        // A valid but redirected edge must also fail execution comparison.
+        let alternate = decode(&candidate)
+            .into_iter()
+            .filter(|op| op.bytes[0] == 0x5b)
+            .map(|op| op.pc)
+            .next_back()
+            .unwrap();
+        let mut redirected = candidate;
+        redirected[source + 1..source + 3].copy_from_slice(&(alternate as u16).to_be_bytes());
+        assert!(compare(&code, &redirected, &case(&one)).is_err());
+    }
+
+    #[test]
+    fn neutral_arithmetic_does_not_hide_data_escapes_or_unknown_targets() {
+        for (code, message) in [
+            ("6006600101565b00", "unresolved PUSH provenance"), // Non-neutral addition.
+            ("5f355f0156", "unresolved PUSH provenance"),       // Unknown calldata.
+            ("600b805f015f52566000005b00", "both a jump label and data"), // Memory alias.
+            ("6007805f0157005b00", "both a jump label and data"), // Conditional alias.
+            ("5b5f8060090150565b00", "both a jump label and data"), // Neutral zero label.
+            ("5f5b50600180600b02505f9056", "both a jump label and data"), // Neutral one label.
+        ] {
+            let error = analyze(&bytes(code)).unwrap_err();
+            assert!(error.to_string().contains(message), "{code}: {error}");
+        }
     }
 
     #[test]

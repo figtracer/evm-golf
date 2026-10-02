@@ -1,10 +1,13 @@
 # Runtime bytecode
 
 The runtime optimizer works directly on deployed Cancun bytecode. It can shrink
-complete contracts within a conservative subset: resolved jumps and internal returns, storage, memory,
-logs, returns, and reverts. Creation code, unresolved computed jumps, calls,
-creation, selfdestruct, code introspection, and gas introspection are unsupported.
-An unsupported reachable instruction or unresolvable jump rejects the input.
+complete contracts within a conservative subset: resolved jumps and internal
+returns, storage, memory, logs, returns, and reverts. `--preserve-layout` also
+supports dynamic jumps, PC, and CODESIZE by keeping every byte offset unchanged.
+Both optimizer modes reject reachable calls, creation, selfdestruct, code-content
+introspection, and gas introspection. The separate `check-runtime` command can
+execute these operations against supplied account fixtures; it does not optimize
+or formally prove the proposed candidate.
 
 ## Run
 
@@ -91,7 +94,10 @@ EOF input is unsupported.
 Every reachable JUMP or JUMPI must resolve to a PUSH of a valid JUMPDEST offset.
 The analysis tracks the originating PUSH through DUP and SWAP, including internal
 function return addresses and shared helpers reached from different callers.
-It rejects labels also used as numeric data and destinations computed by arithmetic.
+It rejects labels also used as numeric data.
+Identity arithmetic (`+ 0`, `| 0`, `^ 0`, `* 1`) can preserve a label's source,
+in either operand order. The neutral operand is numeric data and cannot also be
+relocated. Other arithmetic-derived targets remain unsupported in compact mode.
 Equal-valued constants from distinct PUSH instructions retain distinct identities.
 
 Both conditional edges and distinct stack-provenance states are analyzed, with
@@ -107,12 +113,85 @@ with DUP1/ADD. It does not rewrite across control-flow or side-effect boundaries
 Proven jump-label PUSHs are protected and relocated after shortening, preserving
 their immediate widths. The emitted runtime is decoded and analyzed again.
 
+## Preserve byte offsets
+
+Use `--preserve-layout` with `analyze-runtime` or `optimize-runtime`. This mode
+follows fallthrough and conservatively considers every decoded JUMPDEST reachable
+from any jump. It does not resolve jump values or prove global stack heights.
+It preserves instruction boundaries, all JUMPDEST positions, and total length,
+so PC, CODESIZE, and computed jump offsets remain stable.
+
+The initial rules replace multiplication by zero, one, or two with AND zero,
+ADD zero, or SHL one, retaining the original PUSH width. Each has the same input
+stack requirement, peak growth, and final height, and saves two opcode gas before
+refunds. Lean still checks each exact fragment. Gas-limit effects and code-content
+observations remain outside the equivalence claim. No byte-size reduction is expected.
+
+## General runtime replay
+
+`check-runtime` accepts supplied original/candidate deployed legacy bytecode,
+including dynamic jumps, external calls, creation, selfdestruct, precompiles,
+and gas/code introspection. Revm executes the operations under Cancun; this
+command does not run the optimizer's CFG analysis or Lean proofs.
+
+```sh
+cargo run --locked -- check-runtime --original runs/original.hex \
+  --candidate runs/proposed.hex --scenarios runs/scenarios.json --out runs/checked-1
+```
+
+A scenario defines complete local starting state and a sequence of calls:
+
+```json
+[
+  {
+    "target": "0x2222222222222222222222222222222222222222",
+    "caller": "0x1111111111111111111111111111111111111111",
+    "accounts": {
+      "0x1111111111111111111111111111111111111111": {"balance": "1000000"},
+      "0x2222222222222222222222222222222222222222": {"storage": {"0": "7"}},
+      "0x3333333333333333333333333333333333333333": {"code": "0x00"}
+    },
+    "environment": {"number": 100, "timestamp": 1000, "chain_id": 1},
+    "transactions": [{"calldata": "0x", "gas_limit": 200000, "value": "1"}]
+  }
+]
+```
+
+Account fields are `balance`, `nonce`, `code`, and `storage`; omitted values are
+zero or empty. The target and caller must be distinct, explicitly supplied accounts.
+Target fixture code must be empty because the two hex inputs supply it. A precompile
+cannot be the substituted target. The caller is funded only by the fixture.
+Unspecified accounts are absent; no chain state is fetched. Numeric/address aliases
+that duplicate keys are rejected. Total fixture balance must fit in a 256-bit word.
+
+Optional environment fields are `number`, `timestamp`, `gas_limit`, `beneficiary`,
+`prevrandao`, `chain_id`, `blob_excess_gas`, and `block_hashes`. Block fields stay
+fixed throughout a sequence. Missing fields use revm defaults, with Cancun blob
+pricing. `block_hashes` maps previous block numbers to 32-byte hex hashes; omitted
+hashes in the previous 256 blocks are explicitly zero. Other hashes are rejected.
+Gas price and base fee remain zero. Access lists, blob transactions, fee-bearing
+transactions, constructor execution as the top-level input, and other forks are
+not exposed by this fixture format.
+
+Each transaction must match output, success/revert, ordered logs, and all committed
+account balances, nonces, storage, existence, and code hashes. Only the substituted
+target's code hash is excluded; newly created and other contracts' code is compared.
+Candidate receipt gas must not increase. Invalid transactions and exceptional halts
+reject the run. Ordinary reverts may pass and the sequence continues.
+
+A failed run preserves `original.hex`, `proposed.hex`, `scenarios.json`, and
+`failure.log`. Only a fully passing run writes `candidate.hex` and `result.json`.
+The report's `cases` array follows scenario order, then transaction order. Passing
+means agreement on those concrete fixtures, not general EVM equivalence or a Lean
+certificate. Reports remain local and are not expression leaderboard entries.
+
 ## What is verified
 
 Lean checks that each pair of **exact local byte fragments** produces the same
 successful stack result, over arbitrary tails with the required stack prefix.
 Two failing executions cannot satisfy the certificate. The model excludes gas
-and stack limits; Rust analysis separately checks stack heights. These are local proofs,
+and stack limits; compact-mode Rust analysis separately checks stack heights.
+Layout mode instead checks equal local stack requirements and peak growth. These are local proofs,
 not a Lean proof of the CFG, relocation implementation, or full EVM execution.
 
 For every supplied transaction, revm compares success/revert status, return or
