@@ -7,7 +7,7 @@ use std::{fs, path::Path};
 use crate::{Report, check, evm::Program, expr::parse};
 
 /// Increment when the compiler, score definition, or proof policy changes.
-pub const RULESET: &str = "evm-golf-v1-cancun";
+pub const RULESET: &str = "evm-golf-v2-cancun";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

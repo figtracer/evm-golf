@@ -1,7 +1,10 @@
 # Verification and scoring
 
-The current ruleset is `evm-golf-v1-cancun`. It fixes the puzzle semantics,
+The current ruleset is `evm-golf-v2-cancun`. It fixes the puzzle semantics,
 compiler, score definition, and proof policy used by the checked-in entries.
+Version 2 reuses expression proofs in the bytecode certificates; semantics and
+scores are unchanged. Version 1 submissions must be resubmitted under version 2
+and reverified. The JSON schema and CLI arguments are unchanged.
 
 ## Execution model
 
@@ -27,8 +30,14 @@ supports the compiler's small opcode subset and fails on unsupported instruction
 truncated immediates, and stack underflow. The common memory/RETURN wrapper is
 outside the model.
 
-The checker uses standard Lean lemmas and `bv_decide`. Native proof checking can
-introduce native-evaluation axiom dependencies; these are printed in `Proof.log`.
+Expression equality uses standard Lean lemmas and `bv_decide`. The baseline
+body reduces directly to the reference expression. The candidate body reduces
+to its own expression, then uses the symmetric equality theorem under the
+returned stack value. This also supports equivalent expansions such as
+`x → (x * 1) + 0`; the expression theorem is not rediscovered for each body.
+
+Native proof checking can introduce native-evaluation axiom dependencies; these
+are printed in `Proof.log`.
 This is not an axiom-free or kernel-only verification claim. Proofs using `sorry`
 are rejected. The rule suite is generated from the same rule table used by the
 optimizer, and each extracted candidate is checked independently.

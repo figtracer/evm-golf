@@ -55,7 +55,7 @@ The generated `submission.json` uses this format:
 
 ```json
 {
-  "ruleset": "evm-golf-v1-cancun",
+  "ruleset": "evm-golf-v2-cancun",
   "challenge": "double",
   "author": "alice",
   "candidate": "(shl1 x)"
@@ -89,7 +89,7 @@ For example, save a local proposal and verify it:
 ```sh
 mkdir -p runs
 cat > runs/proposals.json <<'JSON'
-[{"ruleset":"evm-golf-v1-cancun","challenge":"double","author":"example","candidate":"(shl1 x)"}]
+[{"ruleset":"evm-golf-v2-cancun","challenge":"double","author":"example","candidate":"(shl1 x)"}]
 JSON
 cargo run --locked -- campaign --proposals runs/proposals.json --out runs/campaign-1
 ```

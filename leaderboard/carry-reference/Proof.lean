@@ -67,11 +67,12 @@ theorem expression_equivalent (x y : Golf.Word) : ((x ^^^ y) + ((x &&& y) <<< 1)
 
 theorem baseline_correct (x y : Golf.Word) :
     Golf.run 17 [96, 32, 53, 95, 53, 22, 96, 1, 27, 96, 32, 53, 95, 53, 24, 1] [] x y = some [((x ^^^ y) + ((x &&& y) <<< 1))] := by
-  (try simp [Golf.run, Golf.immediate, BitVec.mul_comm]) <;> bv_decide
+  rfl
 
 theorem candidate_correct (x y : Golf.Word) :
     Golf.run 7 [96, 32, 53, 95, 53, 1] [] x y = some [((x ^^^ y) + ((x &&& y) <<< 1))] := by
-  (try simp [Golf.run, Golf.immediate, BitVec.mul_comm]) <;> bv_decide
+  change some [(x + y)] = some [((x ^^^ y) + ((x &&& y) <<< 1))]
+  exact congrArg (fun value : Golf.Word => some [value]) (expression_equivalent x y).symm
 
 #print axioms expression_equivalent
 #print axioms baseline_correct

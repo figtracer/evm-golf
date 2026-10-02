@@ -1,6 +1,6 @@
 # EVM Golf leaderboard
 
-Ruleset: `evm-golf-v1-cancun`. Lower body gas wins; runtime bytes break ties.
+Ruleset: `evm-golf-v2-cancun`. Lower body gas wins; runtime bytes break ties.
 Every row was freshly verified with Lean and cross-checked with revm.
 These are synthetic expression puzzles, not comparisons against solc.
 

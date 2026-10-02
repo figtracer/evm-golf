@@ -46,16 +46,65 @@ fn cli_accepts_verified_result_and_refuses_false_claim() {
 
 #[test]
 #[ignore = "requires Lean 4.34.0"]
-fn proof_rejects_wrong_bytecode_even_when_expressions_match() {
+fn proof_rejects_mismatched_expressions_and_bytecode() {
     let dir = tempdir().unwrap();
     let original = parse("(- x y)").unwrap();
     let correct = Program::compile(&original).unwrap();
-    let wrong = Program::compile(&parse("(+ x y)").unwrap()).unwrap();
-    let source = proof::candidate(&original, &original, &correct, &wrong);
-    let path = dir.path().join("WrongCode.lean");
-    fs::write(&path, source).unwrap();
-    let error = proof::verify(&path).unwrap_err().to_string();
-    assert!(error.contains("Lean rejected"), "{error}");
+    let different = parse("(+ x y)").unwrap();
+    let wrong = Program::compile(&different).unwrap();
+    for (name, expression, baseline, candidate) in [
+        ("WrongCandidate", &original, &correct, &wrong),
+        ("WrongBaseline", &original, &wrong, &correct),
+        ("WrongExpression", &different, &correct, &correct),
+    ] {
+        let path = dir.path().join(format!("{name}.lean"));
+        fs::write(
+            &path,
+            proof::candidate(&original, expression, baseline, candidate),
+        )
+        .unwrap();
+        let error = proof::verify(&path).unwrap_err().to_string();
+        assert!(error.contains("Lean rejected"), "{error}");
+    }
+}
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn cli_accepts_reverse_expansion_with_reused_expression_proof() {
+    let dir = tempdir().unwrap();
+    let out = dir.path().join("expanded");
+    let result = Command::new(env!("CARGO_BIN_EXE_evm-golf"))
+        .args(["check", "x", "(+ (* x 1) 0)", "--out"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("result.json")).unwrap()).unwrap();
+    assert_eq!(report["candidate"], "(+ (* x 1) 0)");
+    assert_eq!(report["gas_saved"], -13);
+    assert_eq!(report["concrete_cases"], 128);
+}
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn bytecode_composition_preserves_unsimplified_expression_shapes() {
+    let dir = tempdir().unwrap();
+    for (index, (left, right)) in [
+        ("(+ x x)", "(* x 2)"),
+        ("0", "(xor x x)"),
+        ("x", "(xor (xor x y) y)"),
+        ("(- 0 x)", "(+ (- 0 x) 0)"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        evm_golf::check(left, right, &dir.path().join(index.to_string())).unwrap();
+    }
 }
 
 #[test]

@@ -22,7 +22,7 @@ not authenticated identities. Never put credentials in submissions.
 
 ## Fair comparisons
 
-The current ruleset is `evm-golf-v1-cancun`. Score is expression-body gas, then
+The current ruleset is `evm-golf-v2-cancun`. Score is expression-body gas, then
 runtime bytes; exact ties share rank. You may submit a correct result that does
 not improve the baseline, but it will rank below cheaper ones.
 

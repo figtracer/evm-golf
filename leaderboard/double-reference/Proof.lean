@@ -67,11 +67,12 @@ theorem expression_equivalent (x y : Golf.Word) : (x * (2 : Golf.Word)) = (x <<<
 
 theorem baseline_correct (x y : Golf.Word) :
     Golf.run 6 [96, 2, 95, 53, 2] [] x y = some [(x * (2 : Golf.Word))] := by
-  (try simp [Golf.run, Golf.immediate, BitVec.mul_comm]) <;> bv_decide
+  rfl
 
 theorem candidate_correct (x y : Golf.Word) :
     Golf.run 6 [95, 53, 96, 1, 27] [] x y = some [(x * (2 : Golf.Word))] := by
-  (try simp [Golf.run, Golf.immediate, BitVec.mul_comm]) <;> bv_decide
+  change some [(x <<< 1)] = some [(x * (2 : Golf.Word))]
+  exact congrArg (fun value : Golf.Word => some [value]) (expression_equivalent x y).symm
 
 #print axioms expression_equivalent
 #print axioms baseline_correct

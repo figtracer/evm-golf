@@ -24,6 +24,7 @@ const OPTIONS: &str =
 // Keep a difficult bit-blasting problem from monopolizing a local experiment.
 const PROOF_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Certify the expressions and their corresponding `Program::compile` bodies.
 pub fn candidate(
     original: &RecExpr<Expr>,
     candidate: &RecExpr<Expr>,
@@ -45,7 +46,16 @@ pub fn candidate(
             .map(u8::to_string)
             .collect::<Vec<_>>()
             .join(", ");
-        source.push_str(&format!("theorem {name} (x y : Golf.Word) :\n    Golf.run {} [{bytes}] [] x y = some [{left}] := by\n  (try simp [Golf.run, Golf.immediate, BitVec.mul_comm]) <;> bv_decide\n\n", program.body().len() + 1));
+        // Reduce the exact bytes, then reuse the expression theorem as a whole.
+        // Rewriting occurrences would also expand nested terms for reverse claims.
+        let proof = if name == "baseline_correct" {
+            "rfl".to_owned()
+        } else {
+            format!(
+                "change some [{right}] = some [{left}]\n  exact congrArg (fun value : Golf.Word => some [value]) (expression_equivalent x y).symm"
+            )
+        };
+        source.push_str(&format!("theorem {name} (x y : Golf.Word) :\n    Golf.run {} [{bytes}] [] x y = some [{left}] := by\n  {proof}\n\n", program.body().len() + 1));
     }
     source.push_str("#print axioms expression_equivalent\n#print axioms baseline_correct\n#print axioms candidate_correct\n");
     source

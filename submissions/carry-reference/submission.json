@@ -1,5 +1,5 @@
 {
-  "ruleset": "evm-golf-v1-cancun",
+  "ruleset": "evm-golf-v2-cancun",
   "challenge": "carry-add",
   "author": "reference",
   "candidate": "(+ x y)"
