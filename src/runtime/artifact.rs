@@ -236,14 +236,18 @@ mod tests {
         // patch reconstructs the candidate, but instruction boundaries differ.
         let different_layout = Rewrite {
             original_pc: 0,
-            before: "640000000102".into(),
+            before: "630000000102".into(),
             after: "600001600001".into(),
             required_stack: 1,
         };
+        let (source, names) = certificates(std::slice::from_ref(&different_layout)).unwrap();
+        let path = dir.path().join("BoundaryFragments.lean");
+        fs::write(&path, source).unwrap();
+        proof::verify_named(&path, &names).unwrap();
         assert!(
             check(
                 "Boundaries",
-                &from_hex("64000000010200").unwrap(),
+                &from_hex("63000000010200").unwrap(),
                 &from_hex("60000160000100").unwrap(),
                 &[different_layout],
             )
