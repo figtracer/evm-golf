@@ -17,6 +17,8 @@
 | `leaderboard/` | Verified score and proof snapshot |
 | `swarm/` | Recorded experiment and replay inputs |
 | `scripts/` | Toolchain setup and repository checks |
+| `research/pep/` | Isolated Lean/SMT comparison, proof corpus, recorded evidence |
+| `examples/proof_cases.rs` | Matched research obligations and counterexample replay |
 
 This is a single Cargo package. The library exposes the optimizer, checker,
 contest, and campaign modules used by the CLI.
@@ -61,8 +63,15 @@ changes that preserve these contracts can retain the existing ruleset.
 ## Research
 
 Useful extensions include stack reuse, realistic compiler fragments, and
-agent-written proof lemmas. The current checker does not accept custom proof
-programs and does not benchmark Z3 or cvc5.
+agent-written proof lemmas. The current contest checker does not accept custom
+proof programs. The separate [proof experiment](../../research/pep/README.md)
+compares Z3, cvc5, Lean automation, and agent-written proofs without changing
+contest policy. Its research regression commands are:
+
+```sh
+cargo test --locked --example proof_cases
+python3 -B -m unittest discover -s research/pep -p test_run.py -v
+```
 
 For solver comparisons, preserve the exact rule, word width, preconditions,
 versions, invocation, resource limits, and observed result. Use the same statement

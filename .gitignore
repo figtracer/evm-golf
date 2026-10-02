@@ -1,3 +1,6 @@
 /target/
 /.tools/
 /runs/
+
+# Local Python research tooling
+__pycache__/

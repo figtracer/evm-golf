@@ -1,0 +1,26 @@
+{
+  "attempt_count": 1,
+  "elapsed_discovery_seconds": 17.841785192489624,
+  "lean_process_wall_seconds": 0.32291425,
+  "baseline_hex": "6020355f35026001602035015f350203",
+  "candidate_hex": "5f35",
+  "proofs": {
+    "expression_equivalent": "change (x * (y + 1#256)) - (x * y) = x\nrw [BitVec.mul_add, BitVec.mul_one, BitVec.add_comm (x*y) x, BitVec.add_sub_cancel]",
+    "baseline_correct": "rfl",
+    "candidate_correct": "change some [x] = some [(x*(y+1))-(x*y)]\nrw [expression_equivalent]"
+  },
+  "axiom_dependencies": {
+    "expression_equivalent": [
+      "propext"
+    ],
+    "baseline_correct": [
+      "propext",
+      "Quot.sound"
+    ],
+    "candidate_correct": [
+      "propext",
+      "Quot.sound"
+    ]
+  },
+  "scope": "Exact manifest bytes, full existing three-theorem contract including baseline/candidate bodies. Same limited Golf model and same statement; manually authored trusted research tactics, no contest policy change. Wrapper and gas remain outside Lean model."
+}

@@ -66,7 +66,8 @@ human-written candidates.
 
 Rules that are difficult for existing solvers are useful contributions. Include
 the exact statement and enough information to reproduce the solver result.
-See the [research guidelines](docs/dev/README.md#research) for comparison criteria.
+See the [research guidelines](docs/dev/README.md#research) for comparison criteria
+and the [Lean/SMT experiment](research/pep/README.md) for a replayable starting point.
 
 ## License
 

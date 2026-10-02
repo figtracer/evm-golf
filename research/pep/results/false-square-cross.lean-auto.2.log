@@ -1,0 +1,4 @@
+/Users/gustavo/dev/evm-golf/runs/pep-aligned/inputs/false-square-cross.auto.lean:14:35: error: The prover found a counterexample, consider the following assignment:
+x = 115792089237316195423570985008687907853269984665640564039457584007913129639935#256
+y = 115792089237316195423570985008687907853269984665640564039457584007913129639935#256
+'claim' depends on axioms: [sorryAx]

@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "width": 256,
+  "timeout_seconds": 15.0,
+  "repetitions": 2,
+  "versions": {
+    "z3": "Z3 version 4.16.0 - 64 bit",
+    "cvc5": "cvc5 1.4.1 [git 2b2e844 on branch HEAD]\ncompiled as a unrestricted build with GCC version Apple LLVM 17.0.0 (clang-1700.0.13.5) on Sep 25 2026 21:05:32\n\nCopyright (c) 2009-2026 by the authors and their institutional\naffiliations listed at https://cvc5.github.io/people.html\n\ncvc5 is open-source and is covered by the BSD license (modified).\n\nTHIS SOFTWARE IS PROVIDED AS-IS, WITHOUT ANY WARRANTIES.\nUSE AT YOUR OWN RISK.\n\nThis version of cvc5 is linked against the following non-(L)GPL'ed\nthird party libraries.\n\n  CaDiCaL - Simplified Satisfiability Solver\n  See https://github.com/arminbiere/cadical for copyright information.\n\n  Editline Library\n  See https://thrysoee.dk/editline\n  for copyright information.\n\n  SymFPU - The Symbolic Floating Point Unit\n  See https://github.com/martin-cs/symfpu/tree/main for copyright information.\n\nThis version of cvc5 is linked against the following third party\nlibraries covered by the LGPLv3 license.\nSee licenses/lgpl-3.0.txt for more information.\n\n  GMP - Gnu Multi Precision Arithmetic Library\n  See http://gmplib.org for copyright information.\n\n  LibPoly polynomial library\n  See https://github.com/SRI-CSL/libpoly for copyright and\n  licensing information.\n\ncvc5 is statically linked against these libraries. To recompile\nthis version of cvc5 with different versions of these libraries\nfollow the instructions on https://github.com/cvc5/cvc5/blob/main/INSTALL.md\n\nSee the file COPYING (distributed with the source code, and with\nall binaries) for the full cvc5 copyright, licensing, and (lack of)\nwarranty information.",
+    "lean": "Lean (version 4.34.0, arm64-apple-darwin24.6.0, commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b, Release)"
+  },
+  "executables": {
+    "z3": "/opt/homebrew/Cellar/z3/4.16.0/bin/z3",
+    "cvc5": "/private/tmp/evm-golf-cvc5/cvc5-macOS-arm64-static/bin/cvc5",
+    "lean": "/Users/gustavo/dev/evm-golf/.tools/lean/bin/lean"
+  },
+  "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+  "cpu_count": 18,
+  "python": "3.14.6",
+  "started_utc": "2026-10-02T12:53:03Z",
+  "base_commit": "f67907db026a631b579b1657cea40b094c8b9b87",
+  "working_tree": "?? examples/\n?? research/\n",
+  "source_sha256": {
+    "examples/proof_cases.rs": "38e388d937dac2bec4ef20660db0c85a3f69504147950073880afc43b9ceaaf6",
+    "research/pep/run.py": "0d40543ad22bd5df43f4ea3722f71075da0899bf7dba13ac1f3e84aedb5bd9ca",
+    "research/pep/cases.json": "fb20a9e7778942552648cfa2335d6e7b3a6f129983899c52421fdff7b18ad236",
+    "Cargo.lock": "0b0a68d631c904fba6d35df7263b354fc927a58659ed12d1b8d3388b131f49b0",
+    "src/expr.rs": "1dbe07e5cd5cb5946e1a5ca0f39a44e6cd46f9d8ff141988773f5053c7108daa",
+    "src/evm.rs": "8d79aca6748a8c9bd1e59ffa2220de71d3ee8bdbf1e22cc01ad7bb43770ca1c0",
+    "lean/Model.lean": "34ad39dfe936b5701b96da1b0df47c0d2c8740e059fb60a54f3504669a388c39"
+  },
+  "timing": "Sequential fresh processes; includes startup/import/search/check. Guided proof authoring excluded. Warmup before measurements; deterministic rotated method order.",
+  "resources": "Wall timeout per process group. Lean -j1 and bv_decide timeout rounded up to the external wall budget; other engine defaults. No memory cap or peak memory measurement. No CPU pinning.",
+  "bytecode_recheck": {
+    "reason": "Bind both x and y explicitly when reusing claim; add-zero leaves y unconstrained with bare rw [claim]. Only bytecode proof sources changed; all measured expression/SMT sources and manifest are byte-identical. All six bytecode files rechecked after fix. Initial bytecode statuses and failed control log are preserved.",
+    "generator_sha256": "97bc140bfcbed620d83c05b8ffc01ed79a7fa43df60f4a70785b547c651319c4"
+  }
+}

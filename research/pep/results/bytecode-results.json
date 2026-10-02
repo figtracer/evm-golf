@@ -1,0 +1,165 @@
+[
+  {
+    "elapsed_seconds": 0.3909331252798438,
+    "exit_code": 0,
+    "status": "checked",
+    "axioms": {
+      "claim": [
+        "propext"
+      ],
+      "baseline_correct": [
+        "propext",
+        "Quot.sound"
+      ],
+      "candidate_correct": [
+        "propext",
+        "Quot.sound"
+      ]
+    },
+    "native_evaluation": false,
+    "case": "add-zero",
+    "command": [
+      "/Users/gustavo/dev/evm-golf/.tools/lean/bin/lean",
+      "-j1",
+      "/Users/gustavo/dev/evm-golf/runs/pep-aligned/inputs/add-zero.bytecode.lean"
+    ],
+    "log": "add-zero.bytecode.log"
+  },
+  {
+    "elapsed_seconds": 0.7509602499194443,
+    "exit_code": 0,
+    "status": "checked",
+    "axioms": {
+      "claim": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound",
+        "claim._native.bv_decide.ax_1_5"
+      ],
+      "baseline_correct": [
+        "propext",
+        "Quot.sound"
+      ],
+      "candidate_correct": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound",
+        "claim._native.bv_decide.ax_1_5"
+      ]
+    },
+    "native_evaluation": true,
+    "case": "carry-add",
+    "command": [
+      "/Users/gustavo/dev/evm-golf/.tools/lean/bin/lean",
+      "-j1",
+      "/Users/gustavo/dev/evm-golf/runs/pep-aligned/inputs/carry-add.bytecode.lean"
+    ],
+    "log": "carry-add.bytecode.log"
+  },
+  {
+    "elapsed_seconds": 0.38239091634750366,
+    "exit_code": 0,
+    "status": "checked",
+    "axioms": {
+      "claim": [
+        "propext"
+      ],
+      "baseline_correct": [
+        "propext",
+        "Quot.sound"
+      ],
+      "candidate_correct": [
+        "propext",
+        "Quot.sound"
+      ]
+    },
+    "native_evaluation": false,
+    "case": "distributivity",
+    "command": [
+      "/Users/gustavo/dev/evm-golf/.tools/lean/bin/lean",
+      "-j1",
+      "/Users/gustavo/dev/evm-golf/runs/pep-aligned/inputs/distributivity.bytecode.lean"
+    ],
+    "log": "distributivity.bytecode.log"
+  },
+  {
+    "elapsed_seconds": 0.39058650005608797,
+    "exit_code": 0,
+    "status": "checked",
+    "axioms": {
+      "claim": [
+        "propext"
+      ],
+      "baseline_correct": [
+        "propext",
+        "Quot.sound"
+      ],
+      "candidate_correct": [
+        "propext",
+        "Quot.sound"
+      ]
+    },
+    "native_evaluation": false,
+    "case": "mul-cancel",
+    "command": [
+      "/Users/gustavo/dev/evm-golf/.tools/lean/bin/lean",
+      "-j1",
+      "/Users/gustavo/dev/evm-golf/runs/pep-aligned/inputs/mul-cancel.bytecode.lean"
+    ],
+    "log": "mul-cancel.bytecode.log"
+  },
+  {
+    "elapsed_seconds": 0.39072704082354903,
+    "exit_code": 0,
+    "status": "checked",
+    "axioms": {
+      "claim": [
+        "propext",
+        "Quot.sound"
+      ],
+      "baseline_correct": [
+        "propext",
+        "Quot.sound"
+      ],
+      "candidate_correct": [
+        "propext",
+        "Quot.sound"
+      ]
+    },
+    "native_evaluation": false,
+    "case": "difference-squares",
+    "command": [
+      "/Users/gustavo/dev/evm-golf/.tools/lean/bin/lean",
+      "-j1",
+      "/Users/gustavo/dev/evm-golf/runs/pep-aligned/inputs/difference-squares.bytecode.lean"
+    ],
+    "log": "difference-squares.bytecode.log"
+  },
+  {
+    "elapsed_seconds": 0.3824735409580171,
+    "exit_code": 0,
+    "status": "checked",
+    "axioms": {
+      "claim": [
+        "propext",
+        "Quot.sound"
+      ],
+      "baseline_correct": [
+        "propext",
+        "Quot.sound"
+      ],
+      "candidate_correct": [
+        "propext",
+        "Quot.sound"
+      ]
+    },
+    "native_evaluation": false,
+    "case": "square-cross",
+    "command": [
+      "/Users/gustavo/dev/evm-golf/.tools/lean/bin/lean",
+      "-j1",
+      "/Users/gustavo/dev/evm-golf/runs/pep-aligned/inputs/square-cross.bytecode.lean"
+    ],
+    "log": "square-cross.bytecode.log"
+  }
+]

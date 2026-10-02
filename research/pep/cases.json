@@ -1,0 +1,51 @@
+[
+  {
+    "id": "add-zero",
+    "left": "(+ x 0)",
+    "right": "x",
+    "valid": true,
+    "proof": "simp"
+  },
+  {
+    "id": "carry-add",
+    "left": "(+ (xor x y) (shl1 (and x y)))",
+    "right": "(+ x y)",
+    "valid": true,
+    "proof": "bv_decide"
+  },
+  {
+    "id": "distributivity",
+    "left": "(+ (* x y) (* x x))",
+    "right": "(* x (+ y x))",
+    "valid": true,
+    "proof": "rw [BitVec.mul_add]"
+  },
+  {
+    "id": "mul-cancel",
+    "left": "(- (* x (+ y 1)) (* x y))",
+    "right": "x",
+    "valid": true,
+    "proof": "change (x * (y + 1#256)) - (x * y) = x\nrw [BitVec.mul_add, BitVec.mul_one, BitVec.add_comm (x*y) x, BitVec.add_sub_cancel]"
+  },
+  {
+    "id": "difference-squares",
+    "left": "(- (* x x) (* y y))",
+    "right": "(* (- x y) (+ x y))",
+    "valid": true,
+    "proof": "rw [BitVec.mul_comm (x-y) (x+y), BitVec.mul_sub, BitVec.add_mul,\n    BitVec.add_mul, BitVec.mul_comm y x, \u2190 BitVec.sub_sub, BitVec.add_sub_cancel]"
+  },
+  {
+    "id": "square-cross",
+    "left": "(- (* (+ x y) (+ x y)) (+ (* x x) (* y y)))",
+    "right": "(* 2 (* x y))",
+    "valid": true,
+    "proof": "change ((x+y)*(x+y))-((x*x)+(y*y)) = 2#256*(x*y)\napply BitVec.sub_eq_iff_eq_add.mpr\nrw [BitVec.two_mul]\nsimp only [BitVec.add_mul, BitVec.mul_add]\nac_rfl"
+  },
+  {
+    "id": "false-square-cross",
+    "left": "(- (* (+ x y) (+ x y)) (+ (* x x) (* y y)))",
+    "right": "(* x y)",
+    "valid": false,
+    "proof": "bv_decide"
+  }
+]
