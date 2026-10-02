@@ -63,13 +63,21 @@ def run (fuel : Nat) (code : List Nat) (stack : List Word) (x y : Word) :
 
 end Golf
 
+namespace GolfProof
+ theorem shift_one (x : BitVec w) : x <<< 1 = x * 2 := by
+  rw [BitVec.shiftLeft_eq_mul_twoPow]
+  congr 1
+  apply BitVec.eq_of_toNat_eq
+  simp
+end GolfProof
+
 set_option linter.unusedVariables false
 set_option linter.unusedSimpArgs false
 set_option pp.fullNames true
 set_option maxRecDepth 4096
 
 theorem expression_equivalent (x y : Golf.Word) : ((x &&& y) ||| ((~~~x) &&& (255 : Golf.Word))) = ((255 : Golf.Word) ^^^ (x &&& ((255 : Golf.Word) ^^^ y))) := by
-  first | (solve | simp [BitVec.mul_comm]) | grind
+  first | (solve | simp [BitVec.mul_comm]) | ((try simp only [GolfProof.shift_one]) <;> grind)
 
 theorem baseline_correct (x y : Golf.Word) :
     Golf.run 14 [96, 255, 95, 53, 25, 22, 96, 32, 53, 95, 53, 22, 23] [] x y = some [((x &&& y) ||| ((~~~x) &&& (255 : Golf.Word)))] := by

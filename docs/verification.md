@@ -33,9 +33,9 @@ truncated PUSH data, whereas legacy EVM execution zero-pads it.
 
 Expression equality first tries simplification and `grind` for at most 15 seconds,
 then a bounded algebra/`bv_decide` fallback within the same 60-second total budget.
+A width-general shift lemma exposes doubling to arithmetic normalization.
 Each attempt keeps its source and log; `Proof.lean` contains the successful proof.
-The baseline
-body reduces directly to the reference expression. The candidate body reduces
+The baseline body reduces directly to the reference expression. The candidate body reduces
 to its own expression, then uses the symmetric equality theorem under the
 returned stack value. This also supports equivalent expansions such as
 `x → (x * 1) + 0`; the expression theorem is not rediscovered for each body.
@@ -61,11 +61,10 @@ is outside the Lean proof.
 ## Scoring
 
 The leaderboard ranks expression-body gas, with runtime byte size as the
-tie-breaker. E-graph extraction uses an additive tree-cost estimate, then compares
+tie-breaker. E-graph extraction accounts for identical-sibling reuse, then compares
 the emitted candidate with the original expression using the actual compiler.
-It retains the original if extraction worsens that score. The estimate can miss
-better expressions whose advantage depends on sibling reuse. Body gas includes calldata loads. It excludes transaction
-intrinsic gas and the fixed 13-gas return wrapper, including memory expansion.
+It retains the original if extraction worsens that score. Body gas includes calldata
+loads. It excludes transaction intrinsic gas and the fixed 13-gas return wrapper, including memory expansion.
 Both excluded costs are identical for candidates given the same input.
 
 Runtime byte counts include the wrapper. Deployment costs are not scored.
@@ -74,11 +73,11 @@ these synthetic baselines are not improvements over optimized Solidity output.
 
 | Example | Replacement | Body gas | Runtime bytes |
 | --- | --- | ---: | ---: |
-| `x * 2` | `x << 1` | 13 → 11 | 11 → 11 |
+| `x * 2` | `x + x` | 13 → 11 | 11 → 10 |
 | `(x xor y) xor y` | `x` | 23 → 5 | 16 → 8 |
 | `(x & y) \| (x & ~y)` | `x` | 34 → 5 | 20 → 8 |
 | `~x \| ~y` | `~(x & y)` | 20 → 17 | 14 → 13 |
-| `(x * 2) + (y - y)` | `x << 1` | 28 → 11 | 17 → 11 |
+| `(x * 2) + (y - y)` | `x + x` | 28 → 11 | 17 → 10 |
 
 [Reproducible entries](../leaderboard/README.md) include the bytecode and proofs.
 

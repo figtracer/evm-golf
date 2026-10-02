@@ -72,6 +72,10 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Action::Campaign { proposals, out } => {
             prepare_parent(&out)?;
+            eprintln!(
+                "Progress will be saved to {}",
+                out.join("campaign.json").display()
+            );
             let result = campaign::run(&proposals, &out)?;
             println!(
                 "Campaign complete: {} verified, {} unverified. Report: {}",

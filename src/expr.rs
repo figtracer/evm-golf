@@ -47,6 +47,10 @@ pub const RULES: &[(&str, &str, &str)] = &[
     ("xor-commute", "(xor ?x ?y)", "(xor ?y ?x)"),
     ("double-add", "(+ ?x ?x)", "(shl1 ?x)"),
     ("double-mul", "(* ?x 2)", "(shl1 ?x)"),
+    ("shift-add", "(shl1 ?x)", "(+ ?x ?x)"),
+    ("nested-shift", "(shl1 (shl1 ?x))", "(* ?x 4)"),
+    ("add-sub-cancel", "(- (+ ?x ?y) ?y)", "?x"),
+    ("sub-add-cancel", "(- ?x (+ ?x ?y))", "(- 0 ?y)"),
     ("and-zero", "(and ?x 0)", "0"),
     ("and-self", "(and ?x ?x)", "?x"),
     ("or-zero", "(or ?x 0)", "?x"),
@@ -97,7 +101,7 @@ impl Analysis<Expr> for ConstantFold {
     }
 }
 
-/// Additive tree-cost estimate; optimization checks the actual compiled score afterward.
+/// Body gas/bytes including identical-sibling DUP1; exact compilation remains the final guard.
 #[derive(Default)]
 struct EvmCost;
 
@@ -117,6 +121,15 @@ impl CostFunction<Expr> for EvmCost {
             Expr::Shl1(_) => (6, 3),
             _ => (3, 1),
         };
+        if let [a, b] = enode.children()
+            && a == b
+        {
+            // One e-class is reconstructed as the same selected expression at
+            // both occurrences, matching the compiler's structural DUP1 test.
+            let child = costs(*a);
+            let second = child.min((3, 1));
+            return (own.0 + child.0 + second.0, own.1 + child.1 + second.1);
+        }
         enode.children().iter().fold(own, |(gas, size), &id| {
             let child = costs(id);
             (gas + child.0, size + child.1)
@@ -240,4 +253,39 @@ pub fn lean(expr: &RecExpr<Expr>) -> String {
         values.push(value);
     }
     values.pop().unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EvmCost, Expr, parse};
+    use crate::evm::Program;
+    use egg::{Extractor, Runner, rewrite};
+
+    #[test]
+    fn extraction_estimate_matches_compiled_sibling_reuse() {
+        // Disable constant analysis so PUSH0/PUSHn duplicates reach extraction.
+        let rules = [rewrite!("add-zero"; "(+ ?x 0)" => "?x")];
+        for text in [
+            "(+ x x)",
+            "(* y y)",
+            "(* 0 0)",
+            "(* 1 1)",
+            "(* 256 256)",
+            "(- x y)",
+            "(+ x (+ x 0))",
+        ] {
+            let expression = parse(text).unwrap();
+            let runner = Runner::<Expr, (), ()>::default()
+                .with_expr(&expression)
+                .run(&rules);
+            let (estimate, candidate) =
+                Extractor::new(&runner.egraph, EvmCost).find_best(runner.roots[0]);
+            let program = Program::compile(&candidate).unwrap();
+            assert_eq!(
+                estimate,
+                (program.body_gas, program.body().len()),
+                "{text} -> {candidate}"
+            );
+        }
+    }
 }

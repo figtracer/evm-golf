@@ -41,7 +41,7 @@ Optimize an expression:
 cargo run --locked -- optimize '(+ (* x 2) (- y y))' --out runs/optimization
 ```
 
-This reduces `(x * 2) + (y - y)` to `x << 1`, from 28 to 11 expression-body gas.
+This reduces `(x * 2) + (y - y)` to `x + x`, from 28 to 11 expression-body gas.
 The output directory contains the bytecode, Lean proof, checker log, and score.
 
 Submit a puzzle solution:

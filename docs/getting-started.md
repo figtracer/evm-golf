@@ -34,8 +34,9 @@ Run commands from the repository root:
 cargo run --locked -- optimize '(+ (* x 2) (- y y))' --out runs/first
 ```
 
-The optimizer selects `(shl1 x)`. Lean verifies its equivalence in the supported
-model, then revm checks the emitted runtime and gas on the concrete test inputs.
+The optimizer selects `(+ x x)`, using `DUP1` to reuse the loaded word. Lean verifies
+its equivalence in the supported model, then revm checks the emitted runtime and
+gas on the concrete test inputs.
 
 | Artifact | Contents |
 | --- | --- |

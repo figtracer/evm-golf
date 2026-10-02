@@ -32,7 +32,18 @@ const ALGEBRA_TIMEOUT: Duration = Duration::from_secs(15);
 // This is one tenth of Lean's default heartbeat allowance; wall time remains bounded.
 const FALLBACK_HEARTBEATS: u64 = 20_000;
 const BITVECTOR_TACTIC: &str = "(try simp [BitVec.mul_comm]) <;> bv_decide";
-const ALGEBRA_TACTIC: &str = "first | (solve | simp [BitVec.mul_comm]) | grind";
+const ALGEBRA_TACTIC: &str =
+    "first | (solve | simp [BitVec.mul_comm]) | ((try simp only [GolfProof.shift_one]) <;> grind)";
+// Expose shifts to ring reasoning without changing the claim or bytecode model.
+// This width-general lemma includes the zero-width and wrapping cases.
+const NORMALIZATION: &str = r#"namespace GolfProof
+ theorem shift_one (x : BitVec w) : x <<< 1 = x * 2 := by
+  rw [BitVec.shiftLeft_eq_mul_twoPow]
+  congr 1
+  apply BitVec.eq_of_toNat_eq
+  simp
+end GolfProof
+"#;
 
 /// Certify the expressions and their corresponding `Program::compile` bodies.
 pub fn candidate(
@@ -44,7 +55,7 @@ pub fn candidate(
     let left = expr::lean(original);
     let right = expr::lean(candidate);
     // A straight-line program is reduced through one recursive step per byte.
-    let mut source = format!("{MODEL}\n{OPTIONS}set_option maxRecDepth 4096\n\n");
+    let mut source = format!("{MODEL}\n{NORMALIZATION}\n{OPTIONS}set_option maxRecDepth 4096\n\n");
     source.push_str(&format!("theorem expression_equivalent (x y : Golf.Word) : {left} = {right} := by\n  {BITVECTOR_TACTIC}\n\n"));
     for (name, program) in [
         ("baseline_correct", baseline),
@@ -72,7 +83,7 @@ pub fn candidate(
 }
 
 pub fn rules() -> Result<String> {
-    let mut source = format!("{MODEL}\n{OPTIONS}\nnamespace GolfRules\n\n");
+    let mut source = format!("{MODEL}\n{NORMALIZATION}\n{OPTIONS}\nnamespace GolfRules\n\n");
     for &(name, left, right) in RULES {
         let left = expr::lean(&expr::parse(&left.replace('?', ""))?);
         let right = expr::lean(&expr::parse(&right.replace('?', ""))?);
@@ -124,7 +135,7 @@ pub fn verify(path: &Path) -> Result<String> {
         let tactic = match strategy {
             "algebra" => ALGEBRA_TACTIC.to_owned(),
             "bitvector" => format!(
-                "first | (solve | simp [BitVec.mul_comm]) | (set_option maxHeartbeats {FALLBACK_HEARTBEATS} in solve | grind) | bv_decide (config := {{ timeout := {} }})",
+                "first | (solve | simp [BitVec.mul_comm]) | (set_option maxHeartbeats {FALLBACK_HEARTBEATS} in solve | ((try simp only [GolfProof.shift_one]) <;> grind)) | bv_decide (config := {{ timeout := {} }})",
                 budget.as_secs().max(1)
             ),
             _ => String::new(),
@@ -157,8 +168,13 @@ pub fn verify(path: &Path) -> Result<String> {
     }
     let output = failures.join("\n");
     fs::write(path.with_extension("log"), &output)?;
+    let summary = failures
+        .iter()
+        .filter_map(|failure| failure.lines().next())
+        .collect::<Vec<_>>()
+        .join("; ");
     bail!(
-        "Lean rejected the proof within the {}-second overall budget; see {}\n{output}",
+        "Lean rejected the proof within the {}-second overall budget; see {}\n{summary}",
         PROOF_TIMEOUT.as_secs(),
         path.with_extension("log").display()
     )

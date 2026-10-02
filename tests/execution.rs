@@ -42,7 +42,7 @@ fn search_reduces_cost_without_changing_concrete_results() {
     let candidate = optimize(&original);
     let baseline = Program::compile(&original).unwrap();
     let optimized = Program::compile(&candidate).unwrap();
-    assert_eq!(candidate.to_string(), "(shl1 x)");
+    assert_eq!(candidate.to_string(), "(+ x x)");
     assert_eq!((baseline.body_gas, optimized.body_gas), (28, 11));
     cross_check(&original, &candidate, &baseline, &optimized).unwrap();
 }
@@ -143,21 +143,45 @@ fn all_rules_and_composed_constants_preserve_compiled_score_and_outputs() {
 }
 
 #[test]
-fn optimizer_keeps_the_incumbent_when_sibling_reuse_beats_tree_extraction() {
+fn optimizer_preserves_or_improves_compiled_incumbents() {
     for (text, expected_score) in [
         ("(+ x x)", (11, 10)),
         ("(- (* x x) (* y y))", (30, 16)),
-        ("(+ (shl1 x) (shl1 x))", (17, 13)),
+        ("(+ (shl1 x) (shl1 x))", (13, 11)),
     ] {
         let original = parse(text).unwrap();
         let candidate = optimize(&original);
-        assert_eq!(candidate.to_string(), original.to_string());
         let baseline = Program::compile(&original).unwrap();
         let optimized = Program::compile(&candidate).unwrap();
         assert_eq!(
             (optimized.body_gas, optimized.runtime_bytes),
             expected_score
         );
+        assert!(expected_score <= (baseline.body_gas, baseline.runtime_bytes));
+        cross_check(&original, &candidate, &baseline, &optimized).unwrap();
+    }
+}
+
+#[test]
+fn extraction_combines_sibling_reuse_shift_rules_and_cancellation() {
+    for (text, expected_score) in [
+        ("(+ (not (not x)) (not (not x)))", (11, 10)),
+        ("(+ (shl1 (+ 0 y)) (shl1 (+ 0 y)))", (14, 12)),
+        ("(- x (+ x x))", (10, 10)),
+        ("(- (+ x x) x)", (5, 8)),
+        ("(shl1 (+ x x))", (13, 11)),
+        ("(+ (shl1 x) (shl1 x))", (13, 11)),
+    ] {
+        let original = parse(text).unwrap();
+        let candidate = optimize(&original);
+        let baseline = Program::compile(&original).unwrap();
+        let optimized = Program::compile(&candidate).unwrap();
+        assert_eq!(
+            (optimized.body_gas, optimized.runtime_bytes),
+            expected_score,
+            "{text} -> {candidate}"
+        );
+        assert!(expected_score <= (baseline.body_gas, baseline.runtime_bytes));
         cross_check(&original, &candidate, &baseline, &optimized).unwrap();
     }
 }

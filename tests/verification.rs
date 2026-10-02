@@ -19,7 +19,8 @@ fn cli_accepts_verified_result_and_refuses_false_claim() {
     );
     let result: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(accepted.join("result.json")).unwrap()).unwrap();
-    assert_eq!(result["candidate"], "(shl1 x)");
+    assert_eq!(result["candidate"], "(+ x x)");
+    assert_eq!(result["optimized"]["runtime_bytes"], 10);
     assert_eq!(result["gas_saved"], 2);
     assert_eq!(result["concrete_cases"], 128);
 
@@ -195,4 +196,47 @@ fn verification_rejects_missing_reports_and_custom_axioms() {
             .to_string()
             .contains("unexpected axiom dependency: injected")
     );
+}
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn shift_normalization_certifies_polynomials_and_rejects_false_variant() {
+    let dir = tempdir().unwrap();
+    let original = "(- (* (+ x 1) (+ x 1)) (* x x))";
+    for (index, (left, right)) in [
+        (original, "(+ (shl1 x) 1)"),
+        ("(shl1 x)", "(* x 2)"),
+        ("(* x 2)", "(shl1 x)"),
+        (
+            "(* (+ (shl1 y) (shl1 y)) (+ (shl1 y) (shl1 y)))",
+            "(* (* y 4) (* y 4))",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let out = dir.path().join(index.to_string());
+        evm_golf::check(left, right, &out).unwrap();
+        assert!(
+            fs::read_to_string(out.join("Proof.lean"))
+                .unwrap()
+                .starts_with("-- Verification strategy: algebra.")
+        );
+        assert!(
+            !fs::read_to_string(out.join("Proof.log"))
+                .unwrap()
+                .contains("_native")
+        );
+    }
+    let out = dir.path().join("false-shift");
+    let error = evm_golf::check("(shl1 (shl1 x))", "(* x 3)", &out)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Lean rejected"));
+    assert!(!out.join("result.json").exists());
+    assert!(
+        error.len() < 1024,
+        "proof diagnostics should remain in logs"
+    );
+    assert!(fs::read_to_string(out.join("Proof.log")).unwrap().len() > error.len());
 }
