@@ -1,9 +1,10 @@
+-- Verification strategy: algebra.
 import Std
 
 /-!
 A deliberately small, pure EVM bytecode model. A program starts with an empty
 stack and receives two calldata words. It supports PUSH0, PUSH1..32, CALLDATALOAD
-at offsets 0 and 32, ADD, MUL, SUB, AND, OR, XOR, NOT, and SHL. The stack head is
+at offsets 0 and 32, DUP1, ADD, MUL, SUB, AND, OR, XOR, NOT, and SHL. The stack head is
 the EVM top. Unsupported opcodes, truncated immediates and stack underflow fail.
 
 This models the expression body, before the shared memory/RETURN wrapper. It
@@ -32,6 +33,10 @@ def run (fuel : Nat) (code : List Nat) (stack : List Word) (x y : Word) :
           run fuel (rest.drop size)
             (BitVec.ofNat 256 (immediate (rest.take size)) :: stack) x y
         else none
+      else if op = 128 then
+        match stack with
+        | a :: tail => run fuel rest (a :: a :: tail) x y
+        | _ => none
       else if op = 53 then
         match stack with
         | offset :: tail =>
@@ -60,10 +65,11 @@ end Golf
 
 set_option linter.unusedVariables false
 set_option linter.unusedSimpArgs false
+set_option pp.fullNames true
 set_option maxRecDepth 4096
 
 theorem expression_equivalent (x y : Golf.Word) : ((x &&& y) ||| ((~~~x) &&& (255 : Golf.Word))) = ((255 : Golf.Word) ^^^ (x &&& ((255 : Golf.Word) ^^^ y))) := by
-  (try simp [BitVec.mul_comm]) <;> bv_decide
+  first | (solve | simp [BitVec.mul_comm]) | grind
 
 theorem baseline_correct (x y : Golf.Word) :
     Golf.run 14 [96, 255, 95, 53, 25, 22, 96, 32, 53, 95, 53, 22, 23] [] x y = some [((x &&& y) ||| ((~~~x) &&& (255 : Golf.Word)))] := by

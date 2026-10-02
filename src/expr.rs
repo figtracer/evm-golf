@@ -2,10 +2,13 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use egg::{
-    CostFunction, Extractor, Id, Language, RecExpr, Rewrite, Runner, Symbol, define_language,
+    Analysis, CostFunction, DidMerge, EGraph, Extractor, Id, Language, RecExpr, Rewrite, Runner,
+    Symbol, define_language,
 };
 use revm::primitives::U256;
 use std::time::Duration;
+
+use crate::evm::Program;
 
 // This is a small-puzzle prototype. These caps bound expression expansion and
 // search resources; reaching a cap limits optimization, not proof validity.
@@ -54,9 +57,47 @@ pub const RULES: &[(&str, &str, &str)] = &[
     ("not-not", "(not (not ?x))", "?x"),
     ("mask-partition", "(or (and ?x ?y) (and ?x (not ?y)))", "?x"),
     ("demorgan", "(or (not ?x) (not ?y))", "(not (and ?x ?y))"),
+    (
+        "carry-add",
+        "(+ (xor ?x ?y) (shl1 (and ?x ?y)))",
+        "(+ ?x ?y)",
+    ),
+    ("mul-cancel", "(- (* ?x (+ ?y 1)) (* ?x ?y))", "?x"),
+    (
+        "difference-squares",
+        "(- (* ?x ?x) (* ?y ?y))",
+        "(* (- ?x ?y) (+ ?x ?y))",
+    ),
 ];
 
-/// Gas first, byte size second, for the prototype's tree-shaped code generator.
+/// Constants discovered by either evaluation or rewriting remain available to
+/// parents, without discarding cheaper equivalent nodes from their e-classes.
+#[derive(Default)]
+struct ConstantFold;
+
+impl Analysis<Expr> for ConstantFold {
+    type Data = Option<U256>;
+
+    fn make(egraph: &mut EGraph<Expr, Self>, node: &Expr, _id: Id) -> Self::Data {
+        constant_value(node, |id| egraph[id].data)
+    }
+
+    fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
+        egg::merge_option(to, from, |a, b| {
+            assert_eq!(*a, b, "equivalent e-class contains conflicting constants");
+            DidMerge(false, false)
+        })
+    }
+
+    fn modify(egraph: &mut EGraph<Expr, Self>, id: Id) {
+        if let Some(value) = egraph[id].data {
+            let constant = egraph.add(Expr::Num(value));
+            egraph.union(id, constant);
+        }
+    }
+}
+
+/// Additive tree-cost estimate; optimization checks the actual compiled score afterward.
 #[derive(Default)]
 struct EvmCost;
 
@@ -118,42 +159,59 @@ pub fn optimize(expr: &RecExpr<Expr>) -> RecExpr<Expr> {
             .unwrap()
         })
         .collect::<Vec<_>>();
-    let runner = Runner::<Expr, (), ()>::default()
+    let runner = Runner::<Expr, ConstantFold, ()>::default()
         .with_node_limit(SEARCH_NODES)
         .with_iter_limit(SEARCH_ITERATIONS)
         .with_time_limit(Duration::from_secs(SEARCH_SECONDS))
         .with_expr(expr)
         .run(&rules);
-    Extractor::new(&runner.egraph, EvmCost)
+    let candidate = Extractor::new(&runner.egraph, EvmCost)
         .find_best(runner.roots[0])
-        .1
+        .1;
+    // Preserve the accepted input as an incumbent: extraction must remain valid
+    // for the public parser and cannot worsen the actual emitted contest score.
+    if parse(&candidate.to_string()).is_err() {
+        return expr.clone();
+    }
+    match (Program::compile(expr), Program::compile(&candidate)) {
+        (Ok(baseline), Ok(optimized))
+            if (optimized.body_gas, optimized.runtime_bytes)
+                <= (baseline.body_gas, baseline.runtime_bytes) =>
+        {
+            candidate
+        }
+        _ => expr.clone(),
+    }
 }
 
 pub fn evaluate(expr: &RecExpr<Expr>, x: U256, y: U256) -> U256 {
     let mut values = Vec::<U256>::with_capacity(expr.as_ref().len());
     for node in expr.as_ref() {
-        let get = |id: Id| values[usize::from(id)];
-        let value = match *node {
-            Expr::Num(n) => n,
-            Expr::Var(name) => {
-                if name.as_str() == "x" {
-                    x
-                } else {
-                    y
-                }
-            }
-            Expr::Add([a, b]) => get(a).wrapping_add(get(b)),
-            Expr::Sub([a, b]) => get(a).wrapping_sub(get(b)),
-            Expr::Mul([a, b]) => get(a).wrapping_mul(get(b)),
-            Expr::And([a, b]) => get(a) & get(b),
-            Expr::Or([a, b]) => get(a) | get(b),
-            Expr::Xor([a, b]) => get(a) ^ get(b),
-            Expr::Not(a) => !get(a),
-            Expr::Shl1(a) => get(a) << 1,
+        let value = if let Expr::Var(name) = node {
+            if name.as_str() == "x" { x } else { y }
+        } else {
+            constant_value(node, |id| Some(values[usize::from(id)])).unwrap()
         };
         values.push(value);
     }
     *values.last().unwrap()
+}
+
+// Share canonical U256 operations between concrete evaluation and e-graph
+// folding, including wrapping overflow, operand order, and discarded shift bits.
+fn constant_value(node: &Expr, get: impl Fn(Id) -> Option<U256>) -> Option<U256> {
+    Some(match *node {
+        Expr::Num(value) => value,
+        Expr::Var(_) => return None,
+        Expr::Add([a, b]) => get(a)?.wrapping_add(get(b)?),
+        Expr::Sub([a, b]) => get(a)?.wrapping_sub(get(b)?),
+        Expr::Mul([a, b]) => get(a)?.wrapping_mul(get(b)?),
+        Expr::And([a, b]) => get(a)? & get(b)?,
+        Expr::Or([a, b]) => get(a)? | get(b)?,
+        Expr::Xor([a, b]) => get(a)? ^ get(b)?,
+        Expr::Not(a) => !get(a)?,
+        Expr::Shl1(a) => get(a)? << 1,
+    })
 }
 
 pub fn lean(expr: &RecExpr<Expr>) -> String {

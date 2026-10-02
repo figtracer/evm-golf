@@ -1,10 +1,9 @@
 # Verification and scoring
 
-The current ruleset is `evm-golf-v2-cancun`. It fixes the puzzle semantics,
+The current ruleset is `evm-golf-cancun`. It fixes the puzzle semantics,
 compiler, score definition, and proof policy used by the checked-in entries.
-Version 2 reuses expression proofs in the bytecode certificates; semantics and
-scores are unchanged. Version 1 submissions must be resubmitted under version 2
-and reverified. The JSON schema and CLI arguments are unchanged.
+The tool is unreleased: entries are reverified against the current checker,
+without release-version migrations.
 
 ## Execution model
 
@@ -12,9 +11,10 @@ Inputs are unsigned 256-bit words. Arithmetic wraps modulo 2²⁵⁶. The suppor
 expression grammar is documented in the [command reference](cli.md#expressions).
 
 The compiler emits the right operand first, then the left operand, then the
-binary opcode. It reloads repeated variables from calldata and uses minimal PUSH
-instructions for constants. A shared wrapper stores and returns one word.
-There is no subexpression sharing through `DUP` or stack scheduling with `SWAP`.
+binary opcode. Identical sibling expressions are evaluated once and duplicated
+with `DUP1` when that improves gas or, at equal gas, byte size. Constants use
+minimal PUSH instructions. A shared wrapper stores and returns one word.
+Reuse is local to siblings; there is no general stack scheduling.
 
 ## Lean proofs
 
@@ -28,19 +28,24 @@ The bytecode theorems interpret the actual emitted body bytes in
 [lean/Model.lean](../lean/Model.lean), starting with an empty stack. The model
 supports the compiler's small opcode subset and fails on unsupported instructions,
 truncated immediates, and stack underflow. The common memory/RETURN wrapper is
-outside the model.
+outside the model. Generated PUSH immediates are complete; the model rejects
+truncated PUSH data, whereas legacy EVM execution zero-pads it.
 
-Expression equality uses standard Lean lemmas and `bv_decide`. The baseline
+Expression equality first tries simplification and `grind` for at most 15 seconds,
+then a bounded algebra/`bv_decide` fallback within the same 60-second total budget.
+Each attempt keeps its source and log; `Proof.lean` contains the successful proof.
+The baseline
 body reduces directly to the reference expression. The candidate body reduces
 to its own expression, then uses the symmetric equality theorem under the
 returned stack value. This also supports equivalent expansions such as
 `x → (x * 1) + 0`; the expression theorem is not rediscovered for each body.
 
-Native proof checking can introduce native-evaluation axiom dependencies; these
-are printed in `Proof.log`.
-This is not an axiom-free or kernel-only verification claim. Proofs using `sorry`
-are rejected. The rule suite is generated from the same rule table used by the
-optimizer, and each extracted candidate is checked independently.
+Axiom reports are required for all expected theorems. The checker permits Lean's
+standard foundational axioms and narrowly recognized theorem-local `bv_decide`
+native dependencies, rejecting `sorry`, missing reports and unexpected axioms.
+Dependencies appear in `Proof.log`; this is not an axiom-free or kernel-only
+verification claim. The rule suite comes from the optimizer's rule table, and
+each extracted candidate is checked independently.
 
 ## revm checks
 
@@ -55,13 +60,16 @@ is outside the Lean proof.
 
 ## Scoring
 
-The extractor and leaderboard minimize expression-body gas, with byte size as
-the tie-breaker. Body gas includes calldata loads. It excludes transaction
+The leaderboard ranks expression-body gas, with runtime byte size as the
+tie-breaker. E-graph extraction uses an additive tree-cost estimate, then compares
+the emitted candidate with the original expression using the actual compiler.
+It retains the original if extraction worsens that score. The estimate can miss
+better expressions whose advantage depends on sibling reuse. Body gas includes calldata loads. It excludes transaction
 intrinsic gas and the fixed 13-gas return wrapper, including memory expansion.
 Both excluded costs are identical for candidates given the same input.
 
 Runtime byte counts include the wrapper. Deployment costs are not scored.
-References are compiled with this project's tree compiler; improvements over
+References are compiled with this project's compiler; improvements over
 these synthetic baselines are not improvements over optimized Solidity output.
 
 | Example | Replacement | Body gas | Runtime bytes |
@@ -70,7 +78,7 @@ these synthetic baselines are not improvements over optimized Solidity output.
 | `(x xor y) xor y` | `x` | 23 → 5 | 16 → 8 |
 | `(x & y) \| (x & ~y)` | `x` | 34 → 5 | 20 → 8 |
 | `~x \| ~y` | `~(x & y)` | 20 → 17 | 14 → 13 |
-| `(x * 2) + (y - y)` | `x << 1` | 31 → 11 | 19 → 11 |
+| `(x * 2) + (y - y)` | `x << 1` | 28 → 11 | 17 → 11 |
 
 [Reproducible entries](../leaderboard/README.md) include the bytecode and proofs.
 
@@ -80,7 +88,7 @@ these synthetic baselines are not improvements over optimized Solidity output.
 | --- | ---: |
 | Input expression | 4,096 bytes / 128 nodes |
 | E-graph search | 10,000 nodes / 30 iterations / 2 seconds |
-| Lean verification | 60 seconds per proof file |
+| Lean proof attempts | 60 seconds per proof file, after toolchain version lookup |
 | Campaign input | 64 proposals / 1 MiB |
 
 These bounds keep local experiments manageable. Search limits can stop further

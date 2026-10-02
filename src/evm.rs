@@ -1,7 +1,7 @@
-//! Minimal tree code generation, checked against revm under Cancun gas rules.
+//! Tree code generation with bounded sibling reuse, checked against revm on Cancun.
 
 use anyhow::{Result, ensure};
-use egg::{Id, RecExpr};
+use egg::{Id, Language, RecExpr};
 use revm::{
     Context, ExecuteEvm, MainBuilder, MainContext,
     bytecode::Bytecode,
@@ -141,7 +141,17 @@ fn emit(expr: &RecExpr<Expr>, id: Id, bytes: &mut Vec<u8>) -> u64 {
         | Expr::Or([a, b])
         | Expr::Xor([a, b]) => {
             // EVM SUB computes top minus second; emit the right operand first.
-            let gas = emit(expr, b, bytes) + emit(expr, a, bytes);
+            let start = bytes.len();
+            let right_gas = emit(expr, b, bytes);
+            let right_bytes = bytes.len() - start;
+            // DUP1 costs three gas and one byte. Exact ties keep ordinary emission.
+            let left_gas = if same_expression(expr, a, b) && (3, 1) < (right_gas, right_bytes) {
+                bytes.push(0x80);
+                3
+            } else {
+                emit(expr, a, bytes)
+            };
+            let gas = right_gas + left_gas;
             let (opcode, cost) = match expr[id] {
                 Expr::Add(_) => (1, 3),
                 Expr::Mul(_) => (2, 5),
@@ -155,6 +165,17 @@ fn emit(expr: &RecExpr<Expr>, id: Id, bytes: &mut Vec<u8>) -> u64 {
             gas + cost
         }
     }
+}
+
+// Language::matches compares the operator and literal/symbol payload, not child IDs.
+fn same_expression(expr: &RecExpr<Expr>, a: Id, b: Id) -> bool {
+    a == b
+        || (expr[a].matches(&expr[b])
+            && expr[a]
+                .children()
+                .iter()
+                .zip(expr[b].children())
+                .all(|(&left, &right)| same_expression(expr, left, right)))
 }
 
 /// Boundary grid plus deterministic full-width samples; this is a cross-check,

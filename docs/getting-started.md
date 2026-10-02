@@ -39,8 +39,9 @@ model, then revm checks the emitted runtime and gas on the concrete test inputs.
 
 | Artifact | Contents |
 | --- | --- |
-| `Proof.lean` | Generated model and theorem statements |
+| `Proof.lean` | Successful proof of the generated statements |
 | `Proof.log` | Lean output and theorem axiom dependencies |
+| `Proof.<strategy>.lean/log` | Each attempted proof strategy and its diagnostics |
 | `result.json` | Expressions, bytecode, gas and byte counts |
 
 Output directories must be new. A failed run can leave diagnostic artifacts but

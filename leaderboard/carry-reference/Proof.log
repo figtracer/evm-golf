@@ -1,9 +1,9 @@
 'expression_equivalent' depends on axioms: [propext,
  Classical.choice,
  Quot.sound,
- expression_equivalent._native.bv_decide.ax_1_5]
+ expression_equivalent._native.bv_decide.ax_1_6]
 'baseline_correct' depends on axioms: [propext, Quot.sound]
 'candidate_correct' depends on axioms: [propext,
  Classical.choice,
  Quot.sound,
- expression_equivalent._native.bv_decide.ax_1_5]
+ expression_equivalent._native.bv_decide.ax_1_6]

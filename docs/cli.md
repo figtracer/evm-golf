@@ -55,7 +55,7 @@ The generated `submission.json` uses this format:
 
 ```json
 {
-  "ruleset": "evm-golf-v2-cancun",
+  "ruleset": "evm-golf-cancun",
   "challenge": "double",
   "author": "alice",
   "candidate": "(shl1 x)"
@@ -89,20 +89,23 @@ For example, save a local proposal and verify it:
 ```sh
 mkdir -p runs
 cat > runs/proposals.json <<'JSON'
-[{"ruleset":"evm-golf-v2-cancun","challenge":"double","author":"example","candidate":"(shl1 x)"}]
+[{"ruleset":"evm-golf-cancun","challenge":"double","author":"example","candidate":"(shl1 x)"}]
 JSON
 cargo run --locked -- campaign --proposals runs/proposals.json --out runs/campaign-1
 ```
 
 Campaigns continue past individual unverified proposals and record each outcome
-in `campaign.json`. Verified entries are rechecked through the leaderboard path;
-the command also saves an independently verified e-graph result for every puzzle.
+in `campaign.json` after each attempt. An interrupted run retains the latest complete
+snapshot; replay into a fresh output directory. Verified entries are rechecked through the leaderboard path;
+the command also attempts an independently verified e-graph result for every puzzle.
+An unavailable comparison is labeled `unverified` and links to its error log.
 `README.md` contains the comparison and links to evidence.
 
 A completed batch may contain unverified entries. These can reflect invalid
 inputs, failed proofs, timeouts, or operational errors; they do not automatically
 establish inequivalence. Malformed batch JSON, output-write failures, or failure
-to complete the final comparison abort the run. See the report and exit status.
+to reverify accepted entries abort the run. An optimizer comparison failure does
+not discard the campaign report. See the report and exit status.
 
 Replay makes no model API calls. Proposal generation takes place in the agent
 host. Keep proposal batches and run artifacts local.

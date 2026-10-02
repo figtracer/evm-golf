@@ -92,8 +92,12 @@ fn cli_campaign_preserves_failures_and_only_ranks_verified_candidates() {
     assert_eq!(board.as_array().unwrap().len(), 1);
     assert_eq!(board[0]["submission"]["author"], "winner");
     assert!(out.join("attempts/attempt-002/Proof.log").is_file());
+    assert!(out.join("attempts/attempt-001/error.txt").is_file());
+    assert!(out.join("attempts/attempt-002/error.txt").is_file());
     assert!(out.join("egraph/carry-add/result.json").is_file());
     let markdown = fs::read_to_string(out.join("README.md")).unwrap();
+    assert!(markdown.contains("[unverified](attempts/attempt-001/error.txt)"));
+    assert!(markdown.contains("[verified](attempts/attempt-003/result.json)"));
     assert!(!markdown.contains("bad|[label]<b>"));
     assert!(markdown.contains("bad&#124;&#91;label&#93;&lt;b&gt;"));
     let saved = fs::read_to_string(out.join("campaign.json")).unwrap();
@@ -102,4 +106,49 @@ fn cli_campaign_preserves_failures_and_only_ranks_verified_candidates() {
         fs::read_to_string(out.join("campaign.json")).unwrap(),
         saved
     );
+}
+
+#[test]
+fn cli_campaign_reports_unavailable_checker_without_losing_attempts() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("proposals.json");
+    fs::write(
+        &input,
+        serde_json::to_string(&[Submission {
+            ruleset: RULESET.into(),
+            challenge: "double".into(),
+            author: "agent".into(),
+            candidate: "(shl1 x)".into(),
+        }])
+        .unwrap(),
+    )
+    .unwrap();
+    let out = dir.path().join("campaign");
+    let result = Command::new(env!("CARGO_BIN_EXE_evm-golf"))
+        .env("LEAN", dir.path().join("missing-lean"))
+        .args(["campaign", "--proposals"])
+        .arg(&input)
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(out.join("campaign.json")).unwrap()).unwrap();
+    assert_eq!(report["attempted"], 1);
+    assert_eq!(report["verified"], 0);
+    assert_eq!(report["unverified"], 1);
+    assert!(report["attempts"][0]["error"].is_string());
+    assert!(!out.join("campaign.json.tmp").exists());
+    assert_eq!(fs::read_dir(out.join("accepted")).unwrap().count(), 0);
+    let markdown = fs::read_to_string(out.join("README.md")).unwrap();
+    for challenge in evm_golf::contest::challenges().unwrap() {
+        let error = format!("egraph/{}/error.txt", challenge.id);
+        assert!(markdown.contains(&error));
+        assert!(out.join(error).is_file());
+    }
 }

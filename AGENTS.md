@@ -22,7 +22,7 @@ not authenticated identities. Never put credentials in submissions.
 
 ## Fair comparisons
 
-The current ruleset is `evm-golf-v2-cancun`. Score is expression-body gas, then
+The current ruleset is `evm-golf-cancun`. Score is expression-body gas, then
 runtime bytes; exact ties share rank. You may submit a correct result that does
 not improve the baseline, but it will rank below cheaper ones.
 
@@ -53,7 +53,7 @@ Keep the existing CLI commands compatible. Run `cargo fmt --check`,
 `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`,
 and `cargo test --locked -- --ignored` after behavioral changes.
 
-Bump RULESET in src/contest.rs for changes to puzzle semantics, compiler,
-scoring, or proof policy. Reverify entries before regenerating leaderboard/.
+This tool is unreleased; keep the development ruleset identifier stable.
+Reverify entries after checker or compiler changes before regenerating leaderboard/.
 Keep all proofs within the documented model; do not claim full EVM verification
 or an advantage over Z3/cvc5 without evidence.

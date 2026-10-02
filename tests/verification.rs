@@ -130,3 +130,69 @@ fn model_handles_general_arithmetic_and_push32() {
     .unwrap();
     proof::verify(&path).unwrap();
 }
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn portfolio_certifies_polynomials_and_preserves_bitwise_fallback() {
+    let dir = tempdir().unwrap();
+    for (index, (left, right)) in [
+        ("(+ (* x y) (* x x))", "(* x (+ y x))"),
+        ("(- (* x (+ y 1)) (* x y))", "x"),
+        ("(- (* x x) (* y y))", "(* (- x y) (+ x y))"),
+        (
+            "(- (* (+ x y) (+ x y)) (+ (* x x) (* y y)))",
+            "(* 2 (* x y))",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let out = dir.path().join(index.to_string());
+        evm_golf::check(left, right, &out).unwrap();
+        let source = fs::read_to_string(out.join("Proof.lean")).unwrap();
+        assert!(source.starts_with("-- Verification strategy: algebra."));
+        assert!(
+            !fs::read_to_string(out.join("Proof.log"))
+                .unwrap()
+                .contains("_native")
+        );
+    }
+    let out = dir.path().join("carry");
+    evm_golf::check("(+ (xor x y) (shl1 (and x y)))", "(+ x y)", &out).unwrap();
+    assert!(out.join("Proof.algebra.log").exists());
+    assert!(out.join("Proof.bitvector.log").exists());
+    assert!(
+        fs::read_to_string(out.join("Proof.lean"))
+            .unwrap()
+            .starts_with("-- Verification strategy: bitvector.")
+    );
+}
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn verification_rejects_missing_reports_and_custom_axioms() {
+    let dir = tempdir().unwrap();
+    let expression = parse("x").unwrap();
+    let program = Program::compile(&expression).unwrap();
+    let source = proof::candidate(&expression, &expression, &program, &program);
+    let path = dir.path().join("Missing.lean");
+    fs::write(
+        &path,
+        source.replace("#print axioms baseline_correct\n", ""),
+    )
+    .unwrap();
+    assert!(
+        proof::verify(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("missing theorem axiom reports")
+    );
+    let path = dir.path().join("Custom.lean");
+    fs::write(&path, "import Std\naxiom injected : False\ntheorem expression_equivalent : True := False.elim injected\ntheorem baseline_correct : True := by trivial\ntheorem candidate_correct : True := by trivial\n#print axioms expression_equivalent\n#print axioms baseline_correct\n#print axioms candidate_correct\n").unwrap();
+    assert!(
+        proof::verify(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("unexpected axiom dependency: injected")
+    );
+}

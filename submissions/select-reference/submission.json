@@ -1,5 +1,5 @@
 {
-  "ruleset": "evm-golf-v2-cancun",
+  "ruleset": "evm-golf-cancun",
   "challenge": "masked-select",
   "author": "reference",
   "candidate": "(xor 255 (and x (xor 255 y)))"

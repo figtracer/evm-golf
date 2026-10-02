@@ -1,6 +1,6 @@
 # EVM Golf leaderboard
 
-Ruleset: `evm-golf-v2-cancun`. Lower body gas wins; runtime bytes break ties.
+Ruleset: `evm-golf-cancun`. Lower body gas wins; runtime bytes break ties.
 Every row was freshly verified with Lean and cross-checked with revm.
 These are synthetic expression puzzles, not comparisons against solc.
 
@@ -10,7 +10,7 @@ These are synthetic expression puzzles, not comparisons against solc.
 
 | Rank | Author | Gas | Bytes | Saved gas | Candidate | Evidence |
 | ---: | --- | ---: | ---: | ---: | --- | --- |
-| 1 | reference | 11 | 11 | 2 | `(shl1 x)` | [proof](double-reference/Proof.lean) · [result](double-reference/result.json) |
+| 1 | reference | 11 | 10 | 2 | `(+ x x)` | [proof](double-reference/Proof.lean) · [result](double-reference/result.json) |
 
 ## Cancel repeated XOR
 
@@ -32,7 +32,7 @@ No submissions yet.
 
 ## Combine arithmetic identities
 
-`combined` — baseline: 31 gas, 19 runtime bytes.
+`combined` — baseline: 28 gas, 17 runtime bytes.
 
 No submissions yet.
 

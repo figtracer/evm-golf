@@ -7,6 +7,8 @@ use std::{fs, path::Path};
 use crate::{
     Report,
     contest::{self, RULESET, Submission},
+    evm::Program,
+    expr::parse,
     optimize,
 };
 
@@ -54,7 +56,13 @@ pub fn run(proposals: &Path, out: &Path) -> Result<Campaign> {
         out.join("proposals.json"),
         serde_json::to_string_pretty(&submissions)? + "\n",
     )?;
-    let mut attempts = Vec::new();
+    let mut campaign = Campaign {
+        ruleset: RULESET,
+        attempted: 0,
+        verified: 0,
+        unverified: 0,
+        attempts: Vec::new(),
+    };
     for (index, submission) in submissions.into_iter().enumerate() {
         let id = format!("attempt-{:03}", index + 1);
         let evidence = out.join("attempts").join(&id);
@@ -68,30 +76,31 @@ pub fn run(proposals: &Path, out: &Path) -> Result<Campaign> {
                 )?;
                 (Some(result), None)
             }
-            Err(error) => (None, Some(format!("{error:#}"))),
+            Err(error) => {
+                let message = format!("{error:#}");
+                fs::create_dir_all(&evidence)?;
+                fs::write(evidence.join("error.txt"), &message)?;
+                (None, Some(message))
+            }
         };
-        attempts.push(Attempt {
+        campaign.attempted += 1;
+        if result.is_some() {
+            campaign.verified += 1;
+        } else {
+            campaign.unverified += 1;
+        }
+        campaign.attempts.push(Attempt {
             id,
             submission,
             result,
             error,
         });
+        // Checkpoint completed attempts before any later proof or comparison.
+        // Rename a complete snapshot so interruption cannot truncate the last one.
+        let checkpoint = out.join("campaign.json.tmp");
+        fs::write(&checkpoint, serde_json::to_string_pretty(&campaign)? + "\n")?;
+        fs::rename(checkpoint, out.join("campaign.json"))?;
     }
-    let verified = attempts
-        .iter()
-        .filter(|attempt| attempt.result.is_some())
-        .count();
-    let campaign = Campaign {
-        ruleset: RULESET,
-        attempted: attempts.len(),
-        verified,
-        unverified: attempts.len() - verified,
-        attempts,
-    };
-    fs::write(
-        out.join("campaign.json"),
-        serde_json::to_string_pretty(&campaign)? + "\n",
-    )?;
     // Use the same standalone ranking path as maintainers. This deliberately
     // rechecks accepted inputs instead of trusting the campaign's saved scores.
     contest::leaderboard(&out.join("accepted"), &out.join("leaderboard"))?;
@@ -101,7 +110,22 @@ pub fn run(proposals: &Path, out: &Path) -> Result<Campaign> {
         campaign.attempted, campaign.verified, campaign.unverified
     );
     for puzzle in contest::challenges()? {
-        let egraph = optimize(&puzzle.reference, &out.join("egraph").join(&puzzle.id))?;
+        let baseline = Program::compile(&parse(&puzzle.reference)?)?;
+        let evidence = out.join("egraph").join(&puzzle.id);
+        let (comparison_link, egraph_gas) = match optimize(&puzzle.reference, &evidence) {
+            Ok(result) => (
+                format!("egraph/{}/result.json", puzzle.id),
+                result.optimized.body_gas.to_string(),
+            ),
+            Err(error) => {
+                fs::create_dir_all(&evidence)?;
+                fs::write(evidence.join("error.txt"), format!("{error:#}\n"))?;
+                (
+                    format!("egraph/{}/error.txt", puzzle.id),
+                    "unverified".into(),
+                )
+            }
+        };
         let best = campaign
             .attempts
             .iter()
@@ -117,8 +141,8 @@ pub fn run(proposals: &Path, out: &Path) -> Result<Campaign> {
             })
             .unwrap_or_else(|| ("—".into(), "—".into()));
         markdown.push_str(&format!(
-            "| [{}](egraph/{}/result.json) | {} | {} | {gas} | {bytes} |\n",
-            puzzle.id, puzzle.id, egraph.baseline.body_gas, egraph.optimized.body_gas
+            "| [{}]({comparison_link}) | {} | {egraph_gas} | {gas} | {bytes} |\n",
+            puzzle.id, baseline.body_gas
         ));
     }
     markdown.push_str(
@@ -129,9 +153,9 @@ pub fn run(proposals: &Path, out: &Path) -> Result<Campaign> {
         let author = escape_cell(&attempt.submission.author);
         let challenge = escape_cell(&attempt.submission.challenge);
         let outcome = if attempt.result.is_some() {
-            "verified"
+            format!("[verified](attempts/{}/result.json)", attempt.id)
         } else {
-            "unverified (see campaign.json)"
+            format!("[unverified](attempts/{}/error.txt)", attempt.id)
         };
         markdown.push_str(&format!(
             "| {} | {author} | {challenge} | {outcome} |\n",

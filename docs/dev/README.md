@@ -53,13 +53,13 @@ Keep existing CLI arguments and persisted submission formats compatible.
 Preserve accepted evidence when generating new output: use a fresh directory,
 review the results, then update the checked-in snapshot.
 
-Changes to puzzle semantics, the compiler, scoring, or proof policy require a
-new `RULESET` in `src/contest.rs` and reverified entries. Workflow and documentation
-changes that preserve these contracts can retain the existing ruleset.
+While the tool is unreleased, keep the development ruleset identifier stable.
+Reverify entries after changes to the compiler, scoring, or proof policy; do not
+compare saved scores produced by different checker revisions.
 
 ## Research
 
-Useful extensions include stack reuse, realistic compiler fragments, and
+Useful extensions include general stack scheduling, realistic compiler fragments, and
 agent-written proof lemmas. The current checker does not accept custom proof
 programs and does not benchmark Z3 or cvc5.
 

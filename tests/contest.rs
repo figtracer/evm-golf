@@ -20,7 +20,7 @@ fn fixed_specs_and_submission_schema_are_enforced() {
             .contains("unknown challenge")
     );
     submission.challenge = "double".into();
-    submission.ruleset = "evm-golf-v1-cancun".into();
+    submission.ruleset = "other".into();
     assert!(
         contest::submit(&submission, &dir.path().join("wrong-ruleset"))
             .unwrap_err()
@@ -30,7 +30,7 @@ fn fixed_specs_and_submission_schema_are_enforced() {
     submission.ruleset = RULESET.into();
     submission.author = "bad|label".into();
     assert!(contest::submit(&submission, &dir.path().join("wrong-author")).is_err());
-    assert!(serde_json::from_str::<Submission>(r#"{"ruleset":"evm-golf-v2-cancun","challenge":"double","author":"alice","candidate":"x","reference":"x"}"#).is_err());
+    assert!(serde_json::from_str::<Submission>(r#"{"ruleset":"evm-golf-cancun","challenge":"double","author":"alice","candidate":"x","reference":"x"}"#).is_err());
 }
 
 #[test]
