@@ -14,18 +14,17 @@ use revm::{
     },
     state::AccountInfo,
 };
-use serde::{
-    Deserialize, Deserializer, Serialize,
-    de::{Error as _, MapAccess, Visitor},
-};
+use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, btree_map::Entry},
-    fmt, fs,
-    marker::PhantomData,
+    collections::{BTreeMap, BTreeSet},
+    fs,
     path::Path,
 };
 
-use super::{CaseResult, Transaction, compare_results, execute_env, from_hex};
+use super::{
+    CaseResult, Transaction, compare_results, execute_env, from_hex,
+    input::{self, unique_map},
+};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -82,28 +81,32 @@ pub fn check(
     scenarios: &[Scenario],
     out: &Path,
 ) -> Result<ReplayReport> {
+    input::validate(
+        &scenarios,
+        scenarios
+            .iter()
+            .flat_map(|s| s.transactions.iter().map(|tx| tx.gas_limit)),
+    )?;
     ensure!(
         !scenarios.is_empty(),
         "supply at least one fixture scenario"
     );
+    validate_code(original)?;
+    validate_code(candidate)?;
     fs::create_dir(out)?;
     fs::write(out.join("original.hex"), hex::encode(original) + "\n")?;
     fs::write(out.join("proposed.hex"), hex::encode(candidate) + "\n")?;
     fs::write(
         out.join("scenarios.json"),
-        serde_json::to_string_pretty(scenarios)? + "\n",
+        serde_json::to_string(scenarios)?,
     )?;
-    let checked = (|| {
-        validate_code(original)?;
-        validate_code(candidate)?;
-        scenarios
-            .iter()
-            .enumerate()
-            .map(|(i, scenario)| {
-                replay(original, candidate, scenario).with_context(|| format!("scenario {i}"))
-            })
-            .collect::<Result<Vec<_>>>()
-    })();
+    let checked = scenarios
+        .iter()
+        .enumerate()
+        .map(|(i, scenario)| {
+            replay(original, candidate, scenario).with_context(|| format!("scenario {i}"))
+        })
+        .collect::<Result<Vec<_>>>();
     let cases = match checked {
         Ok(results) => results.into_iter().flatten().collect(),
         Err(error) => {
@@ -287,46 +290,6 @@ fn validate_code(code: &[u8]) -> Result<()> {
         "EOF bytecode is unsupported"
     );
     Ok(())
-}
-
-// JSON object keys must be checked before collecting: BTreeMap's standard
-// deserializer overwrites repeated identical strings. Numeric/address aliases
-// are checked later, after parsing each key to its canonical domain type.
-fn unique_map<'de, D, T>(deserializer: D) -> std::result::Result<BTreeMap<String, T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    struct UniqueMap<T>(PhantomData<T>);
-    impl<'de, T: Deserialize<'de>> Visitor<'de> for UniqueMap<T> {
-        type Value = BTreeMap<String, T>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("an object with unique keys")
-        }
-
-        fn visit_map<M: MapAccess<'de>>(
-            self,
-            mut map: M,
-        ) -> std::result::Result<Self::Value, M::Error> {
-            let mut entries = BTreeMap::new();
-            while let Some(key) = map.next_key::<String>()? {
-                match entries.entry(key) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(map.next_value()?);
-                    }
-                    Entry::Occupied(entry) => {
-                        return Err(M::Error::custom(format!(
-                            "duplicate map key: {}",
-                            entry.key()
-                        )));
-                    }
-                }
-            }
-            Ok(entries)
-        }
-    }
-    deserializer.deserialize_map(UniqueMap(PhantomData))
 }
 
 #[cfg(test)]

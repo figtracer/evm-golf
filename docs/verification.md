@@ -82,6 +82,8 @@ bytecode and proof evidence. Results are kept outside the source repository.
 | E-graph search | 10,000 nodes / 30 iterations / 2 seconds |
 | Lean proof attempts | 60 seconds per proof file, after toolchain version lookup |
 | Campaign input | 64 proposals / 1 MiB |
+| Runtime input file / compact fixture JSON | 1 MiB |
+| Runtime replay batch | 256 transactions / 30 million gas per transaction / 300 million total gas per program |
 
 These bounds keep local experiments manageable. Search limits can stop further
 optimization; they do not waive candidate verification. A proof failure or timeout
@@ -92,7 +94,10 @@ never produces an accepted result. Search does not guarantee a global optimum.
 The expression model excludes storage, branches, calls, deployment behavior,
 exceptions, and general contract equivalence. The separate
 [runtime optimizer](runtime.md) preserves surrounding instructions while checking
-local fragments and supplied execution cases; its full runtime is not Lean-proved.
+local fragments and supplied execution cases. Fixed-layout mode additionally proves
+exact reconstruction of the complete emitted artifact, its layout, and each site's
+stack profile, with local proofs tied to the exact replaced bytes. Compact-mode
+relocation remains Rust-checked. Neither certificate proves full runtime execution.
 Solidity checked arithmetic may revert where these expressions wrap. A valid expression rewrite alone does not justify changing an
 arbitrary Solidity contract.
 

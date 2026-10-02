@@ -113,7 +113,7 @@ fn main() -> Result<()> {
             bytecode,
             preserve_layout,
         } => {
-            let code = runtime::from_hex(&fs::read_to_string(bytecode)?)?;
+            let code = runtime::input::read_bytecode(&bytecode)?;
             let analysis = if preserve_layout {
                 serde_json::to_string_pretty(&runtime::analyze_layout(&code)?)?
             } else {
@@ -127,10 +127,10 @@ fn main() -> Result<()> {
             scenarios,
             out,
         } => {
-            let original = runtime::from_hex(&fs::read_to_string(original)?)?;
-            let candidate = runtime::from_hex(&fs::read_to_string(candidate)?)?;
+            let original = runtime::input::read_bytecode(&original)?;
+            let candidate = runtime::input::read_bytecode(&candidate)?;
             let scenarios: Vec<runtime::scenario::Scenario> =
-                serde_json::from_str(&fs::read_to_string(scenarios)?)?;
+                serde_json::from_str(&runtime::input::read_json(&scenarios)?)?;
             prepare_parent(&out)?;
             runtime::scenario::check(&original, &candidate, &scenarios, &out)?;
             println!(
@@ -145,7 +145,7 @@ fn main() -> Result<()> {
             preserve_layout,
             out,
         } => {
-            let code = runtime::from_hex(&fs::read_to_string(bytecode)?)?;
+            let code = runtime::input::read_bytecode(&bytecode)?;
             prepare_parent(&out)?;
             let mode = if preserve_layout {
                 runtime::RuntimeMode::PreserveLayout
@@ -153,12 +153,13 @@ fn main() -> Result<()> {
                 runtime::RuntimeMode::Compact
             };
             let report = if let Some(cases) = cases {
-                let cases: Vec<runtime::Case> = serde_json::from_str(&fs::read_to_string(cases)?)?;
+                let cases: Vec<runtime::Case> =
+                    serde_json::from_str(&runtime::input::read_json(&cases)?)?;
                 runtime::optimize_with(&code, runtime::ExecutionInputs::Cases(&cases), &out, mode)?
             } else {
-                let sequences: Vec<runtime::Sequence> = serde_json::from_str(&fs::read_to_string(
-                    sequences.expect("clap requires one input"),
-                )?)?;
+                let sequences: Vec<runtime::Sequence> = serde_json::from_str(
+                    &runtime::input::read_json(&sequences.expect("clap requires one input"))?,
+                )?;
                 runtime::optimize_with(
                     &code,
                     runtime::ExecutionInputs::Sequences(&sequences),

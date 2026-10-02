@@ -8,10 +8,12 @@
 | `src/evm.rs` | Bytecode generation, revm execution, gas checks |
 | `src/proof.rs` | Lean source generation and pinned-toolchain verification |
 | `src/runtime.rs` | Runtime CFG, local rewriting, relocation, and differential execution |
+| `src/runtime/` | Fixed-layout certificates, layout analysis, bounded inputs, account fixtures |
 | `src/contest.rs` | Fixed puzzles, submissions, ranking |
 | `src/campaign.rs` | Batch attempts, failure evidence, optimizer comparisons |
 | `src/main.rs` | CLI arguments and output |
 | `lean/Model.lean` | The limited bytecode semantics used by the proofs |
+| `lean/Layout.lean` | Exact fixed-layout artifact reconstruction and local proof binding |
 | `tests/` | Execution, CLI, proof, and campaign regression tests |
 | `challenges.json` | Puzzle IDs, descriptions, and reference expressions |
 | `scripts/` | Toolchain setup and repository checks |
@@ -29,7 +31,8 @@ bash scripts/check.sh
 ```
 
 The check script runs formatting, Clippy, the normal tests, and the tests that
-require Lean. The individual commands are:
+require Lean. GitHub Actions runs the same script with pinned Rust and Lean on
+Ubuntu, including the proof suite. The individual commands are:
 
 ```sh
 cargo fmt --check
@@ -41,7 +44,9 @@ cargo test --locked -- --ignored
 The normal suite covers expression validation, arithmetic boundaries, gas and
 bytecode execution, and submission schemas. The Lean suite covers valid proofs,
 false equivalences, incorrect bytecode, overwrite refusal, rule verification,
-score recomputation, ranking, and campaigns containing failed proposals.
+score recomputation, ranking, and campaigns containing failed proposals. Runtime
+certificate regressions reject altered untouched bytes, overlapping or missing
+sites, replacements inside PUSH data, and mismatched local proofs.
 
 Do not treat a normal `cargo test` run as validation of the Lean path. Those
 integration tests are explicitly ignored until requested with `--ignored`.

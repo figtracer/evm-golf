@@ -22,6 +22,8 @@ use std::{
 
 use crate::proof;
 
+mod artifact;
+pub mod input;
 mod layout;
 pub mod scenario;
 pub use layout::LayoutAnalysis;
@@ -70,7 +72,7 @@ pub struct Case {
     pub gas_limit: u64,
     #[serde(default)]
     pub value: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "input::unique_map")]
     pub storage: BTreeMap<String, String>,
 }
 
@@ -87,7 +89,7 @@ pub struct Transaction {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sequence {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "input::unique_map")]
     pub storage: BTreeMap<String, String>,
     pub transactions: Vec<Transaction>,
 }
@@ -314,6 +316,17 @@ pub fn optimize_with(
     out: &Path,
     mode: RuntimeMode,
 ) -> Result<Report> {
+    match inputs {
+        ExecutionInputs::Cases(cases) => {
+            input::validate(&cases, cases.iter().map(|case| case.gas_limit))?
+        }
+        ExecutionInputs::Sequences(sequences) => input::validate(
+            &sequences,
+            sequences
+                .iter()
+                .flat_map(|s| s.transactions.iter().map(|tx| tx.gas_limit)),
+        )?,
+    }
     let (filename, serialized, verification) = match inputs {
         ExecutionInputs::Cases(cases) => {
             ensure!(
@@ -322,7 +335,7 @@ pub fn optimize_with(
             );
             (
                 "cases.json",
-                serde_json::to_string_pretty(cases)?,
+                serde_json::to_string(cases)?,
                 "Lean: local gas-erased stack rewrites only. Rust: conservative CFG and relocation checks. revm: supplied isolated transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof.",
             )
         }
@@ -337,7 +350,7 @@ pub fn optimize_with(
             );
             (
                 "sequences.json",
-                serde_json::to_string_pretty(sequences)?,
+                serde_json::to_string(sequences)?,
                 "Lean: local gas-erased stack rewrites only. Rust: conservative CFG and relocation checks. revm: supplied transaction sequences only. No whole-contract, all-gas, deployment, or code-identity equivalence proof.",
             )
         }
@@ -349,12 +362,12 @@ pub fn optimize_with(
     let verification = match mode {
         RuntimeMode::Compact => verification,
         RuntimeMode::PreserveLayout => {
-            "Lean: local gas-erased stack rewrites only. Rust: preserved byte offsets, instruction boundaries, jump destinations and local stack signatures; no global stack-height proof. revm: supplied transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof."
+            "Lean: exact artifact reconstruction, unchanged byte offsets, instruction boundaries, jump destinations, local stack profiles and gas-erased fragment equivalence. Rust: conservative reachability; no global stack-height proof. revm: supplied transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof."
         }
     };
     fs::create_dir(out)?;
     fs::write(out.join("original.hex"), hex::encode(code) + "\n")?;
-    fs::write(out.join(filename), serialized + "\n")?;
+    fs::write(out.join(filename), serialized)?;
     fs::write(
         out.join("rewrites.json"),
         serde_json::to_string_pretty(&rewrites)? + "\n",
@@ -368,11 +381,14 @@ pub fn optimize_with(
             layout::analyze(&candidate)?;
         }
     }
-    let lean_version = if rewrites.is_empty() {
+    let lean_version = if rewrites.is_empty() && matches!(mode, RuntimeMode::Compact) {
         None
     } else {
         let path = out.join("Rewrites.lean");
-        let (source, names) = certificates(&rewrites)?;
+        let (source, names) = match mode {
+            RuntimeMode::Compact => certificates(&rewrites)?,
+            RuntimeMode::PreserveLayout => artifact::certificate(code, &candidate, &rewrites)?,
+        };
         fs::write(&path, source)?;
         Some(proof::verify_named(&path, &names)?)
     };

@@ -249,3 +249,98 @@ fn cli_checks_general_scenarios_without_claiming_a_proof() {
     assert!(out.join("candidate.hex").exists());
     assert!(!out.join("Rewrites.lean").exists());
 }
+
+#[test]
+fn legacy_runtime_inputs_reject_duplicate_storage_keys() {
+    use evm_golf::runtime::{Case, Sequence};
+    for storage in [r#"{"0":"7","0":"0"}"#, r#"{"0":"7","\u0030":"0"}"#] {
+        let case = format!(r#"{{"calldata":"","gas_limit":100000,"storage":{storage}}}"#);
+        assert!(
+            serde_json::from_str::<Case>(&case)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate map key")
+        );
+        let sequence = format!(
+            r#"{{"storage":{storage},"transactions":[{{"calldata":"","gas_limit":100000}}]}}"#
+        );
+        assert!(
+            serde_json::from_str::<Sequence>(&sequence)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate map key")
+        );
+    }
+    assert!(
+        serde_json::from_str::<Case>(r#"{"calldata":"","gas_limit":100000}"#)
+            .unwrap()
+            .storage
+            .is_empty()
+    );
+    assert!(
+        serde_json::from_str::<Sequence>(
+            r#"{"transactions":[{"calldata":"","gas_limit":100000}]}"#
+        )
+        .unwrap()
+        .storage
+        .is_empty()
+    );
+}
+
+#[test]
+fn runtime_library_entry_points_bound_work_before_creating_evidence() {
+    use evm_golf::runtime::{self, Case, Sequence, Transaction, scenario};
+    let dir = tempdir().unwrap();
+    let excessive = 30_000_001;
+    let cases = [Case {
+        calldata: String::new(),
+        gas_limit: excessive,
+        value: String::new(),
+        storage: Default::default(),
+    }];
+    let out = dir.path().join("cases");
+    assert!(
+        runtime::optimize(&[0], &cases, &out)
+            .unwrap_err()
+            .to_string()
+            .contains("gas limit exceeds")
+    );
+    assert!(!out.exists());
+    let sequences = [Sequence {
+        storage: Default::default(),
+        transactions: (0..11)
+            .map(|_| Transaction {
+                calldata: String::new(),
+                gas_limit: 30_000_000,
+                value: String::new(),
+            })
+            .collect(),
+    }];
+    let out = dir.path().join("sequences");
+    assert!(
+        runtime::optimize_sequences(&[0], &sequences, &out)
+            .unwrap_err()
+            .to_string()
+            .contains("total transaction gas")
+    );
+    assert!(!out.exists());
+    let scenarios = [scenario::Scenario {
+        target: String::new(),
+        caller: String::new(),
+        accounts: Default::default(),
+        environment: Default::default(),
+        transactions: vec![Transaction {
+            calldata: String::new(),
+            gas_limit: excessive,
+            value: String::new(),
+        }],
+    }];
+    let out = dir.path().join("scenario");
+    assert!(
+        scenario::check(&[0], &[0], &scenarios, &out)
+            .unwrap_err()
+            .to_string()
+            .contains("gas limit exceeds")
+    );
+    assert!(!out.exists());
+}

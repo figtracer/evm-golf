@@ -34,7 +34,8 @@ Supply a JSON array of isolated transaction cases in `runs/cases.json`:
 ```
 
 Each case starts from fresh state. Calldata is hex; value and storage keys/values
-are decimal or `0x` strings. Duplicate numeric storage keys are rejected. Missing value means zero; missing storage means empty.
+are decimal or `0x` strings. Duplicate literal or numeric storage keys are rejected.
+Missing value means zero; missing storage means empty.
 Gas limits are explicit. The caller is `0x1111…1111`, the contract is
 `0x2222…2222`, and the caller starts funded. Gas price is zero; other environment
 fields use revm defaults. These inputs do not exercise arbitrary environments or
@@ -80,9 +81,20 @@ Use a new output directory. Successful runs write `candidate.hex` and
 execution failures leave `failure.log` without an accepted candidate or score.
 A run with no applicable rewrites may return the original runtime. Results are
 not committed, and runtime cases are not expression leaderboard entries.
-Sequence runs save `sequences.json`; `result.json` keeps the existing `cases`
-array, ordered by input sequence and then transaction. Failure messages use
+Input evidence is saved as compact JSON. Sequence runs save `sequences.json`;
+`result.json` keeps the existing `cases` array, ordered by input sequence and then transaction. Failure messages use
 zero-based sequence and transaction indices.
+
+## Input limits
+
+Runtime hex and JSON files are limited to 1 MiB each, including whitespace.
+Library fixture inputs have the same limit when serialized as compact JSON.
+Each batch accepts at most 256 transactions, at most 30,000,000 gas per transaction,
+and at most 300,000,000 total gas for each of the original and candidate programs.
+These operational budgets permit bounded local replay; they are not Ethereum
+protocol limits. Oversized batches and duplicate JSON map keys are rejected before
+execution. Earlier versions could silently replace duplicate storage keys in cases
+or sequences; those ambiguous inputs are now errors.
 
 ## Transformation boundary
 
@@ -124,8 +136,20 @@ so PC, CODESIZE, and computed jump offsets remain stable.
 The initial rules replace multiplication by zero, one, or two with AND zero,
 ADD zero, or SHL one, retaining the original PUSH width. Each has the same input
 stack requirement, peak growth, and final height, and saves two opcode gas before
-refunds. Lean still checks each exact fragment. Gas-limit effects and code-content
-observations remain outside the equivalence claim. No byte-size reduction is expected.
+refunds. Lean checks each exact fragment and a certificate containing the complete,
+independently embedded original and candidate byte arrays. The certificate checks
+that sorted, nonoverlapping replacements reconstruct the candidate, that every
+other byte is unchanged, and that instruction boundaries, JUMPDEST positions,
+length, and local stack profiles agree. Replacements inside PUSH data are rejected.
+The model is [lean/Layout.lean](../lean/Layout.lean).
+
+This structural certificate requires Lean even when no rewrite applies. Its closed
+checks use kernel reduction, and the axiom report is audited. The existing 60-second
+proof budget still applies: dense artifacts can time out and are rejected, even
+within the byte-size limit. It does not prove reachability, whole-program stack
+safety, gas behavior, or correspondence between the Lean model and all EVM semantics.
+Gas-limit effects and code-content observations remain outside the equivalence claim.
+No byte-size reduction is expected.
 
 ## General runtime replay
 

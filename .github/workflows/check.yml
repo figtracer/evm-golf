@@ -1,0 +1,38 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    # Include cold Rust/Lean downloads and compilation; bound stalled runs.
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.98.0
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+      - name: Install Lean
+        run: |
+          if ! command -v zstd >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes zstd
+          fi
+          bash scripts/setup-lean.sh
+      - name: Check Rust and Lean proofs
+        run: bash scripts/check.sh
