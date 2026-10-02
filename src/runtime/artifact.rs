@@ -60,8 +60,11 @@ pub(super) fn certificate(
             .or_insert(next);
         proofs.push(index);
     }
+    // Check and cache each closed fact directly in Lean's kernel. Repeated
+    // elaborator reduction with `rfl` exhausted the same 60-second budget on
+    // dense EIP-170 artifacts. This is not native evaluation or a new axiom.
     source.push_str(
-        "]\nend GolfArtifact\n\ntheorem layout_artifact :\n  GolfLayout.LayoutArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.sites := by\n  refine ⟨by rfl, by rfl, by rfl, by rfl, by rfl, by rfl, by rfl, ?_⟩\n  exact ",
+        "]\nend GolfArtifact\n\ntheorem layout_artifact :\n  GolfLayout.LayoutArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.sites := by\n  refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩\n  exact ",
     );
     for index in &proofs {
         write!(
@@ -111,7 +114,7 @@ mod tests {
             let (source, names) = certificate(original, candidate, rewrites).unwrap();
             let path = dir.path().join(format!("{name}.lean"));
             fs::write(&path, source).unwrap();
-            proof::verify_named(&path, &names)
+            proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational)
         };
         check("Valid", &original, &candidate, &rewrites).unwrap();
         check("Identity", &original, &original, &[]).unwrap();
@@ -243,7 +246,7 @@ mod tests {
         let (source, names) = certificates(std::slice::from_ref(&different_layout)).unwrap();
         let path = dir.path().join("BoundaryFragments.lean");
         fs::write(&path, source).unwrap();
-        proof::verify_named(&path, &names).unwrap();
+        proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).unwrap();
         assert!(
             check(
                 "Boundaries",
@@ -272,6 +275,6 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(proof::verify_named(&path, &names).is_err());
+        assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
     }
 }

@@ -343,4 +343,103 @@ fn runtime_library_entry_points_bound_work_before_creating_evidence() {
             .contains("gas limit exceeds")
     );
     assert!(!out.exists());
+    let out = dir.path().join("optimize-scenarios");
+    assert!(
+        runtime::optimize_scenarios(&[0], &scenarios, &out, runtime::RuntimeMode::Compact)
+            .unwrap_err()
+            .to_string()
+            .contains("gas limit exceeds")
+    );
+    assert!(!out.exists());
+}
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn cli_optimizes_with_account_fixtures_without_changing_proof_gates() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("runtime.hex");
+    let scenarios = dir.path().join("scenarios.json");
+    let caller = "44".repeat(20);
+    let target = "55".repeat(20);
+    // Require the supplied caller, target, initialized slot and transferred value.
+    // Revert if a legacy default account/state silently replaces the fixture.
+    let mut code = format!("3373{caller}143073{target}14165f54600714163460031416");
+    let destination = code.len() / 2 + 6;
+    code.push_str(&format!(
+        "60{destination:02x}575f5ffd5b5f546002025f5260205ff3"
+    ));
+    fs::write(&input, &code).unwrap();
+    let fixture = serde_json::json!([{
+        "caller": format!("0x{caller}"), "target": format!("0x{target}"),
+        "accounts": {
+            format!("0x{caller}"): {"balance":"10", "nonce":3},
+            format!("0x{target}"): {"balance":"5", "nonce":1,"storage":{"0":"7"}}
+        },
+        "transactions": [
+            {"calldata":"", "gas_limit":100000,"value":"3"},
+            {"calldata":"", "gas_limit":100000,"value":"0"}
+        ]
+    }]);
+    fs::write(&scenarios, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    let run = |name: &str, extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_evm-golf"))
+            .args(["optimize-runtime", "--bytecode"])
+            .arg(&input)
+            .arg("--scenarios")
+            .arg(&scenarios)
+            .arg("--out")
+            .arg(dir.path().join(name))
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    for (name, extra) in [("compact", vec![]), ("layout", vec!["--preserve-layout"])] {
+        let output = run(name, &extra);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let out = dir.path().join(name);
+        let report: Value =
+            serde_json::from_slice(&fs::read(out.join("result.json")).unwrap()).unwrap();
+        assert_eq!(report["cases"][0]["outcome"], "success");
+        assert_eq!(report["cases"][1]["outcome"], "revert");
+        assert!(!report["rewrites"].as_array().unwrap().is_empty());
+        assert!(report["lean_version"].is_string());
+        assert!(out.join("Rewrites.log").exists());
+        assert!(
+            report["cases"][0]["candidate_gas"].as_u64().unwrap()
+                < report["cases"][0]["baseline_gas"].as_u64().unwrap()
+        );
+        if name == "layout" {
+            assert_eq!(report["baseline_bytes"], report["candidate_bytes"]);
+            assert!(
+                fs::read_to_string(out.join("Rewrites.log"))
+                    .unwrap()
+                    .contains("layout_artifact")
+            );
+        }
+        let saved: Value =
+            serde_json::from_slice(&fs::read(out.join("scenarios.json")).unwrap()).unwrap();
+        assert_eq!(saved[0]["accounts"][format!("0x{caller}")]["nonce"], 3);
+        assert_eq!(
+            saved[0]["accounts"][format!("0x{target}")]["storage"]["0"],
+            "7"
+        );
+    }
+    for flag in ["--cases", "--sequences"] {
+        assert!(!run("conflict", &[flag, "unused.json"]).status.success());
+        assert!(!dir.path().join("conflict").exists());
+    }
+    let mut invalid = fixture.clone();
+    invalid[0]["accounts"][format!("0x{caller}")]["balance"] = "0".into();
+    fs::write(&scenarios, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    assert!(!run("unfunded", &[]).status.success());
+    assert!(dir.path().join("unfunded/failure.log").exists());
+    assert!(!dir.path().join("unfunded/candidate.hex").exists());
+    assert!(!dir.path().join("unfunded/result.json").exists());
+    fs::write(&input, "5a00").unwrap();
+    assert!(!run("sensitive", &["--preserve-layout"]).status.success());
+    assert!(!dir.path().join("sensitive").exists());
 }

@@ -44,7 +44,8 @@ Axiom reports are required for all expected theorems. The checker permits Lean's
 standard foundational axioms and narrowly recognized theorem-local `bv_decide`
 native dependencies, rejecting `sorry`, missing reports and unexpected axioms.
 Dependencies appear in `Proof.log`; this is not an axiom-free or kernel-only
-verification claim. The rule suite comes from the optimizer's rule table, and
+verification claim for expression proofs. Runtime certificates use a stricter
+foundational-only policy. The rule suite comes from the optimizer's rule table, and
 each extracted candidate is checked independently.
 
 ## revm checks

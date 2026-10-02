@@ -76,6 +76,23 @@ cargo run --locked -- optimize-runtime \
   --bytecode runs/runtime.hex --sequences runs/sequences.json --out runs/sequence-1
 ```
 
+For real deployment state, use `--scenarios` instead of `--cases` or `--sequences`.
+This accepts the [account-fixture format](#general-runtime-replay), preserving the
+caller, deployed address, constructor-initialized storage, balances, nonces, and
+explicit block environment. Supply the actual deployed runtime with immutables
+resolved. The CLI does not execute constructors or fetch chain state.
+
+```sh
+cargo run --locked -- optimize-runtime --bytecode runs/runtime.hex \
+  --scenarios runs/scenarios.json --preserve-layout --out runs/fixture-1
+```
+
+Choose exactly one input format. Fixtures use the same optimization, Lean proof,
+and replay gates; they do not permit additional opcodes. Contracts with reachable
+external calls remain unsupported by the optimizer, even though `check-runtime`
+can replay them. Scenario runs save `scenarios.json` and order report cases by
+scenario, then transaction.
+
 Use a new output directory. Successful runs write `candidate.hex` and
 `result.json`. Inputs, exact rewrite pairs, and Lean diagnostics remain local;
 execution failures leave `failure.log` without an accepted candidate or score.
@@ -144,10 +161,13 @@ length, and local stack profiles agree. Replacements inside PUSH data are reject
 The model is [lean/Layout.lean](../lean/Layout.lean).
 
 This structural certificate requires Lean even when no rewrite applies. Its closed
-checks use kernel reduction, and the axiom report is audited. The existing 60-second
-proof budget still applies: dense artifacts can time out and are rejected, even
-within the byte-size limit. It does not prove reachability, whole-program stack
-safety, gas behavior, or correspondence between the Lean model and all EVM semantics.
+checks use `decide +kernel`, and runtime certificates permit only Lean's standard
+foundational axioms. Expression-specific native proof dependencies are rejected.
+The existing 60-second proof budget still applies: any timeout is rejected, even within the byte-size
+limit. Kernel checking avoids repeated elaborator work on dense artifacts; no
+universal completion-time guarantee follows. It does not prove reachability,
+whole-program stack safety, gas behavior, or correspondence between the Lean model
+and all EVM semantics.
 Gas-limit effects and code-content observations remain outside the equivalence claim.
 No byte-size reduction is expected.
 

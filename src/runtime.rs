@@ -355,6 +355,85 @@ pub fn optimize_with(
             )
         }
     };
+    optimize_checked(
+        code,
+        out,
+        mode,
+        (filename, serialized),
+        verification,
+        |candidate| match inputs {
+            ExecutionInputs::Cases(cases) => cases
+                .iter()
+                .enumerate()
+                .map(|(i, case)| {
+                    compare(code, candidate, case).with_context(|| format!("differential case {i}"))
+                })
+                .collect(),
+            ExecutionInputs::Sequences(sequences) => sequences
+                .iter()
+                .enumerate()
+                .map(|(i, sequence)| {
+                    compare_sequence(code, candidate, sequence)
+                        .with_context(|| format!("differential sequence {i}"))
+                })
+                .collect::<Result<Vec<_>>>()
+                .map(|results| results.into_iter().flatten().collect()),
+        },
+    )
+}
+
+/// Optimize against explicit accounts and constructor-initialized state. The
+/// same analysis and proof gates apply; account fixtures do not widen opcodes.
+pub fn optimize_scenarios(
+    code: &[u8],
+    scenarios: &[scenario::Scenario],
+    out: &Path,
+    mode: RuntimeMode,
+) -> Result<Report> {
+    input::validate(
+        &scenarios,
+        scenarios
+            .iter()
+            .flat_map(|s| s.transactions.iter().map(|tx| tx.gas_limit)),
+    )?;
+    ensure!(
+        !scenarios.is_empty(),
+        "supply at least one fixture scenario"
+    );
+    ensure!(
+        scenarios.iter().all(|s| !s.transactions.is_empty()),
+        "every scenario must contain at least one transaction"
+    );
+    optimize_checked(
+        code,
+        out,
+        mode,
+        ("scenarios.json", serde_json::to_string(scenarios)?),
+        "Lean: local gas-erased stack rewrites only. Rust: conservative CFG and relocation checks. revm: supplied account-fixture transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof.",
+        |candidate| {
+            scenarios
+                .iter()
+                .enumerate()
+                .map(|(i, scenario)| {
+                    scenario::replay(code, candidate, scenario)
+                        .with_context(|| format!("differential scenario {i}"))
+                })
+                .collect::<Result<Vec<_>>>()
+                .map(|results| results.into_iter().flatten().collect())
+        },
+    )
+}
+
+// One acceptance path for every input format: prove the actual candidate before
+// replay and publish it only after all supplied transactions pass.
+fn optimize_checked(
+    code: &[u8],
+    out: &Path,
+    mode: RuntimeMode,
+    input_file: (&str, String),
+    verification: &'static str,
+    replay: impl FnOnce(&[u8]) -> Result<Vec<CaseResult>>,
+) -> Result<Report> {
     let (candidate, rewrites) = match mode {
         RuntimeMode::Compact => transform(&analyze(code)?)?,
         RuntimeMode::PreserveLayout => layout::transform(&layout::analyze(code)?)?,
@@ -367,7 +446,7 @@ pub fn optimize_with(
     };
     fs::create_dir(out)?;
     fs::write(out.join("original.hex"), hex::encode(code) + "\n")?;
-    fs::write(out.join(filename), serialized)?;
+    fs::write(out.join(input_file.0), input_file.1)?;
     fs::write(
         out.join("rewrites.json"),
         serde_json::to_string_pretty(&rewrites)? + "\n",
@@ -390,26 +469,13 @@ pub fn optimize_with(
             RuntimeMode::PreserveLayout => artifact::certificate(code, &candidate, &rewrites)?,
         };
         fs::write(&path, source)?;
-        Some(proof::verify_named(&path, &names)?)
+        Some(proof::verify_named(
+            &path,
+            &names,
+            proof::AxiomPolicy::Foundational,
+        )?)
     };
-    let checked: Result<Vec<CaseResult>> = match inputs {
-        ExecutionInputs::Cases(cases) => cases
-            .iter()
-            .enumerate()
-            .map(|(i, case)| {
-                compare(code, &candidate, case).with_context(|| format!("differential case {i}"))
-            })
-            .collect(),
-        ExecutionInputs::Sequences(sequences) => sequences
-            .iter()
-            .enumerate()
-            .map(|(i, sequence)| {
-                compare_sequence(code, &candidate, sequence)
-                    .with_context(|| format!("differential sequence {i}"))
-            })
-            .collect::<Result<Vec<_>>>()
-            .map(|results| results.into_iter().flatten().collect()),
-    };
+    let checked = replay(&candidate);
     let checked = match checked {
         Ok(checked) => checked,
         Err(error) => {
@@ -1379,7 +1445,7 @@ mod tests {
         let (source, names) = certificates(&[wrong]).unwrap();
         let path = dir.path().join("Wrong.lean");
         fs::write(&path, source).unwrap();
-        assert!(proof::verify_named(&path, &names).is_err());
+        assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
         // Empty-stack identities must not be certified using a missing precondition.
         let wrong = Rewrite {
             original_pc: 0,
@@ -1390,7 +1456,7 @@ mod tests {
         let (source, names) = certificates(&[wrong]).unwrap();
         let path = dir.path().join("Underflow.lean");
         fs::write(&path, source).unwrap();
-        assert!(proof::verify_named(&path, &names).is_err());
+        assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
         // Equality of two failing model executions is not a valid rewrite proof.
         let both_fail = Rewrite {
             original_pc: 0,
@@ -1401,6 +1467,6 @@ mod tests {
         let (source, names) = certificates(&[both_fail]).unwrap();
         let path = dir.path().join("BothFail.lean");
         fs::write(&path, source).unwrap();
-        assert!(proof::verify_named(&path, &names).is_err());
+        assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
     }
 }

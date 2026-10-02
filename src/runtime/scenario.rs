@@ -130,7 +130,11 @@ pub fn check(
     Ok(report)
 }
 
-fn replay(original: &[u8], candidate: &[u8], scenario: &Scenario) -> Result<Vec<CaseResult>> {
+pub(super) fn replay(
+    original: &[u8],
+    candidate: &[u8],
+    scenario: &Scenario,
+) -> Result<Vec<CaseResult>> {
     ensure!(
         !scenario.transactions.is_empty(),
         "scenario must contain at least one transaction"

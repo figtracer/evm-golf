@@ -43,13 +43,16 @@ enum Action {
         bytecode: PathBuf,
         #[arg(
             long,
-            required_unless_present = "sequences",
-            conflicts_with = "sequences"
+            required_unless_present_any = ["sequences", "scenarios"],
+            conflicts_with_all = ["sequences", "scenarios"]
         )]
         cases: Option<PathBuf>,
         /// JSON transaction sequences with persistent state between calls.
-        #[arg(long, required_unless_present = "cases")]
+        #[arg(long, required_unless_present_any = ["cases", "scenarios"], conflicts_with_all = ["cases", "scenarios"])]
         sequences: Option<PathBuf>,
+        /// JSON account fixtures and transaction sequences, including initialized state.
+        #[arg(long, required_unless_present_any = ["cases", "sequences"], conflicts_with_all = ["cases", "sequences"])]
+        scenarios: Option<PathBuf>,
         /// Preserve byte offsets and allow dynamic jumps, PC and CODESIZE.
         #[arg(long)]
         preserve_layout: bool,
@@ -142,6 +145,7 @@ fn main() -> Result<()> {
             bytecode,
             cases,
             sequences,
+            scenarios,
             preserve_layout,
             out,
         } => {
@@ -156,16 +160,20 @@ fn main() -> Result<()> {
                 let cases: Vec<runtime::Case> =
                     serde_json::from_str(&runtime::input::read_json(&cases)?)?;
                 runtime::optimize_with(&code, runtime::ExecutionInputs::Cases(&cases), &out, mode)?
-            } else {
-                let sequences: Vec<runtime::Sequence> = serde_json::from_str(
-                    &runtime::input::read_json(&sequences.expect("clap requires one input"))?,
-                )?;
+            } else if let Some(sequences) = sequences {
+                let sequences: Vec<runtime::Sequence> =
+                    serde_json::from_str(&runtime::input::read_json(&sequences)?)?;
                 runtime::optimize_with(
                     &code,
                     runtime::ExecutionInputs::Sequences(&sequences),
                     &out,
                     mode,
                 )?
+            } else {
+                let scenarios: Vec<runtime::scenario::Scenario> = serde_json::from_str(
+                    &runtime::input::read_json(&scenarios.expect("clap requires one input"))?,
+                )?;
+                runtime::optimize_scenarios(&code, &scenarios, &out, mode)?
             };
             println!(
                 "Runtime bytes: {} → {}; {} local rewrites; {} execution cases passed.\n{}\nEvidence: {}",

@@ -43,8 +43,8 @@ diagnosis. The command reads immediate child directories with submission.json.
 Read docs/runtime.md before using runtime commands. `optimize-runtime` checks
 local stack proofs and supplied transaction tests; `--preserve-layout` supports
 dynamic jumps without moving byte offsets and binds local proofs to the complete
-output artifact in Lean. `check-runtime` instead compares
-arbitrary proposed runtimes using account fixtures and has no Lean proof gate.
+output artifact in Lean. Use `--scenarios` for explicit deployed-account state.
+`check-runtime` instead compares arbitrary proposed runtimes using account fixtures and has no Lean proof gate.
 Neither establishes whole-contract equivalence or produces expression leaderboard
 entries. Keep runtime input corpora and generated results local too.
 

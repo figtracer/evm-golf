@@ -94,12 +94,24 @@ pub fn rules() -> Result<String> {
     Ok(source)
 }
 
-pub fn verify(path: &Path) -> Result<String> {
-    let source = fs::read_to_string(path)?;
-    verify_named(path, &expected_theorems(&source))
+/// Runtime certificates require foundational axioms only; the expression
+/// portfolio retains its documented theorem-local bv_decide dependencies.
+#[derive(Clone, Copy)]
+pub(crate) enum AxiomPolicy {
+    Foundational,
+    Bitvector,
 }
 
-pub(crate) fn verify_named(path: &Path, expected: &[String]) -> Result<String> {
+pub fn verify(path: &Path) -> Result<String> {
+    let source = fs::read_to_string(path)?;
+    verify_named(path, &expected_theorems(&source), AxiomPolicy::Bitvector)
+}
+
+pub(crate) fn verify_named(
+    path: &Path,
+    expected: &[String],
+    policy: AxiomPolicy,
+) -> Result<String> {
     let local = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".tools/lean/bin/lean");
     let lean = env::var_os("LEAN").map(PathBuf::from).unwrap_or_else(|| {
         if local.exists() {
@@ -160,7 +172,7 @@ pub(crate) fn verify_named(path: &Path, expected: &[String]) -> Result<String> {
             (Instant::now() + budget).min(deadline),
         );
         let output = fs::read_to_string(&attempt_log).unwrap_or_default();
-        let result = result.and_then(|()| audit_axioms(&output, expected));
+        let result = result.and_then(|()| audit_axioms(&output, expected, policy));
         match result {
             Ok(()) => {
                 fs::write(path, attempted)?;
@@ -240,7 +252,7 @@ fn expected_theorems(source: &str) -> Vec<String> {
     }
 }
 
-fn audit_axioms(output: &str, expected: &[String]) -> Result<()> {
+fn audit_axioms(output: &str, expected: &[String], policy: AxiomPolicy) -> Result<()> {
     ensure!(
         !output.contains("sorryAx")
             && !output.contains("declaration uses 'sorry'")
@@ -301,7 +313,7 @@ fn audit_axioms(output: &str, expected: &[String]) -> Result<()> {
                     })
             });
             ensure!(
-                foundational || bitvector,
+                foundational || (matches!(policy, AxiomPolicy::Bitvector) && bitvector),
                 "unexpected axiom dependency: {dependency}"
             );
         }
@@ -315,7 +327,7 @@ fn audit_axioms(output: &str, expected: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::audit_axioms;
+    use super::{AxiomPolicy, audit_axioms};
 
     #[test]
     fn axiom_audit_requires_all_reports_and_checks_wrapped_dependencies() {
@@ -326,7 +338,17 @@ mod tests {
         ]
         .map(str::to_owned);
         let valid = "'expression_equivalent' depends on axioms: [propext,\n Classical.choice,\n expression_equivalent._native.bv_decide.ax_1_5]\n'baseline_correct' depends on axioms: [propext, Quot.sound]\n'candidate_correct' depends on axioms: [propext, expression_equivalent._native.bv_decide.ax_1_5]\n";
-        audit_axioms(valid, &expected).unwrap();
+        audit_axioms(valid, &expected, AxiomPolicy::Bitvector).unwrap();
+        assert!(audit_axioms(valid, &expected, AxiomPolicy::Foundational).is_err());
+        let foundational = valid.replace(
+            "expression_equivalent._native.bv_decide.ax_1_5",
+            "Quot.sound",
+        );
+        audit_axioms(&foundational, &expected, AxiomPolicy::Foundational).unwrap();
+        let runtime = ["runtime_rewrite_0".to_owned(), "layout_artifact".to_owned()];
+        let native = "'runtime_rewrite_0' depends on axioms: [runtime_rewrite_0._native.bv_decide.ax_1]\n'layout_artifact' depends on axioms: [runtime_rewrite_0._native.bv_decide.ax_1]\n";
+        audit_axioms(native, &runtime, AxiomPolicy::Bitvector).unwrap();
+        assert!(audit_axioms(native, &runtime, AxiomPolicy::Foundational).is_err());
         for bad in [
             valid.replace(
                 "'baseline_correct' depends on axioms: [propext, Quot.sound]\n",
@@ -347,7 +369,10 @@ mod tests {
             ),
             valid.replace("expression_equivalent._native.bv_decide.ax_1_5", "sorryAx"),
         ] {
-            assert!(audit_axioms(&bad, &expected).is_err(), "accepted {bad}");
+            assert!(
+                audit_axioms(&bad, &expected, AxiomPolicy::Bitvector).is_err(),
+                "accepted {bad}"
+            );
         }
     }
 
