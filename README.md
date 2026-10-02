@@ -64,8 +64,8 @@ for verification, leaderboards, and batch experiments.
 EVM Golf is experimental and targets Cancun. Expression verification covers a
 limited Lean bytecode model. The [runtime optimizer](docs/runtime.md) accepts
 hex bytecode with statically resolved jumps, including storage, logs, and reverts.
-It checks local rewrites and supplied execution cases; it does not prove arbitrary
-whole-contract equivalence.
+It checks local rewrites and supplied isolated calls or stateful transaction
+sequences; it does not prove arbitrary whole-contract equivalence.
 
 See [verification and scoring](docs/verification.md) for the supported semantics,
 proof assumptions, and limits.

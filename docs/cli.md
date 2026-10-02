@@ -7,7 +7,7 @@ Every `--out` directory must be new; existing output is never overwritten.
 | Command | Purpose |
 | --- | --- |
 | `analyze-runtime --bytecode <hex-file>` | Check supported control flow and stack heights |
-| `optimize-runtime --bytecode <hex-file> --cases <json-file> --out <dir>` | Optimize a supported runtime with local proofs and supplied execution cases |
+| `optimize-runtime --bytecode <hex-file> (--cases <json-file> or --sequences <json-file>) --out <dir>` | Optimize a supported runtime with local proofs and isolated calls or stateful sequences |
 | `optimize <expression> --out <dir>` | Search for a cheaper expression, then verify it |
 | `check <original> <candidate> --out <dir>` | Verify an independently proposed replacement |
 | `challenges` | Print the fixed puzzle specifications as JSON |

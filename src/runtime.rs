@@ -5,7 +5,7 @@
 
 use anyhow::{Context as _, Result, ensure};
 use revm::{
-    Context, ExecuteEvm, MainBuilder, MainContext,
+    Context, ExecuteCommitEvm, MainBuilder, MainContext,
     bytecode::{Bytecode, opcode::OpCode},
     context::{TxEnv, result::ExecutionResult},
     database::InMemoryDB,
@@ -62,6 +62,29 @@ pub struct Case {
     pub value: String,
     #[serde(default)]
     pub storage: BTreeMap<String, String>,
+}
+
+/// One transaction in a sequence; storage is initialized once by `Sequence`.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Transaction {
+    pub calldata: String,
+    pub gas_limit: u64,
+    #[serde(default)]
+    pub value: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sequence {
+    #[serde(default)]
+    pub storage: BTreeMap<String, String>,
+    pub transactions: Vec<Transaction>,
+}
+
+enum ExecutionInputs<'a> {
+    Cases(&'a [Case]),
+    Sequences(&'a [Sequence]),
 }
 
 #[derive(Debug, Serialize)]
@@ -230,17 +253,48 @@ pub fn analyze(code: &[u8]) -> Result<Analysis> {
 /// Write a candidate only after local proofs and all supplied differential cases
 /// pass. Original input, case inputs, and failure evidence remain on failure.
 pub fn optimize(code: &[u8], cases: &[Case], out: &Path) -> Result<Report> {
-    ensure!(
-        !cases.is_empty(),
-        "supply at least one differential execution case"
-    );
+    optimize_with(code, ExecutionInputs::Cases(cases), out)
+}
+
+/// Replay each sequence from fresh state, committing between its transactions.
+/// `Report::cases` follows input sequence order, then transaction order.
+pub fn optimize_sequences(code: &[u8], sequences: &[Sequence], out: &Path) -> Result<Report> {
+    optimize_with(code, ExecutionInputs::Sequences(sequences), out)
+}
+
+fn optimize_with(code: &[u8], inputs: ExecutionInputs<'_>, out: &Path) -> Result<Report> {
+    let (filename, serialized, verification) = match inputs {
+        ExecutionInputs::Cases(cases) => {
+            ensure!(
+                !cases.is_empty(),
+                "supply at least one differential execution case"
+            );
+            (
+                "cases.json",
+                serde_json::to_string_pretty(cases)?,
+                "Lean: local gas-erased stack rewrites only. Rust: conservative CFG and relocation checks. revm: supplied isolated transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof.",
+            )
+        }
+        ExecutionInputs::Sequences(sequences) => {
+            ensure!(
+                !sequences.is_empty(),
+                "supply at least one transaction sequence"
+            );
+            ensure!(
+                sequences.iter().all(|s| !s.transactions.is_empty()),
+                "every sequence must contain at least one transaction"
+            );
+            (
+                "sequences.json",
+                serde_json::to_string_pretty(sequences)?,
+                "Lean: local gas-erased stack rewrites only. Rust: conservative CFG and relocation checks. revm: supplied transaction sequences only. No whole-contract, all-gas, deployment, or code-identity equivalence proof.",
+            )
+        }
+    };
     let analysis = analyze(code)?;
     fs::create_dir(out)?;
     fs::write(out.join("original.hex"), hex::encode(code) + "\n")?;
-    fs::write(
-        out.join("cases.json"),
-        serde_json::to_string_pretty(cases)? + "\n",
-    )?;
+    fs::write(out.join(filename), serialized + "\n")?;
     let (candidate, rewrites) = transform(&analysis)?;
     fs::write(
         out.join("rewrites.json"),
@@ -256,18 +310,31 @@ pub fn optimize(code: &[u8], cases: &[Case], out: &Path) -> Result<Report> {
         fs::write(&path, source)?;
         Some(proof::verify_named(&path, &names)?)
     };
-    let mut checked = Vec::new();
-    for (i, case) in cases.iter().enumerate() {
-        let result =
-            compare(code, &candidate, case).with_context(|| format!("differential case {i}"));
-        match result {
-            Ok(result) => checked.push(result),
-            Err(error) => {
-                fs::write(out.join("failure.log"), format!("{error:#}\n"))?;
-                return Err(error);
-            }
+    let checked: Result<Vec<CaseResult>> = match inputs {
+        ExecutionInputs::Cases(cases) => cases
+            .iter()
+            .enumerate()
+            .map(|(i, case)| {
+                compare(code, &candidate, case).with_context(|| format!("differential case {i}"))
+            })
+            .collect(),
+        ExecutionInputs::Sequences(sequences) => sequences
+            .iter()
+            .enumerate()
+            .map(|(i, sequence)| {
+                compare_sequence(code, &candidate, sequence)
+                    .with_context(|| format!("differential sequence {i}"))
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(|results| results.into_iter().flatten().collect()),
+    };
+    let checked = match checked {
+        Ok(checked) => checked,
+        Err(error) => {
+            fs::write(out.join("failure.log"), format!("{error:#}\n"))?;
+            return Err(error);
         }
-    }
+    };
     let report = Report {
         evm_version: "Cancun",
         baseline_bytes: code.len(),
@@ -275,7 +342,7 @@ pub fn optimize(code: &[u8], cases: &[Case], out: &Path) -> Result<Report> {
         rewrites,
         cases: checked,
         lean_version,
-        verification: "Lean: local gas-erased stack rewrites only. Rust: conservative CFG and relocation checks. revm: supplied isolated transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof.",
+        verification,
     };
     fs::write(out.join("candidate.hex"), hex::encode(&candidate) + "\n")?;
     fs::write(
@@ -488,8 +555,36 @@ fn certificates(rewrites: &[Rewrite]) -> Result<(String, Vec<String>)> {
 }
 
 fn compare(original: &[u8], candidate: &[u8], case: &Case) -> Result<CaseResult> {
-    let (left, left_state) = execute(original, case)?;
-    let (right, right_state) = execute(candidate, case)?;
+    compare_results(execute(original, case)?, execute(candidate, case)?)
+}
+
+fn compare_sequence(
+    original: &[u8],
+    candidate: &[u8],
+    sequence: &Sequence,
+) -> Result<Vec<CaseResult>> {
+    let mut left = initial_db(original, &sequence.storage)?;
+    let mut right = initial_db(candidate, &sequence.storage)?;
+    sequence
+        .transactions
+        .iter()
+        .enumerate()
+        .map(|(i, tx)| {
+            (|| {
+                compare_results(
+                    execute_transaction(&mut left, &tx.calldata, tx.gas_limit, &tx.value)?,
+                    execute_transaction(&mut right, &tx.calldata, tx.gas_limit, &tx.value)?,
+                )
+            })()
+            .with_context(|| format!("transaction {i}"))
+        })
+        .collect()
+}
+
+fn compare_results(
+    (left, left_state): (ExecutionResult, BTreeMap<Address, AccountState>),
+    (right, right_state): (ExecutionResult, BTreeMap<Address, AccountState>),
+) -> Result<CaseResult> {
     let same_result = match (&left, &right) {
         (
             ExecutionResult::Success {
@@ -538,6 +633,11 @@ struct AccountState {
 }
 
 fn execute(code: &[u8], case: &Case) -> Result<(ExecutionResult, BTreeMap<Address, AccountState>)> {
+    let mut db = initial_db(code, &case.storage)?;
+    execute_transaction(&mut db, &case.calldata, case.gas_limit, &case.value)
+}
+
+fn initial_db(code: &[u8], storage: &BTreeMap<String, String>) -> Result<InMemoryDB> {
     let contract = Address::repeat_byte(0x22);
     let caller = Address::repeat_byte(0x11);
     let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(code));
@@ -557,65 +657,68 @@ fn execute(code: &[u8], case: &Case) -> Result<(ExecutionResult, BTreeMap<Addres
             ..Default::default()
         },
     );
-    let mut initial_storage = BTreeMap::new();
-    for (key, value) in &case.storage {
+    let mut keys = BTreeSet::new();
+    for (key, value) in storage {
         let key = key.parse::<U256>()?;
         let value = value.parse::<U256>()?;
-        ensure!(
-            initial_storage.insert(key, value).is_none(),
-            "duplicate numeric storage key"
-        );
+        ensure!(keys.insert(key), "duplicate numeric storage key");
         db.insert_account_storage(contract, key, value)?;
     }
-    initial_storage.retain(|_, value| !value.is_zero());
+    Ok(db)
+}
+
+fn execute_transaction(
+    db: &mut InMemoryDB,
+    calldata: &str,
+    gas_limit: u64,
+    value: &str,
+) -> Result<(ExecutionResult, BTreeMap<Address, AccountState>)> {
+    let contract = Address::repeat_byte(0x22);
+    let caller = Address::repeat_byte(0x11);
+    let nonce = db.load_account(caller)?.info.nonce;
+    // A fresh context resets warmth and transient storage; the database owns
+    // persistent state. Commit also retains the sender nonce after a revert.
     let mut evm = Context::mainnet()
         .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN))
-        .with_db(db)
+        .with_db(&mut *db)
         .build_mainnet();
-    let result = evm.transact(
+    let result = evm.transact_commit(
         TxEnv::builder()
             .caller(caller)
             .kind(TxKind::Call(contract))
-            .gas_limit(case.gas_limit)
+            .nonce(nonce)
+            .gas_limit(gas_limit)
             .gas_price(0)
-            .value(if case.value.is_empty() {
+            .value(if value.is_empty() {
                 U256::ZERO
             } else {
-                case.value.parse()?
+                value.parse()?
             })
-            .data(Bytes::from(from_hex(&case.calldata)?))
+            .data(Bytes::from(from_hex(calldata)?))
             .build()?,
     )?;
-    let state = result
-        .state
-        .into_iter()
-        .map(|(address, account)| {
-            // Overlay journal slots on the initial state: an untouched nonzero
-            // slot and a slot explicitly cleared to zero must compare differently.
-            let mut storage = if address == contract {
-                initial_storage.clone()
-            } else {
-                BTreeMap::new()
-            };
-            for (key, value) in account.storage {
-                let value = value.present_value();
-                if value.is_zero() {
-                    storage.remove(&key);
-                } else {
-                    storage.insert(key, value);
-                }
-            }
-            (
-                address,
+    let state = db
+        .cache
+        .accounts
+        .iter()
+        .filter_map(|(address, account)| {
+            let info = account.info()?;
+            Some((
+                *address,
                 AccountState {
-                    balance: account.info.balance,
-                    nonce: account.info.nonce,
-                    storage,
+                    balance: info.balance,
+                    nonce: info.nonce,
+                    storage: account
+                        .storage
+                        .iter()
+                        .filter(|(_, value)| !value.is_zero())
+                        .map(|(key, value)| (*key, *value))
+                        .collect(),
                 },
-            )
+            ))
         })
         .collect();
-    Ok((result.result, state))
+    Ok((result, state))
 }
 
 #[cfg(test)]
@@ -633,6 +736,89 @@ mod tests {
             value: String::new(),
             storage: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn sequence_detects_divergence_hidden_by_isolated_cases() {
+        let original = bytes("5f545f35015f5500"); // accumulate calldata in slot 0
+        let candidate = bytes("5f355f5500"); // overwrite slot 0
+        let one = format!("{:064x}", 1);
+        compare(&original, &candidate, &case(&one)).unwrap();
+        let sequence = Sequence {
+            storage: BTreeMap::new(),
+            transactions: (0..2)
+                .map(|_| Transaction {
+                    calldata: one.clone(),
+                    gas_limit: 200_000,
+                    value: String::new(),
+                })
+                .collect(),
+        };
+        let error = compare_sequence(&original, &candidate, &sequence).unwrap_err();
+        assert!(format!("{error:#}").contains("transaction 1: observable execution mismatch"));
+    }
+
+    #[test]
+    fn sequence_commits_state_and_rolls_back_reverted_value_writes_and_logs() {
+        // Store calldata; revert with a log when calldata is zero.
+        let code = bytes("5f35805f55600e575f5fa05f5ffd5b00");
+        let initial = BTreeMap::from([("9".into(), "11".into())]);
+        let contract = Address::repeat_byte(0x22);
+        let caller = Address::repeat_byte(0x11);
+        let mut db = initial_db(&code, &initial).unwrap();
+        let (first, before) =
+            execute_transaction(&mut db, &format!("{:064x}", 1), 200_000, "7").unwrap();
+        assert!(first.is_success());
+        assert_eq!(before[&contract].balance, U256::from(7));
+        assert_eq!(before[&contract].storage[&U256::ZERO], U256::from(1));
+        let (revert, after) = execute_transaction(&mut db, "", 200_000, "3").unwrap();
+        assert!(matches!(revert, ExecutionResult::Revert { .. }));
+        assert!(revert.logs().is_empty());
+        assert_eq!(after[&contract], before[&contract]);
+        assert_eq!(after[&caller].balance, U256::MAX - U256::from(7));
+        assert_eq!(after[&caller].nonce, 2);
+        let (third, state) =
+            execute_transaction(&mut db, &format!("{:064x}", 2), 200_000, "").unwrap();
+        assert!(third.is_success());
+        assert_eq!(state[&contract].storage[&U256::ZERO], U256::from(2));
+        assert_eq!(state[&contract].storage[&U256::from(9)], U256::from(11));
+        assert_eq!(state[&caller].nonce, 3);
+        // Invalid transactions commit nothing, including the nonce.
+        assert!(execute_transaction(&mut db, "", 20_000, "").is_err());
+        assert_eq!(db.load_account(caller).unwrap().info.nonce, 3);
+    }
+
+    #[test]
+    fn sequence_resets_transient_storage_and_access_warmth() {
+        let mut transient =
+            initial_db(&bytes("5f5c5f5260015f5d60205ff3"), &BTreeMap::new()).unwrap();
+        let mut cold = initial_db(
+            &bytes("5f545f5260205ff3"),
+            &BTreeMap::from([("0".into(), "7".into())]),
+        )
+        .unwrap();
+        let mut gas = Vec::new();
+        for _ in 0..2 {
+            let (output, _) = execute_transaction(&mut transient, "", 200_000, "").unwrap();
+            assert_eq!(output.output().unwrap().as_ref(), &[0; 32]);
+            let (output, _) = execute_transaction(&mut cold, "", 200_000, "").unwrap();
+            assert_eq!(U256::from_be_slice(output.output().unwrap()), U256::from(7));
+            gas.push(output.tx_gas_used());
+        }
+        assert_eq!(gas[0], gas[1]);
+    }
+
+    #[test]
+    fn sequence_clears_persisted_storage_without_losing_untouched_slots() {
+        let code = bytes("5f355f5500");
+        let initial = BTreeMap::from([("9".into(), "11".into())]);
+        let mut db = initial_db(&code, &initial).unwrap();
+        execute_transaction(&mut db, &format!("{:064x}", 7), 200_000, "").unwrap();
+        let (_, cleared) = execute_transaction(&mut db, "", 200_000, "").unwrap();
+        assert_eq!(
+            cleared[&Address::repeat_byte(0x22)].storage,
+            BTreeMap::from([(U256::from(9), U256::from(11))])
+        );
     }
 
     #[test]

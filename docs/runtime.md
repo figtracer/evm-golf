@@ -34,8 +34,8 @@ Each case starts from fresh state. Calldata is hex; value and storage keys/value
 are decimal or `0x` strings. Duplicate numeric storage keys are rejected. Missing value means zero; missing storage means empty.
 Gas limits are explicit. The caller is `0x1111…1111`, the contract is
 `0x2222…2222`, and the caller starts funded. Gas price is zero; other environment
-fields use revm defaults. Cases do not exercise arbitrary environments, external
-account state, or sequences of transactions. Use selectors and boundary values
+fields use revm defaults. These inputs do not exercise arbitrary environments or
+external account state. Use selectors and boundary values
 that exercise your contract's branches, storage changes, events, and reverts.
 
 ```sh
@@ -43,11 +43,43 @@ cargo run --locked -- optimize-runtime \
   --bytecode runs/runtime.hex --cases runs/cases.json --out runs/runtime-1
 ```
 
+For stateful workflows, use `--sequences` instead of `--cases`. Save an array in
+`runs/sequences.json`:
+
+```json
+[
+  {
+    "storage": {"0": "7"},
+    "transactions": [
+      {"calldata": "0x12345678", "gas_limit": 200000, "value": "1"},
+      {"calldata": "0xabcdef01", "gas_limit": 200000}
+    ]
+  }
+]
+```
+
+Replace these placeholder selectors with calls to your contract. Each sequence
+starts fresh, applies its initial storage once, and commits state between calls.
+Every transaction uses the same funded caller and fixed environment described
+above; steps do not advance the block number or timestamp. Nonces advance
+automatically. Reverts roll back contract effects and value
+transfers while advancing the caller nonce; later transactions still run.
+Transient storage, access warmth, and refunds reset for each transaction.
+Per-transaction storage overrides and empty sequences are rejected.
+
+```sh
+cargo run --locked -- optimize-runtime \
+  --bytecode runs/runtime.hex --sequences runs/sequences.json --out runs/sequence-1
+```
+
 Use a new output directory. Successful runs write `candidate.hex` and
 `result.json`. Inputs, exact rewrite pairs, and Lean diagnostics remain local;
 execution failures leave `failure.log` without an accepted candidate or score.
 A run with no applicable rewrites may return the original runtime. Results are
 not committed, and runtime cases are not expression leaderboard entries.
+Sequence runs save `sequences.json`; `result.json` keeps the existing `cases`
+array, ordered by input sequence and then transaction. Failure messages use
+zero-based sequence and transaction indices.
 
 ## Transformation boundary
 
@@ -83,9 +115,10 @@ Two failing executions cannot satisfy the certificate. The model excludes gas
 and stack limits; Rust analysis separately checks stack heights. These are local proofs,
 not a Lean proof of the CFG, relocation implementation, or full EVM execution.
 
-For every supplied case, revm compares success/revert status, return or revert
-data, logs, balances, nonces, and final storage (initial slots overlaid with
-journal changes). Exceptional halts, including out-of-gas, fail validation. Reported gas is transaction receipt gas:
+For every supplied transaction, revm compares success/revert status, return or
+revert data, logs, balances, nonces, and all committed nonzero storage. Sequence
+steps are compared individually, including intermediate state. Exceptional halts,
+including out-of-gas, and invalid transactions fail validation. Reported gas is transaction receipt gas:
 it includes intrinsic gas and applies refunds and the refund cap. Candidate gas
 must not increase in any supplied case. Cases are concrete tests and do not
 establish equivalence for all inputs or states. No global gas saving is inferred from byte-size savings.

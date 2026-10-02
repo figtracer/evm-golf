@@ -26,8 +26,15 @@ enum Action {
     OptimizeRuntime {
         #[arg(long)]
         bytecode: PathBuf,
-        #[arg(long)]
-        cases: PathBuf,
+        #[arg(
+            long,
+            required_unless_present = "sequences",
+            conflicts_with = "sequences"
+        )]
+        cases: Option<PathBuf>,
+        /// JSON transaction sequences with persistent state between calls.
+        #[arg(long, required_unless_present = "cases")]
+        sequences: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -94,12 +101,20 @@ fn main() -> Result<()> {
         Action::OptimizeRuntime {
             bytecode,
             cases,
+            sequences,
             out,
         } => {
             let code = runtime::from_hex(&fs::read_to_string(bytecode)?)?;
-            let cases: Vec<runtime::Case> = serde_json::from_str(&fs::read_to_string(cases)?)?;
             prepare_parent(&out)?;
-            let report = runtime::optimize(&code, &cases, &out)?;
+            let report = if let Some(cases) = cases {
+                let cases: Vec<runtime::Case> = serde_json::from_str(&fs::read_to_string(cases)?)?;
+                runtime::optimize(&code, &cases, &out)?
+            } else {
+                let sequences: Vec<runtime::Sequence> = serde_json::from_str(&fs::read_to_string(
+                    sequences.expect("clap requires one input"),
+                )?)?;
+                runtime::optimize_sequences(&code, &sequences, &out)?
+            };
             println!(
                 "Runtime bytes: {} → {}; {} local rewrites; {} execution cases passed.\n{}\nEvidence: {}",
                 report.baseline_bytes,
