@@ -36,7 +36,7 @@ const ALGEBRA_TACTIC: &str =
     "first | (solve | simp [BitVec.mul_comm]) | ((try simp only [GolfProof.shift_one]) <;> grind)";
 // Expose shifts to ring reasoning without changing the claim or bytecode model.
 // This width-general lemma includes the zero-width and wrapping cases.
-const NORMALIZATION: &str = r#"namespace GolfProof
+pub(crate) const NORMALIZATION: &str = r#"namespace GolfProof
  theorem shift_one (x : BitVec w) : x <<< 1 = x * 2 := by
   rw [BitVec.shiftLeft_eq_mul_twoPow]
   congr 1
@@ -95,6 +95,11 @@ pub fn rules() -> Result<String> {
 }
 
 pub fn verify(path: &Path) -> Result<String> {
+    let source = fs::read_to_string(path)?;
+    verify_named(path, &expected_theorems(&source))
+}
+
+pub(crate) fn verify_named(path: &Path, expected: &[String]) -> Result<String> {
     let local = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".tools/lean/bin/lean");
     let lean = env::var_os("LEAN").map(PathBuf::from).unwrap_or_else(|| {
         if local.exists() {
@@ -113,7 +118,6 @@ pub fn verify(path: &Path) -> Result<String> {
         "expected Lean {LEAN_VERSION}, got: {version}"
     );
     let source = fs::read_to_string(path)?;
-    let expected = expected_theorems(&source);
     let deadline = Instant::now() + PROOF_TIMEOUT;
     let portfolio = source.contains(BITVECTOR_TACTIC);
     let strategies = if portfolio {
@@ -156,7 +160,7 @@ pub fn verify(path: &Path) -> Result<String> {
             (Instant::now() + budget).min(deadline),
         );
         let output = fs::read_to_string(&attempt_log).unwrap_or_default();
-        let result = result.and_then(|()| audit_axioms(&output, &expected));
+        let result = result.and_then(|()| audit_axioms(&output, expected));
         match result {
             Ok(()) => {
                 fs::write(path, attempted)?;

@@ -1,10 +1,11 @@
-//! A bounded e-graph search and independent checker for small EVM expressions.
+//! EVM expression search and conservative runtime rewriting with local proof checking.
 
 pub mod campaign;
 pub mod contest;
 pub mod evm;
 pub mod expr;
 pub mod proof;
+pub mod runtime;
 
 use anyhow::{Result, ensure};
 use serde::Serialize;

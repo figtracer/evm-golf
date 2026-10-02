@@ -89,9 +89,11 @@ never produces an accepted result. Search does not guarantee a global optimum.
 
 ## Supported scope
 
-Storage, branches, calls, deployment behavior, exceptions, and general contract
-equivalence are unsupported. Solidity checked arithmetic may revert where these
-expressions wrap. A valid expression rewrite alone does not justify changing an
+The expression model excludes storage, branches, calls, deployment behavior,
+exceptions, and general contract equivalence. The separate
+[runtime optimizer](runtime.md) preserves surrounding instructions while checking
+local fragments and supplied execution cases; its full runtime is not Lean-proved.
+Solidity checked arithmetic may revert where these expressions wrap. A valid expression rewrite alone does not justify changing an
 arbitrary Solidity contract.
 
 The CLI is a local developer tool, not a sandbox for public code execution.

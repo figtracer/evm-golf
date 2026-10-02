@@ -4,7 +4,7 @@ use evm_golf::{
     Report, campaign, check,
     contest::{self, RULESET, Submission},
     expr::RULES,
-    optimize, proof,
+    optimize, proof, runtime,
 };
 use std::{fs, path::PathBuf};
 
@@ -17,6 +17,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    /// Analyze the supported static-control-flow Cancun runtime subset.
+    AnalyzeRuntime {
+        #[arg(long)]
+        bytecode: PathBuf,
+    },
+    /// Optimize runtime bytecode with local Lean proofs and supplied execution cases.
+    OptimizeRuntime {
+        #[arg(long)]
+        bytecode: PathBuf,
+        #[arg(long)]
+        cases: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Verify a batch of proposals, rank accepted entries, and compare e-graph search.
     Campaign {
         #[arg(long)]
@@ -70,6 +84,32 @@ enum Action {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Action::AnalyzeRuntime { bytecode } => {
+            let code = runtime::from_hex(&fs::read_to_string(bytecode)?)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&runtime::analyze(&code)?)?
+            );
+        }
+        Action::OptimizeRuntime {
+            bytecode,
+            cases,
+            out,
+        } => {
+            let code = runtime::from_hex(&fs::read_to_string(bytecode)?)?;
+            let cases: Vec<runtime::Case> = serde_json::from_str(&fs::read_to_string(cases)?)?;
+            prepare_parent(&out)?;
+            let report = runtime::optimize(&code, &cases, &out)?;
+            println!(
+                "Runtime bytes: {} → {}; {} local rewrites; {} execution cases passed.\n{}\nEvidence: {}",
+                report.baseline_bytes,
+                report.candidate_bytes,
+                report.rewrites.len(),
+                report.cases.len(),
+                report.verification,
+                out.display()
+            );
+        }
         Action::Campaign { proposals, out } => {
             prepare_parent(&out)?;
             eprintln!(

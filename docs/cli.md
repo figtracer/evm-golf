@@ -6,6 +6,8 @@ Every `--out` directory must be new; existing output is never overwritten.
 
 | Command | Purpose |
 | --- | --- |
+| `analyze-runtime --bytecode <hex-file>` | Check supported control flow and stack heights |
+| `optimize-runtime --bytecode <hex-file> --cases <json-file> --out <dir>` | Optimize a supported runtime with local proofs and supplied execution cases |
 | `optimize <expression> --out <dir>` | Search for a cheaper expression, then verify it |
 | `check <original> <candidate> --out <dir>` | Verify an independently proposed replacement |
 | `challenges` | Print the fixed puzzle specifications as JSON |
@@ -17,6 +19,9 @@ Every `--out` directory must be new; existing output is never overwritten.
 
 `leaderboard` defaults to `--submissions submissions`. `demo` defaults to
 `--out runs/demo`. Use `<command> --help` for argument details.
+
+Runtime input and its verification boundary are described in the
+[runtime guide](runtime.md). These commands are separate from expression contests.
 
 ## Expressions
 

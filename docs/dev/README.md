@@ -7,6 +7,7 @@
 | `src/expr.rs` | Grammar, wrapping evaluation, rewrite rules, cost-guided search |
 | `src/evm.rs` | Bytecode generation, revm execution, gas checks |
 | `src/proof.rs` | Lean source generation and pinned-toolchain verification |
+| `src/runtime.rs` | Runtime CFG, local rewriting, relocation, and differential execution |
 | `src/contest.rs` | Fixed puzzles, submissions, ranking |
 | `src/campaign.rs` | Batch attempts, failure evidence, optimizer comparisons |
 | `src/main.rs` | CLI arguments and output |

@@ -1,0 +1,874 @@
+//! Conservative relocation and local rewrites for Cancun runtime bytecode.
+//!
+//! Lean checks individual gas-erased stack fragments. CFG/relocation are Rust
+//! checks; supplied revm cases are finite tests, not whole-contract proofs.
+
+use anyhow::{Context as _, Result, ensure};
+use revm::{
+    Context, ExecuteEvm, MainBuilder, MainContext,
+    bytecode::{Bytecode, opcode::OpCode},
+    context::{TxEnv, result::ExecutionResult},
+    database::InMemoryDB,
+    primitives::{Address, Bytes, TxKind, U256, hardfork::SpecId, hex},
+    state::AccountInfo,
+};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    fs,
+    path::Path,
+    rc::Rc,
+};
+
+use crate::proof;
+
+// EIP-170 maximum deployed runtime size. Creation bytecode is not accepted here.
+const MAX_RUNTIME_BYTES: usize = 24_576;
+const MAX_STACK: usize = 1024;
+// Exact provenance states can grow combinatorially at joins. Fail closed after
+// 64K retained states or 1M compact stack cells (~2 MiB payload plus containers).
+// Queued states share their storage with the retained set through Rc.
+const MAX_ANALYSIS_STATES: usize = 65_536;
+const MAX_ANALYSIS_CELLS: usize = 1_048_576;
+const UNKNOWN: u16 = u16::MAX;
+
+#[derive(Debug, Serialize)]
+pub struct Analysis {
+    pub runtime_bytes: usize,
+    pub reachable_instructions: usize,
+    pub max_stack: usize,
+    pub relocated_labels: usize,
+    #[serde(skip)]
+    instructions: Vec<Instruction>,
+    #[serde(skip)]
+    heights: BTreeMap<usize, BTreeSet<usize>>,
+    // Proven label PUSH source PC -> original destination PC.
+    #[serde(skip)]
+    jumps: BTreeMap<usize, usize>,
+}
+
+#[derive(Debug, Clone)]
+struct Instruction {
+    pc: usize,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Case {
+    pub calldata: String,
+    pub gas_limit: u64,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub storage: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Rewrite {
+    pub original_pc: usize,
+    pub before: String,
+    pub after: String,
+    pub required_stack: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CaseResult {
+    pub baseline_gas: u64,
+    pub candidate_gas: u64,
+    pub outcome: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Report {
+    pub evm_version: &'static str,
+    pub baseline_bytes: usize,
+    pub candidate_bytes: usize,
+    pub rewrites: Vec<Rewrite>,
+    pub cases: Vec<CaseResult>,
+    pub lean_version: Option<String>,
+    pub verification: &'static str,
+}
+
+/// Analyze all reachable paths, including both conditional edges. Unsupported
+/// or ambiguous control flow fails closed; unreachable data is not executed.
+pub fn analyze(code: &[u8]) -> Result<Analysis> {
+    ensure!(
+        code.len() <= MAX_RUNTIME_BYTES,
+        "runtime exceeds EIP-170 size limit"
+    );
+    ensure!(
+        !code.starts_with(&[0xef, 0x00]),
+        "EOF bytecode is unsupported"
+    );
+    let instructions = decode(code);
+    let index: BTreeMap<_, _> = instructions
+        .iter()
+        .enumerate()
+        .map(|(i, op)| (op.pc, i))
+        .collect();
+    let mut heights: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    let mut jumps = BTreeMap::new();
+    let mut data_uses = BTreeSet::new();
+    let initial = Rc::new(Vec::<u16>::new());
+    let mut states = BTreeMap::from([(0, BTreeSet::from([Rc::clone(&initial)]))]);
+    let mut queue = VecDeque::from([(0, initial)]);
+    let mut state_count = 1;
+    let mut cell_count = 0;
+    let mut max_stack = 0;
+    while let Some((pc, incoming)) = queue.pop_front() {
+        if pc == code.len() {
+            continue;
+        }
+        let height = incoming.len();
+        heights.entry(pc).or_default().insert(height);
+        let &i = index.get(&pc).context("control flow enters PUSH data")?;
+        let instruction = &instructions[i];
+        let op = instruction.bytes[0];
+        ensure!(
+            allowed(op),
+            "unsupported or code/gas-sensitive opcode {} (0x{op:02x}) at PC {pc}",
+            OpCode::name_by_op(op)
+        );
+        let info = OpCode::info_by_op(op).context("unknown opcode")?;
+        let size = if (0x60..=0x7f).contains(&op) {
+            usize::from(op - 0x5f)
+        } else {
+            0
+        };
+        ensure!(
+            instruction.bytes.len() == size + 1,
+            "truncated PUSH at PC {pc}"
+        );
+        ensure!(
+            height >= info.inputs() as usize,
+            "stack underflow at PC {pc}"
+        );
+        let next_height = height - info.inputs() as usize + info.outputs() as usize;
+        ensure!(next_height <= MAX_STACK, "stack overflow at PC {pc}");
+        max_stack = max_stack.max(next_height);
+        // Stack entries retain the originating PUSH PC, not merely its value.
+        // Unknown results cannot become jump destinations in this analysis.
+        let mut stack = incoming.as_ref().clone();
+        let mut successors = Vec::new();
+        match op {
+            0x5f..=0x7f => stack.push(pc as u16), // EIP-170 bound fits u16.
+            0x80..=0x8f => stack.push(stack[height - usize::from(op - 0x7f)]),
+            0x90..=0x9f => stack.swap(height - 1, height - 1 - usize::from(op - 0x8f)),
+            0x50 => {
+                stack.pop();
+            } // Discarded labels reveal no numeric value.
+            0x56 | 0x57 => {
+                let source = stack.pop().unwrap();
+                ensure!(
+                    source != UNKNOWN,
+                    "dynamic jump at PC {pc}: unresolved PUSH provenance"
+                );
+                let source = usize::from(source);
+                let value = push_value(&instructions[index[&source]].bytes)
+                    .context("invalid label provenance")?;
+                let target =
+                    usize::try_from(value).context("jump destination exceeds address space")?;
+                ensure!(
+                    index
+                        .get(&target)
+                        .is_some_and(|&j| instructions[j].bytes[0] == 0x5b),
+                    "invalid jump destination {target} at PC {pc}"
+                );
+                jumps.insert(source, target);
+                successors.push(target);
+                if op == 0x57 {
+                    data_uses.insert(stack.pop().unwrap()); // Conditions are data.
+                }
+            }
+            _ => {
+                for source in stack.drain(height - info.inputs() as usize..) {
+                    data_uses.insert(source);
+                }
+                stack.resize(next_height, UNKNOWN);
+            }
+        }
+        if !matches!(op, 0x00 | 0x56 | 0xf3 | 0xfd | 0xfe) {
+            successors.push(pc + instruction.bytes.len());
+        }
+        let stack = Rc::new(stack);
+        for next in successors {
+            if next == code.len() {
+                continue;
+            }
+            let at_pc = states.entry(next).or_default();
+            if at_pc.contains(&stack) {
+                continue;
+            }
+            ensure!(
+                state_count < MAX_ANALYSIS_STATES && cell_count + stack.len() <= MAX_ANALYSIS_CELLS,
+                "control-flow provenance analysis budget exhausted; no paths were accepted without analysis"
+            );
+            state_count += 1;
+            cell_count += stack.len();
+            at_pc.insert(Rc::clone(&stack));
+            queue.push_back((next, Rc::clone(&stack)));
+        }
+    }
+    for source in jumps.keys() {
+        ensure!(
+            !data_uses.contains(&(*source as u16)),
+            "PUSH at PC {source} is used as both a jump label and data"
+        );
+    }
+    Ok(Analysis {
+        runtime_bytes: code.len(),
+        reachable_instructions: heights.len(),
+        max_stack,
+        relocated_labels: jumps.len(),
+        instructions,
+        heights,
+        jumps,
+    })
+}
+
+/// Write a candidate only after local proofs and all supplied differential cases
+/// pass. Original input, case inputs, and failure evidence remain on failure.
+pub fn optimize(code: &[u8], cases: &[Case], out: &Path) -> Result<Report> {
+    ensure!(
+        !cases.is_empty(),
+        "supply at least one differential execution case"
+    );
+    let analysis = analyze(code)?;
+    fs::create_dir(out)?;
+    fs::write(out.join("original.hex"), hex::encode(code) + "\n")?;
+    fs::write(
+        out.join("cases.json"),
+        serde_json::to_string_pretty(cases)? + "\n",
+    )?;
+    let (candidate, rewrites) = transform(&analysis)?;
+    fs::write(
+        out.join("rewrites.json"),
+        serde_json::to_string_pretty(&rewrites)? + "\n",
+    )?;
+    // Re-decode and revalidate the emitted control flow independently.
+    analyze(&candidate)?;
+    let lean_version = if rewrites.is_empty() {
+        None
+    } else {
+        let path = out.join("Rewrites.lean");
+        let (source, names) = certificates(&rewrites)?;
+        fs::write(&path, source)?;
+        Some(proof::verify_named(&path, &names)?)
+    };
+    let mut checked = Vec::new();
+    for (i, case) in cases.iter().enumerate() {
+        let result =
+            compare(code, &candidate, case).with_context(|| format!("differential case {i}"));
+        match result {
+            Ok(result) => checked.push(result),
+            Err(error) => {
+                fs::write(out.join("failure.log"), format!("{error:#}\n"))?;
+                return Err(error);
+            }
+        }
+    }
+    let report = Report {
+        evm_version: "Cancun",
+        baseline_bytes: code.len(),
+        candidate_bytes: candidate.len(),
+        rewrites,
+        cases: checked,
+        lean_version,
+        verification: "Lean: local gas-erased stack rewrites only. Rust: conservative CFG and relocation checks. revm: supplied isolated transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof.",
+    };
+    fs::write(out.join("candidate.hex"), hex::encode(&candidate) + "\n")?;
+    fs::write(
+        out.join("result.json"),
+        serde_json::to_string_pretty(&report)? + "\n",
+    )?;
+    Ok(report)
+}
+
+/// Decode hexadecimal bytecode/calldata; whitespace is allowed only around it.
+pub fn from_hex(input: &str) -> Result<Vec<u8>> {
+    hex::decode(input.trim()).context("expected hexadecimal bytes (optional 0x prefix)")
+}
+
+fn decode(code: &[u8]) -> Vec<Instruction> {
+    let mut instructions = Vec::new();
+    let mut pc = 0;
+    while pc < code.len() {
+        let size = if (0x60..=0x7f).contains(&code[pc]) {
+            usize::from(code[pc] - 0x5f)
+        } else {
+            0
+        };
+        let end = (pc + size + 1).min(code.len());
+        instructions.push(Instruction {
+            pc,
+            bytes: code[pc..end].to_vec(),
+        });
+        pc = end;
+    }
+    instructions
+}
+
+fn allowed(op: u8) -> bool {
+    // Explicit Cancun allowlist. No calls, creation, gas/code introspection,
+    // external-code operations, or selfdestruct. Unreachable bytes are retained.
+    matches!(op, 0x00..=0x0b | 0x10..=0x1d | 0x20 | 0x30..=0x37 | 0x3a | 0x3d..=0x3e |
+        0x40..=0x4a | 0x50..=0x57 | 0x59 | 0x5b..=0x5f | 0x60..=0x9f | 0xa0..=0xa4 | 0xf3 | 0xfd | 0xfe)
+        && OpCode::info_by_op(op).is_some()
+}
+
+fn push_value(bytes: &[u8]) -> Option<U256> {
+    let op = *bytes.first()?;
+    if op == 0x5f {
+        return Some(U256::ZERO);
+    }
+    ((0x60..=0x7f).contains(&op) && bytes.len() == usize::from(op - 0x5f) + 1)
+        .then(|| U256::from_be_slice(&bytes[1..]))
+}
+
+fn push(value: U256) -> Vec<u8> {
+    if value.is_zero() {
+        return vec![0x5f];
+    }
+    let word = value.to_be_bytes::<32>();
+    let first = word.iter().position(|&byte| byte != 0).unwrap();
+    let mut bytes = vec![0x5f + (32 - first) as u8];
+    bytes.extend_from_slice(&word[first..]);
+    bytes
+}
+
+fn transform(analysis: &Analysis) -> Result<(Vec<u8>, Vec<Rewrite>)> {
+    let mut instructions = analysis.instructions.clone();
+    let mut rewrites = Vec::new();
+    // Each accepted replacement strictly shrinks bytes. Restart locally so folds
+    // expose further folds; protected branches and barriers are never consumed.
+    let mut i = 0;
+    while i < instructions.len() {
+        let op = &instructions[i];
+        if !analysis.heights.contains_key(&op.pc) || analysis.jumps.contains_key(&op.pc) {
+            i += 1;
+            continue;
+        }
+        let available = instructions[i..]
+            .iter()
+            .take(3)
+            .take_while(|op| {
+                analysis.heights.contains_key(&op.pc) && !analysis.jumps.contains_key(&op.pc)
+            })
+            .collect::<Vec<_>>();
+        if let Some((count, after, required)) = replacement(&available) {
+            let before = available[..count]
+                .iter()
+                .flat_map(|op| op.bytes.clone())
+                .collect::<Vec<_>>();
+            if after.len() < before.len() {
+                let pc = op.pc;
+                rewrites.push(Rewrite {
+                    original_pc: pc,
+                    before: hex::encode(&before),
+                    after: hex::encode(&after),
+                    required_stack: required,
+                });
+                // Replacements can contain multiple instructions. Keep the source
+                // span's original PC for proof provenance and reachability only.
+                let new = decode(&after).into_iter().map(|mut op| {
+                    op.pc = pc;
+                    op
+                });
+                instructions.splice(i..i + count, new);
+                i = i.saturating_sub(2);
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let mut positions = BTreeMap::new();
+    let mut offset = 0;
+    for op in &instructions {
+        if op.bytes[0] == 0x5b {
+            positions.insert(op.pc, offset);
+        }
+        offset += op.bytes.len();
+    }
+    let mut candidate = Vec::with_capacity(offset);
+    for op in &instructions {
+        if let Some(target) = analysis.jumps.get(&op.pc) {
+            let target = *positions
+                .get(target)
+                .context("lost jump destination during relocation")?;
+            let size = op.bytes.len() - 1;
+            let value = U256::from(target).to_be_bytes::<32>();
+            ensure!(
+                value[..32 - size].iter().all(|&b| b == 0),
+                "relocated target no longer fits PUSH"
+            );
+            candidate.push(op.bytes[0]);
+            candidate.extend_from_slice(&value[32 - size..]);
+        } else {
+            candidate.extend_from_slice(&op.bytes);
+        }
+    }
+    Ok((candidate, rewrites))
+}
+
+fn replacement(ops: &[&Instruction]) -> Option<(usize, Vec<u8>, usize)> {
+    let a = ops.first()?;
+    let b = ops.get(1);
+    let c = ops.get(2);
+    if let (Some(x), Some(y), Some(c)) = (
+        push_value(&a.bytes),
+        b.and_then(|b| push_value(&b.bytes)),
+        c,
+    ) {
+        let value = match c.bytes[0] {
+            0x01 => Some(y.wrapping_add(x)),
+            0x02 => Some(y.wrapping_mul(x)),
+            0x03 => Some(y.wrapping_sub(x)),
+            0x16 => Some(y & x),
+            0x17 => Some(y | x),
+            0x18 => Some(y ^ x),
+            0x1b => Some(if y >= U256::from(256) {
+                U256::ZERO
+            } else {
+                x << usize::try_from(y).ok()?
+            }),
+            _ => None,
+        };
+        if let Some(value) = value {
+            return Some((3, push(value), 0));
+        }
+    }
+    if let Some(b) = b {
+        if let Some(value) = push_value(&a.bytes) {
+            if (value.is_zero() && matches!(b.bytes[0], 0x01 | 0x17 | 0x18))
+                || (value == U256::from(1) && b.bytes[0] == 0x02)
+            {
+                return Some((2, vec![], 1));
+            }
+            if (value == U256::from(2) && b.bytes[0] == 0x02)
+                || (value == U256::from(1) && b.bytes[0] == 0x1b)
+            {
+                return Some((2, vec![0x80, 0x01], 1));
+            }
+        }
+        if (a.bytes[0] == 0x19 && b.bytes[0] == 0x19)
+            || (a.bytes[0] == 0x80 && matches!(b.bytes[0], 0x16 | 0x17))
+        {
+            return Some((2, vec![], 1));
+        }
+    }
+    push_value(&a.bytes).map(|value| (1, push(value), 0))
+}
+
+fn certificates(rewrites: &[Rewrite]) -> Result<(String, Vec<String>)> {
+    let mut source = format!(
+        "{}\n{}\nset_option maxRecDepth 4096\nset_option linter.unusedVariables false\nset_option pp.fullNames true\n",
+        include_str!("../lean/Model.lean"),
+        proof::NORMALIZATION,
+    );
+    let mut names = Vec::new();
+    // Repeated sites share the same local theorem; source locations remain in JSON.
+    let mut seen = BTreeSet::new();
+    for rewrite in rewrites {
+        if !seen.insert((&rewrite.before, &rewrite.after, rewrite.required_stack)) {
+            continue;
+        }
+        let before = from_hex(&rewrite.before)?;
+        let after = from_hex(&rewrite.after)?;
+        let name = format!("runtime_rewrite_{}", names.len());
+        let stack = if rewrite.required_stack == 0 {
+            "tail"
+        } else {
+            "a :: tail"
+        };
+        source.push_str(&format!("theorem {name} (a x y : Golf.Word) (tail : List Golf.Word) :\n  Golf.run {} {:?} ({stack}) x y = Golf.run {} {:?} ({stack}) x y := by\n  first | rfl | simp [Golf.run, Golf.immediate, GolfProof.shift_one, BitVec.mul_two, BitVec.two_mul]\n#print axioms {name}\n\n", before.len()+1, before, after.len()+1, after));
+        names.push(name);
+    }
+    Ok((source, names))
+}
+
+fn compare(original: &[u8], candidate: &[u8], case: &Case) -> Result<CaseResult> {
+    let (left, left_state) = execute(original, case)?;
+    let (right, right_state) = execute(candidate, case)?;
+    let same_result = match (&left, &right) {
+        (
+            ExecutionResult::Success {
+                reason: a,
+                output: x,
+                ..
+            },
+            ExecutionResult::Success {
+                reason: b,
+                output: y,
+                ..
+            },
+        ) => a == b && x == y,
+        (ExecutionResult::Revert { output: a, .. }, ExecutionResult::Revert { output: b, .. }) => {
+            a == b
+        }
+        _ => false, // Halts (including OOG) are never successful validation cases.
+    };
+    ensure!(
+        same_result && left.logs() == right.logs() && left_state == right_state,
+        "observable execution mismatch or exceptional halt; baseline={left:?}, candidate={right:?}; baseline state={left_state:?}, candidate state={right_state:?}"
+    );
+    ensure!(
+        right.tx_gas_used() <= left.tx_gas_used(),
+        "candidate increased measured gas"
+    );
+    Ok(CaseResult {
+        baseline_gas: left.tx_gas_used(),
+        candidate_gas: right.tx_gas_used(),
+        outcome: if left.is_success() {
+            "success"
+        } else {
+            "revert"
+        }
+        .into(),
+    })
+}
+
+// State projection deliberately excludes code identity and fee accounting (zero
+// gas price). It retains balances, nonces, and nonzero final storage values.
+#[derive(Debug, PartialEq, Eq)]
+struct AccountState {
+    balance: U256,
+    nonce: u64,
+    storage: BTreeMap<U256, U256>,
+}
+
+fn execute(code: &[u8], case: &Case) -> Result<(ExecutionResult, BTreeMap<Address, AccountState>)> {
+    let contract = Address::repeat_byte(0x22);
+    let caller = Address::repeat_byte(0x11);
+    let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(code));
+    let mut db = InMemoryDB::default();
+    db.insert_account_info(
+        contract,
+        AccountInfo {
+            code_hash: bytecode.hash_slow(),
+            code: Some(bytecode),
+            ..Default::default()
+        },
+    );
+    db.insert_account_info(
+        caller,
+        AccountInfo {
+            balance: U256::MAX,
+            ..Default::default()
+        },
+    );
+    let mut initial_storage = BTreeMap::new();
+    for (key, value) in &case.storage {
+        let key = key.parse::<U256>()?;
+        let value = value.parse::<U256>()?;
+        ensure!(
+            initial_storage.insert(key, value).is_none(),
+            "duplicate numeric storage key"
+        );
+        db.insert_account_storage(contract, key, value)?;
+    }
+    initial_storage.retain(|_, value| !value.is_zero());
+    let mut evm = Context::mainnet()
+        .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN))
+        .with_db(db)
+        .build_mainnet();
+    let result = evm.transact(
+        TxEnv::builder()
+            .caller(caller)
+            .kind(TxKind::Call(contract))
+            .gas_limit(case.gas_limit)
+            .gas_price(0)
+            .value(if case.value.is_empty() {
+                U256::ZERO
+            } else {
+                case.value.parse()?
+            })
+            .data(Bytes::from(from_hex(&case.calldata)?))
+            .build()?,
+    )?;
+    let state = result
+        .state
+        .into_iter()
+        .map(|(address, account)| {
+            // Overlay journal slots on the initial state: an untouched nonzero
+            // slot and a slot explicitly cleared to zero must compare differently.
+            let mut storage = if address == contract {
+                initial_storage.clone()
+            } else {
+                BTreeMap::new()
+            };
+            for (key, value) in account.storage {
+                let value = value.present_value();
+                if value.is_zero() {
+                    storage.remove(&key);
+                } else {
+                    storage.insert(key, value);
+                }
+            }
+            (
+                address,
+                AccountState {
+                    balance: account.info.balance,
+                    nonce: account.info.nonce,
+                    storage,
+                },
+            )
+        })
+        .collect();
+    Ok((result.result, state))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn bytes(text: &str) -> Vec<u8> {
+        from_hex(text).unwrap()
+    }
+    fn case(data: &str) -> Case {
+        Case {
+            calldata: data.into(),
+            gas_limit: 200_000,
+            value: String::new(),
+            storage: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn decoder_and_control_flow_reject_unsupported_paths() {
+        for (code, message) in [
+            ("600356605b00", "invalid jump"), // 5b is PUSH data, not a target.
+            ("5f3556", "dynamic jump"),
+            ("6101", "truncated PUSH"),
+            ("600057", "stack underflow"),
+            ("585000", "code/gas-sensitive"),
+            ("595a5000", "code/gas-sensitive"),
+            ("4b00", "unsupported"),
+            ("ef00", "EOF"),
+            ("01", "stack underflow"),
+        ] {
+            assert!(
+                analyze(&bytes(code))
+                    .unwrap_err()
+                    .to_string()
+                    .contains(message),
+                "{code}"
+            );
+        }
+        let huge_jump = format!("7f{}56", "ff".repeat(32));
+        assert!(
+            analyze(&bytes(&huge_jump))
+                .unwrap_err()
+                .to_string()
+                .contains("address space")
+        );
+        assert!(analyze(&bytes("60585000585a4b6101")).is_ok()); // constants and unreachable tail.
+        assert!(analyze(&vec![0x5f; 1024]).is_ok());
+        assert!(
+            analyze(&vec![0x5f; 1025])
+                .unwrap_err()
+                .to_string()
+                .contains("overflow")
+        );
+        // An identity cannot hide a transient stack overflow.
+        let mut overflowing = vec![0x5f; 1024];
+        overflowing.extend_from_slice(&[0x5f, 0x01]);
+        assert!(analyze(&overflowing).is_err());
+        assert!(analyze(&bytes("5b5f56")).is_ok()); // balanced loop and PUSH0 destination.
+        assert!(
+            analyze(&bytes("5b5f5f56"))
+                .unwrap_err()
+                .to_string()
+                .contains("analysis budget exhausted")
+        );
+    }
+
+    #[test]
+    fn relocates_both_branches_and_retains_unreachable_bytes() {
+        // condition ? store 6 : store 5; shared return. Offsets are original PCs.
+        let code = bytes("5f35600e57600060050160195600585b60006006015b5f5260205ff3006101");
+        // Construct valid targets from actual JUMPDEST locations, not immediate data.
+        let mut code = code;
+        let destinations: Vec<_> = decode(&code)
+            .iter()
+            .filter(|op| op.bytes[0] == 0x5b)
+            .map(|op| op.pc)
+            .collect();
+        code[3] = destinations[0] as u8;
+        code[11] = destinations[1] as u8;
+        let analysis = analyze(&code).unwrap();
+        let (optimized, changes) = transform(&analysis).unwrap();
+        assert!(!changes.is_empty());
+        assert!(optimized.len() < code.len());
+        assert!(optimized.ends_with(&bytes("006101")));
+        assert_eq!(analyze(&optimized).unwrap().relocated_labels, 2);
+        for calldata in ["0x", "0x01", &format!("0x{}01", "00".repeat(31))] {
+            compare(&code, &optimized, &case(calldata)).unwrap();
+        }
+    }
+
+    #[test]
+    fn shares_targets_at_distinct_stack_heights_and_rejects_invalid_edges() {
+        // Both branches reach a shared STOP with different stack heights.
+        let code = bytes("5f356008575f6008565b00");
+        let mut code = code;
+        code[3] = 9;
+        code[7] = 9;
+        let analysis = analyze(&code).unwrap();
+        assert_eq!(analysis.heights[&9], BTreeSet::from([0, 1]));
+        // A value-dependent condition does not exempt its other edge from checks.
+        assert!(analyze(&bytes("5f60065700005b50")).is_err());
+    }
+
+    #[test]
+    fn resolves_shared_internal_returns_and_rejects_labels_used_as_data() {
+        // Call the same helper twice, with different return labels and depths.
+        let code = bytes("60056013565b600b6013565b015f5260205ff35b60026003019056");
+        let analysis = analyze(&code).unwrap();
+        assert_eq!(analysis.relocated_labels, 4);
+        assert_eq!(analysis.heights[&19], BTreeSet::from([1, 2]));
+        let (candidate, changes) = transform(&analysis).unwrap();
+        assert!(!changes.is_empty());
+        assert_eq!(analyze(&candidate).unwrap().relocated_labels, 4);
+        compare(&code, &candidate, &case("")).unwrap();
+        let (result, _) = execute(&candidate, &case("")).unwrap();
+        assert_eq!(
+            U256::from_be_slice(result.output().unwrap()),
+            U256::from(10)
+        );
+
+        for code in [
+            "6008805f52565f005b00", // label alias stored to memory.
+            "60058057005b00",       // label also consumed as condition.
+            "6006805f55565b00",     // label also stored to storage.
+            "60055f01565b00",       // arithmetic-derived destination.
+        ] {
+            assert!(analyze(&bytes(code)).is_err(), "{code}");
+        }
+        // Same numeric constant, different source: only the second is a label.
+        assert!(analyze(&bytes("60075f526007565b00")).is_ok());
+        // Discarding an alias or leaving it below RETURN operands is harmless.
+        assert!(analyze(&bytes("60068050565f5b00")).is_ok());
+        assert!(analyze(&bytes("600480565b5f5ff3")).is_ok());
+    }
+
+    #[test]
+    fn preserves_stack_arithmetic_order_and_cascaded_relocations() {
+        let samples = [
+            "60026003035f5260205ff3",             // 3 - 2, not 2 - 3.
+            "60016101001b5f5260205ff3",           // shift by 256.
+            "5f3560000160010260011b5f5260205ff3", // arbitrary input identities.
+            "5f351919801680175f5260205ff3",       // DUP/AND/OR and complement.
+            "5f35610002025f5260205ff3",           // cascaded PUSH -> MUL -> DUP ADD.
+            "5f356002576000", // protected jump operand targets PUSH data: reject.
+        ];
+        for (i, text) in samples.iter().enumerate() {
+            let code = bytes(text);
+            if i == samples.len() - 1 {
+                assert!(analyze(&code).is_err());
+                continue;
+            }
+            let (optimized, _) = transform(&analyze(&code).unwrap()).unwrap();
+            analyze(&optimized).unwrap();
+            for input in ["", "ff", &"ff".repeat(32)] {
+                compare(&code, &optimized, &case(input)).unwrap();
+            }
+        }
+        let code = bytes("6002600301"); // implicit STOP at end of code.
+        let (optimized, _) = transform(&analyze(&code).unwrap()).unwrap();
+        compare(&code, &optimized, &case("")).unwrap();
+    }
+
+    #[test]
+    fn checks_storage_logs_reverts_and_gas_failures() {
+        for terminal in ["f3", "fd"] {
+            // Store calldata+0, emit LOG0, then return/revert the same memory.
+            let code = bytes(&format!("5f356000015f555f545f5260205fa060205f{terminal}"));
+            let (optimized, _) = transform(&analyze(&code).unwrap()).unwrap();
+            for initial in ["0", "7"] {
+                for input in ["", &"ff".repeat(32)] {
+                    let mut c = case(input);
+                    c.storage.insert("0".into(), initial.into());
+                    compare(&code, &optimized, &c).unwrap();
+                }
+            }
+        }
+        let mut initial = case("");
+        initial.storage.insert("0".into(), "7".into());
+        assert!(compare(&bytes("00"), &bytes("5f5f5500"), &initial).is_err());
+        // A write rolled back by REVERT leaves the initial nonzero slot intact.
+        compare(&bytes("5f5ffd"), &bytes("5f5f555f5ffd"), &initial).unwrap_err(); // extra gas is rejected.
+        let (_, reverted) = execute(&bytes("5f5f555f5ffd"), &initial).unwrap();
+        assert_eq!(
+            reverted[&Address::repeat_byte(0x22)].storage[&U256::ZERO],
+            U256::from(7)
+        );
+        let original = bytes("600060000100");
+        let (optimized, _) = transform(&analyze(&original).unwrap()).unwrap();
+        let mut low = case("");
+        low.gas_limit = 21_002;
+        assert!(compare(&original, &optimized, &low).is_err());
+        // Saving a few gas can cross SSTORE's gas-left sentry even without GAS.
+        let original = bytes("60006000015f5500");
+        let (optimized, _) = transform(&analyze(&original).unwrap()).unwrap();
+        low.gas_limit = 23_310;
+        assert!(compare(&original, &optimized, &low).is_err());
+        assert!(execute(&original, &low).unwrap().0.is_halt());
+        assert!(execute(&optimized, &low).unwrap().0.is_success());
+        assert!(compare(&bytes("60015f5500"), &bytes("60025f5500"), &case("")).is_err());
+        assert!(
+            compare(
+                &bytes("60015f5260205ff3"),
+                &bytes("60025f5260205ff3"),
+                &case("")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Lean 4.34.0"]
+    fn checks_local_certificates_and_rejects_corruption() {
+        let dir = tempdir().unwrap();
+        for (i, text) in [
+            "5f3560000160010260011b191980165f5260205ff3",
+            "60026003036002025f5260205ff3",
+            "60016101001b5f5260205ff3",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let code = bytes(text);
+            let report = optimize(
+                &code,
+                &[case("ff"), case("")],
+                &dir.path().join(format!("run{i}")),
+            )
+            .unwrap();
+            assert!(!report.rewrites.is_empty());
+            assert!(report.lean_version.is_some());
+        }
+        let wrong = Rewrite {
+            original_pc: 0,
+            before: "6001".into(),
+            after: "5f".into(),
+            required_stack: 0,
+        };
+        let (source, names) = certificates(&[wrong]).unwrap();
+        let path = dir.path().join("Wrong.lean");
+        fs::write(&path, source).unwrap();
+        assert!(proof::verify_named(&path, &names).is_err());
+        // Empty-stack identities must not be certified using a missing precondition.
+        let wrong = Rewrite {
+            original_pc: 0,
+            before: "5f01".into(),
+            after: "".into(),
+            required_stack: 0,
+        };
+        let (source, names) = certificates(&[wrong]).unwrap();
+        let path = dir.path().join("Underflow.lean");
+        fs::write(&path, source).unwrap();
+        assert!(proof::verify_named(&path, &names).is_err());
+    }
+}

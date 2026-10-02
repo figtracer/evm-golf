@@ -38,6 +38,13 @@ Every submission is reverified; saved result.json scores are ignored. One failed
 submission prevents generation of the final board. Failure artifacts remain for
 diagnosis. The command reads immediate child directories with submission.json.
 
+## Runtime bytecode
+
+Read docs/runtime.md before using `analyze-runtime` or `optimize-runtime`.
+Runtime candidates use local stack proofs and supplied transaction tests, not
+whole-contract proofs. They are not accepted by the expression leaderboard.
+Keep runtime input corpora and generated results local too.
+
 ## Batch experiments
 
 A coordinator can collect proposal JSON objects into an array and use

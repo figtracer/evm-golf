@@ -6,6 +6,7 @@ EVM expressions. Start with the setup guide, then choose a workflow.
 | Guide | Contents |
 | --- | --- |
 | [Getting started](getting-started.md) | Build, toolchains, first optimization |
+| [Runtime bytecode](runtime.md) | Contract input, static jumps, local proofs, execution cases |
 | [Commands](cli.md) | Expressions, submissions, leaderboards, campaigns |
 | [Verification and scoring](verification.md) | Semantics, proof boundary, gas accounting, limits |
 | [Development](dev/README.md) | Repository layout, checks, compatibility |
