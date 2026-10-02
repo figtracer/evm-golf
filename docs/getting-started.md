@@ -20,8 +20,9 @@ cargo build --locked
 
 The setup script downloads an official Lean release into `.tools/lean`. It
 supports macOS and Linux on x86-64 and ARM64 and leaves the global Lean setup
-unchanged. This checkout has been exercised on macOS ARM64; the other installer
-branches have not been validated by this project.
+unchanged. Local validation uses macOS ARM64; GitHub Actions exercises the installer
+and full Rust/Lean suite on Ubuntu x86-64. macOS x86-64 and Linux ARM64 have not
+been validated by this project.
 
 To use an existing installation, set `LEAN` to a Lean 4.34.0 executable. The
 checker first uses `LEAN`, then the checkout-local binary, then `lean` on PATH.

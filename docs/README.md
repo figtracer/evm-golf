@@ -1,12 +1,13 @@
 # Documentation
 
 EVM Golf provides a CLI and Rust library for optimizing and verifying small
-EVM expressions. Start with the setup guide, then choose a workflow.
+EVM expressions and supported contract runtimes. Start with the setup guide, then
+choose a workflow.
 
 | Guide | Contents |
 | --- | --- |
 | [Getting started](getting-started.md) | Build, toolchains, first optimization |
-| [Runtime bytecode](runtime.md) | Contract input, static jumps, local proofs, execution cases |
+| [Runtime bytecode](runtime.md) | Compact/fixed-layout optimization, artifact proofs, account-fixture replay |
 | [Commands](cli.md) | Expressions, submissions, leaderboards, campaigns |
 | [Verification and scoring](verification.md) | Semantics, proof boundary, gas accounting, limits |
 | [Development](dev/README.md) | Repository layout, checks, compatibility |
