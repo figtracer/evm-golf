@@ -60,10 +60,7 @@ expressions over 256-bit words, targeting Cancun. Verification covers a limited
 Lean bytecode model, with additional execution checks in revm.
 
 See [verification and scoring](docs/verification.md) for the supported semantics,
-proof assumptions, and limits. [Recorded experiments](swarm/README.md) include
-replayable inputs, results, and comparisons with the built-in optimizer.
-The [proof experiment](research/pep/README.md) compares agent-written Lean proofs
-with Z3, cvc5, and the automatic verifier.
+proof assumptions, and limits.
 
 ## Contributing
 

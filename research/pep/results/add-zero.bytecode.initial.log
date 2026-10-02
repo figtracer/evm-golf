@@ -1,7 +1,0 @@
-/Users/gustavo/dev/evm-golf/runs/pep-aligned/inputs/add-zero.bytecode.lean:73:107: error: unsolved goals
-case y
-x y : Golf.Word
-⊢ Golf.Word
-'claim' depends on axioms: [propext]
-'baseline_correct' depends on axioms: [propext, Quot.sound]
-'candidate_correct' depends on axioms: [propext, sorryAx, Quot.sound]

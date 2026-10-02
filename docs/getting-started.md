@@ -7,7 +7,7 @@
 - `curl`, `tar`, and `zstd` for the local Lean installer.
 
 Dependencies are resolved through Cargo.lock. Keep `--locked` when building or
-running checked-in experiments.
+running the tool.
 
 ## Build from source
 

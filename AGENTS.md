@@ -42,8 +42,10 @@ diagnosis. The command reads immediate child directories with submission.json.
 A coordinator can collect proposal JSON objects into an array and use
 `cargo run --locked -- campaign --proposals <array.json> --out runs/campaign-1`.
 This records individual unverified attempts and continues to later proposals.
-Only verified entries reach the board. The command does not launch model agents;
-see swarm/README.md for the live contestant protocol and recorded run.
+Only verified entries reach the board. The command does not launch model agents.
+
+Keep exploratory scripts, benchmark runs, agent transcripts, and research reports
+outside this repository. Publish product changes only when explicitly requested.
 
 ## Develop the tool
 

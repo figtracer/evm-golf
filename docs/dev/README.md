@@ -15,10 +15,7 @@
 | `challenges.json` | Puzzle IDs, descriptions, and reference expressions |
 | `submissions/` | Candidate inputs used to regenerate the leaderboard |
 | `leaderboard/` | Verified score and proof snapshot |
-| `swarm/` | Recorded experiment and replay inputs |
 | `scripts/` | Toolchain setup and repository checks |
-| `research/pep/` | Isolated Lean/SMT comparison, proof corpus, recorded evidence |
-| `examples/proof_cases.rs` | Matched research obligations and counterexample replay |
 
 This is a single Cargo package. The library exposes the optimizer, checker,
 contest, and campaign modules used by the CLI.
@@ -63,21 +60,13 @@ changes that preserve these contracts can retain the existing ruleset.
 ## Research
 
 Useful extensions include stack reuse, realistic compiler fragments, and
-agent-written proof lemmas. The current contest checker does not accept custom
-proof programs. The separate [proof experiment](../../research/pep/README.md)
-compares Z3, cvc5, Lean automation, and agent-written proofs without changing
-contest policy. Its research regression commands are:
-
-```sh
-cargo test --locked --example proof_cases
-python3 -B -m unittest discover -s research/pep -p test_run.py -v
-```
+agent-written proof lemmas. The current checker does not accept custom proof
+programs and does not benchmark Z3 or cvc5.
 
 For solver comparisons, preserve the exact rule, word width, preconditions,
 versions, invocation, resource limits, and observed result. Use the same statement
 for every method and distinguish proof-generation time from checking time.
 Keep counterexamples, timeouts, unknown results, and verified proofs separate.
 
-The [recorded agent run](../../swarm/README.md) is an informed smoke test with
-visible reference solutions. It establishes neither novel optimization nor a
-general advantage over e-graphs or SMT solvers.
+Keep exploratory scripts, benchmark artifacts, and research reports outside
+this repository. Publish product changes only when explicitly requested.

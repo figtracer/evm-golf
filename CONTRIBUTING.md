@@ -53,12 +53,12 @@ GitHub Actions workflow.
 
 The board lists every verified submission, including ties and candidates worse
 than the reference. Author names are self-reported. Entries labeled `reference`
-are project examples. Recorded agent entries identify their experiment in `swarm/`.
+are project examples.
 
 ## AI assistance
 
 Disclose AI assistance in pull requests and describe its extent. The initial
-implementation, reference entries, and recorded agent campaign were developed
+implementation and reference entries were developed
 with OpenAI Codex. AI-generated candidates use the same verification path as
 human-written candidates.
 
@@ -66,8 +66,7 @@ human-written candidates.
 
 Rules that are difficult for existing solvers are useful contributions. Include
 the exact statement and enough information to reproduce the solver result.
-See the [research guidelines](docs/dev/README.md#research) for comparison criteria
-and the [Lean/SMT experiment](research/pep/README.md) for a replayable starting point.
+See the [research guidelines](docs/dev/README.md#research) for comparison criteria.
 
 ## License
 

@@ -84,10 +84,14 @@ the baseline. [Scoring details](verification.md#scoring).
 ## Campaigns
 
 A proposal file is a JSON array of submission objects using the same schema.
-Replay the recorded agent run:
+For example, save a local proposal and verify it:
 
 ```sh
-cargo run --locked -- campaign --proposals swarm/proposals.json --out runs/replay-1
+mkdir -p runs
+cat > runs/proposals.json <<'JSON'
+[{"ruleset":"evm-golf-v1-cancun","challenge":"double","author":"example","candidate":"(shl1 x)"}]
+JSON
+cargo run --locked -- campaign --proposals runs/proposals.json --out runs/campaign-1
 ```
 
 Campaigns continue past individual unverified proposals and record each outcome
@@ -101,7 +105,7 @@ establish inequivalence. Malformed batch JSON, output-write failures, or failure
 to complete the final comparison abort the run. See the report and exit status.
 
 Replay makes no model API calls. Proposal generation takes place in the agent
-host; the [experiment guide](../swarm/README.md) documents the live protocol.
+host. Keep proposal batches and run artifacts local.
 
 ## Rule verification
 

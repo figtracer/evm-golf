@@ -1,6 +1,0 @@
-{
-  "ruleset": "evm-golf-v1-cancun",
-  "challenge": "carry-add",
-  "author": "swarm-algebra",
-  "candidate": "(+ x y)"
-}

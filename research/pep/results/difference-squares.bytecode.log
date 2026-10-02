@@ -1,3 +1,0 @@
-'claim' depends on axioms: [propext, Quot.sound]
-'baseline_correct' depends on axioms: [propext, Quot.sound]
-'candidate_correct' depends on axioms: [propext, Quot.sound]

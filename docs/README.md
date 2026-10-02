@@ -17,8 +17,6 @@ EVM expressions. Start with the setup guide, then choose a workflow.
 - [Challenge definitions](../challenges.json)
 - [Verified leaderboard](../leaderboard/README.md)
 - [Submission corpus](../submissions)
-- [Recorded agent experiment](../swarm/README.md)
-- [Agent-written proofs versus SMT](../research/pep/README.md)
 
 Generated proofs and score files accompany each verified entry. Use the documented
 commands to reproduce them with the pinned toolchain.
