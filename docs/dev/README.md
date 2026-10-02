@@ -13,8 +13,6 @@
 | `lean/Model.lean` | The limited bytecode semantics used by the proofs |
 | `tests/` | Execution, CLI, proof, and campaign regression tests |
 | `challenges.json` | Puzzle IDs, descriptions, and reference expressions |
-| `submissions/` | Candidate inputs used to regenerate the leaderboard |
-| `leaderboard/` | Verified score and proof snapshot |
 | `scripts/` | Toolchain setup and repository checks |
 
 This is a single Cargo package. The library exposes the optimizer, checker,
@@ -51,7 +49,8 @@ integration tests are explicitly ignored until requested with `--ignored`.
 
 Keep existing CLI arguments and persisted submission formats compatible.
 Preserve accepted evidence when generating new output: use a fresh directory,
-review the results, then update the checked-in snapshot.
+then review the regenerated leaderboard. Entries and generated results are not
+checked in; `submissions/`, `leaderboard/`, and `runs/` are ignored local directories.
 
 While the tool is unreleased, keep the development ruleset identifier stable.
 Reverify entries after changes to the compiler, scoring, or proof policy; do not

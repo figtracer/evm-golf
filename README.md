@@ -4,7 +4,7 @@
 
 **EVM expression optimization and verification toolkit, written in Rust.**
 
-[Getting Started](#installation) | [Documentation](docs/README.md) | [Leaderboard](leaderboard/README.md) | [Contributing](CONTRIBUTING.md)
+[Getting Started](#installation) | [Documentation](docs/README.md) | [Leaderboard](docs/cli.md#leaderboards) | [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -41,8 +41,8 @@ Optimize an expression:
 cargo run --locked -- optimize '(+ (* x 2) (- y y))' --out runs/optimization
 ```
 
-This reduces `(x * 2) + (y - y)` to `x + x`, from 28 to 11 expression-body gas.
 The output directory contains the bytecode, Lean proof, checker log, and score.
+Results belong in generated leaderboards; run artifacts are not checked in.
 
 Submit a puzzle solution:
 

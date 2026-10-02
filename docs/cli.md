@@ -64,13 +64,21 @@ The generated `submission.json` uses this format:
 
 Author names and submission directory names use 1–64 ASCII letters, digits,
 hyphens or underscores. Names are self-reported attribution. Unknown JSON fields
-and rulesets are rejected. See [Contributing](../CONTRIBUTING.md) to submit an entry.
+and rulesets are rejected. Keep entries local; see [Leaderboards](#leaderboards)
+to collect and rank them.
 
 ## Leaderboards
 
+Collect verified entries in an ignored local directory, then generate a board:
+
 ```sh
+cargo run --locked -- submit double '(shl1 x)' --author alice --out submissions/alice-double
 cargo run --locked -- leaderboard --submissions submissions --out runs/board-1
 ```
+
+Entries and generated scores, proofs, and logs belong to the leaderboard output,
+not source-control contributions. `submissions/`, `leaderboard/`, and `runs/` are
+ignored. The CLI generates local files; it does not host or publish a leaderboard.
 
 The command reads immediate child directories containing `submission.json`. It
 rechecks every input and ignores saved score files. One invalid entry prevents

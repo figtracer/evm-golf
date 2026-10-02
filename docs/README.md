@@ -12,11 +12,9 @@ EVM expressions. Start with the setup guide, then choose a workflow.
 | [Contributing](../CONTRIBUTING.md) | Code changes, puzzle solutions, proof research |
 | [Agent guide](../AGENTS.md) | Contestant instructions and batch proposals |
 
-## Data and results
+## Challenges and leaderboards
 
-- [Challenge definitions](../challenges.json)
-- [Verified leaderboard](../leaderboard/README.md)
-- [Submission corpus](../submissions)
-
-Generated proofs and score files accompany each verified entry. Use the documented
-commands to reproduce them with the pinned toolchain.
+[Challenge definitions](../challenges.json) are checked in. Use the
+[leaderboard command](cli.md#leaderboards) to generate rankings and verification
+evidence from local submissions. Entries, results, proofs, and logs stay out of
+the source repository.

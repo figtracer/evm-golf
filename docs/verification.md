@@ -1,7 +1,7 @@
 # Verification and scoring
 
 The current ruleset is `evm-golf-cancun`. It fixes the puzzle semantics,
-compiler, score definition, and proof policy used by the checked-in entries.
+compiler, score definition, and proof policy used to verify leaderboard entries.
 The tool is unreleased: entries are reverified against the current checker,
 without release-version migrations.
 
@@ -71,15 +71,8 @@ Runtime byte counts include the wrapper. Deployment costs are not scored.
 References are compiled with this project's compiler; improvements over
 these synthetic baselines are not improvements over optimized Solidity output.
 
-| Example | Replacement | Body gas | Runtime bytes |
-| --- | --- | ---: | ---: |
-| `x * 2` | `x + x` | 13 → 11 | 11 → 10 |
-| `(x xor y) xor y` | `x` | 23 → 5 | 16 → 8 |
-| `(x & y) \| (x & ~y)` | `x` | 34 → 5 | 20 → 8 |
-| `~x \| ~y` | `~(x & y)` | 20 → 17 | 14 → 13 |
-| `(x * 2) + (y - y)` | `x + x` | 28 → 11 | 17 → 10 |
-
-[Reproducible entries](../leaderboard/README.md) include the bytecode and proofs.
+Generate a [leaderboard](cli.md#leaderboards) to view scores alongside their
+bytecode and proof evidence. Results are kept outside the source repository.
 
 ## Resource limits
 

@@ -1,6 +1,0 @@
-{
-  "ruleset": "evm-golf-cancun",
-  "challenge": "double",
-  "author": "reference",
-  "candidate": "(+ x x)"
-}

@@ -1,7 +1,8 @@
 # Contributing
 
 Contributions to EVM Golf are welcome. This includes optimizer improvements,
-verification fixes, new puzzles, and cheaper solutions to existing challenges.
+verification fixes, and new puzzles. Puzzle solutions belong in leaderboard
+submissions, outside the source repository.
 
 ## Getting started
 
@@ -29,38 +30,25 @@ possible. See [compatibility](docs/dev/README.md#compatibility) for ruleset chan
 
 ## Puzzle solutions
 
-Validate a candidate against a fixed challenge:
+Keep puzzle entries and generated results out of pull requests. Verify a candidate
+and generate a local leaderboard:
 
 ```sh
-cargo run --locked -- submit double '(shl1 x)' --author your-name --out runs/entry-1
-```
-
-Add the resulting `submission.json` under `submissions/<unique-id>/` in a pull
-request. Explain the replacement. The checker accepts expression strings; custom
-Lean programs and arbitrary bytecode are outside the current submission format.
-
-Contributors only need to supply the input JSON. Maintainers use a trusted checkout
-of the checker, review and copy the new inputs, and regenerate the board:
-
-```sh
+cargo run --locked -- submit double '(shl1 x)' --author your-name --out submissions/entry-1
 cargo run --locked -- leaderboard --submissions submissions --out runs/board-1
 ```
 
-Review the fresh output before updating `leaderboard/`. Saved score files are
-ignored. Changes to the checker, puzzle definitions, toolchain, or dependencies
-need separate review. Public submissions are not automatically executed by a
-GitHub Actions workflow.
-
-The board lists every verified submission, including ties and candidates worse
-than the reference. Author names are self-reported. Entries labeled `reference`
-are project examples.
+Use a trusted checkout of the checker. It reads expression strings from each
+`submission.json`, regenerates proofs and scores, and ignores saved scores.
+Custom Lean programs and arbitrary bytecode are outside the submission format.
+Author names are self-reported; all verified entries appear, including ties.
+See [leaderboards](docs/cli.md#leaderboards) for the output format.
 
 ## AI assistance
 
 Disclose AI assistance in pull requests and describe its extent. The initial
-implementation and reference entries were developed
-with OpenAI Codex. AI-generated candidates use the same verification path as
-human-written candidates.
+implementation was developed with OpenAI Codex. AI-generated candidates use the
+same verification path as human-written candidates.
 
 ## Proof research
 

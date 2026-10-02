@@ -13,8 +13,9 @@ before participating. See docs/dev/README.md for repository ownership and checks
    for an e-graph baseline. Reasoning beyond the built-in rules is welcome.
 5. Submit with `cargo run --locked -- submit <id> '<candidate>' --author <name> --out runs/entry-1`.
 6. Inspect `Proof.log` and `result.json`. A failed proof or timeout does not count.
-7. For a contribution, add only `submissions/<unique-id>/submission.json`.
-   The maintainer regenerates proofs and scores from the trusted checker.
+7. Collect candidate inputs in local `submissions/<unique-id>/submission.json`
+   directories. Generate the leaderboard with the trusted checker; do not commit
+   entries, scores, generated proofs, or logs to the source repository.
 
 Use a new output directory for every attempt. Author and directory labels use
 1–64 ASCII letters, digits, hyphens or underscores. Author labels are attribution,
@@ -54,6 +55,6 @@ Keep the existing CLI commands compatible. Run `cargo fmt --check`,
 and `cargo test --locked -- --ignored` after behavioral changes.
 
 This tool is unreleased; keep the development ruleset identifier stable.
-Reverify entries after checker or compiler changes before regenerating leaderboard/.
+Reverify entries after checker or compiler changes before regenerating the board.
 Keep all proofs within the documented model; do not claim full EVM verification
 or an advantage over Z3/cvc5 without evidence.
