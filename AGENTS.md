@@ -57,6 +57,8 @@ outside this repository. Publish product changes only when explicitly requested.
 
 ## Develop the tool
 
+Update the README after major capability or CLI changes; keep it short.
+
 Keep the existing CLI commands compatible. Run `cargo fmt --check`,
 `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`,
 and `cargo test --locked -- --ignored` after behavioral changes.

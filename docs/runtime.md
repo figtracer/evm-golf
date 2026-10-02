@@ -77,16 +77,18 @@ their immediate widths. The emitted runtime is decoded and analyzed again.
 
 ## What is verified
 
-Lean checks each distinct pair of **exact local byte fragments**, over arbitrary
-stack tails with the required stack prefix. The model excludes gas and stack
-limits; Rust analysis separately checks stack heights. These are local proofs,
+Lean checks that each pair of **exact local byte fragments** produces the same
+successful stack result, over arbitrary tails with the required stack prefix.
+Two failing executions cannot satisfy the certificate. The model excludes gas
+and stack limits; Rust analysis separately checks stack heights. These are local proofs,
 not a Lean proof of the CFG, relocation implementation, or full EVM execution.
 
 For every supplied case, revm compares success/revert status, return or revert
-data, logs, balances, nonces, and final storage (initial slots overlaid with journal changes). Exceptional halts,
-including out-of-gas, fail validation. Candidate gas must not increase in any
-supplied case. Cases are concrete tests and do not establish equivalence for
-all inputs or states. No global gas saving is inferred from byte-size savings.
+data, logs, balances, nonces, and final storage (initial slots overlaid with
+journal changes). Exceptional halts, including out-of-gas, fail validation. Reported gas is transaction receipt gas:
+it includes intrinsic gas and applies refunds and the refund cap. Candidate gas
+must not increase in any supplied case. Cases are concrete tests and do not
+establish equivalence for all inputs or states. No global gas saving is inferred from byte-size savings.
 
 Code identity changes. Deployment behavior, EXTCODEHASH observations by other
 contracts, transaction fee effects, and equivalence at every gas limit are not

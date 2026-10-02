@@ -481,7 +481,7 @@ fn certificates(rewrites: &[Rewrite]) -> Result<(String, Vec<String>)> {
         } else {
             "a :: tail"
         };
-        source.push_str(&format!("theorem {name} (a x y : Golf.Word) (tail : List Golf.Word) :\n  Golf.run {} {:?} ({stack}) x y = Golf.run {} {:?} ({stack}) x y := by\n  first | rfl | simp [Golf.run, Golf.immediate, GolfProof.shift_one, BitVec.mul_two, BitVec.two_mul]\n#print axioms {name}\n\n", before.len()+1, before, after.len()+1, after));
+        source.push_str(&format!("theorem {name} (a x y : Golf.Word) (tail : List Golf.Word) :\n  ∃ output, Golf.run {} {:?} ({stack}) x y = some output ∧\n    Golf.run {} {:?} ({stack}) x y = some output := by\n  refine ⟨_, rfl, ?_⟩\n  first | rfl | simp [Golf.run, Golf.immediate, GolfProof.shift_one, BitVec.mul_two, BitVec.two_mul]\n#print axioms {name}\n\n", before.len()+1, before, after.len()+1, after));
         names.push(name);
     }
     Ok((source, names))
@@ -828,6 +828,148 @@ mod tests {
     }
 
     #[test]
+    fn every_local_rewrite_family_preserves_the_full_revm_stack() {
+        // Serialize every surviving word, including unrelated tail words, to memory.
+        // revm's execution is independent of the small Lean fragment interpreter.
+        let wrap = |fragment: &[u8], input: &[U256], outputs: usize| {
+            let mut code = input
+                .iter()
+                .flat_map(|&word| push(word))
+                .collect::<Vec<_>>();
+            code.extend_from_slice(fragment);
+            for i in 0..outputs {
+                code.extend(push(U256::from(i * 32)));
+                code.push(0x52);
+            }
+            code.extend(push(U256::from(outputs * 32)));
+            code.extend([0x5f, 0xf3]);
+            code
+        };
+        let edges = [
+            U256::ZERO,
+            U256::from(1),
+            U256::from(2),
+            U256::from(255),
+            U256::from(256),
+            U256::from(1) << 255,
+            U256::MAX - U256::from(1),
+            U256::MAX,
+        ];
+        let tail = [U256::from(0x1234), U256::MAX];
+        let mut fragments = vec![
+            bytes("6000"),
+            bytes("610001"),
+            bytes(&format!("7f{}ff", "00".repeat(31))),
+        ];
+        for x in edges {
+            for y in edges {
+                for opcode in [0x01, 0x02, 0x03, 0x16, 0x17, 0x18, 0x1b] {
+                    let mut fragment = push(x);
+                    fragment.extend(push(y));
+                    fragment.push(opcode);
+                    fragments.push(fragment);
+                }
+            }
+        }
+        for text in [
+            "5f01", "600017", "600018", "600102", "600202", "60011b", "1919", "8016", "8017",
+        ] {
+            fragments.push(bytes(text));
+        }
+        for before in fragments {
+            let decoded = decode(&before);
+            let refs = decoded.iter().collect::<Vec<_>>();
+            let (count, after, required) = replacement(&refs).unwrap();
+            assert_eq!(count, decoded.len());
+            for a in if required == 0 {
+                &edges[..1]
+            } else {
+                &edges[..]
+            } {
+                let mut input = tail.to_vec();
+                if required == 1 {
+                    input.push(*a);
+                }
+                let outputs = decoded.iter().fold(input.len(), |height, op| {
+                    let info = OpCode::info_by_op(op.bytes[0]).unwrap();
+                    height - usize::from(info.inputs()) + usize::from(info.outputs())
+                });
+                compare(
+                    &wrap(&before, &input, outputs),
+                    &wrap(&after, &input, outputs),
+                    &case(""),
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{} -> {}: {error:#}",
+                        hex::encode(&before),
+                        hex::encode(&after)
+                    )
+                });
+            }
+        }
+        // Same top word, corrupted tail: a return-value-only check would miss it.
+        let input = [tail[0], tail[1], U256::from(42)];
+        assert!(
+            compare(
+                &wrap(&bytes("6001021919"), &input, 3),
+                &wrap(&bytes("90505f90"), &input, 3),
+                &case("")
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("observable execution mismatch")
+        );
+    }
+
+    #[test]
+    fn runtime_rewrites_preserve_transient_storage_and_memory_copy() {
+        for (code, words) in [
+            ("5f356000015f5d5f5c5f5260205ff3", 1),
+            ("5f356000015f5260205f60205e60405ff3", 2),
+        ] {
+            let code = bytes(code);
+            let (candidate, rewrites) = transform(&analyze(&code).unwrap()).unwrap();
+            assert!(!rewrites.is_empty());
+            for value in [U256::ZERO, U256::MAX] {
+                let data = value.to_be_bytes::<32>();
+                let mut input = case(&hex::encode(data));
+                input.storage.insert("0".into(), "7".into());
+                compare(&code, &candidate, &input).unwrap();
+                let (result, state) = execute(&candidate, &input).unwrap();
+                assert_eq!(result.output().unwrap().as_ref(), data.repeat(words));
+                assert_eq!(
+                    state[&Address::repeat_byte(0x22)].storage[&U256::ZERO],
+                    U256::from(7)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_receipt_gas_applies_storage_refunds_and_the_refund_cap() {
+        for code in ["60006000015f5500", "60006000015f5560075f5500"] {
+            let code = bytes(code);
+            let (candidate, _) = transform(&analyze(&code).unwrap()).unwrap();
+            for initial in ["0", "7"] {
+                let mut input = case("");
+                input.storage.insert("0".into(), initial.into());
+                compare(&code, &candidate, &input).unwrap();
+            }
+        }
+        let code = bytes("60006000015f555f60015500");
+        let (candidate, _) = transform(&analyze(&code).unwrap()).unwrap();
+        let mut input = case("");
+        input.storage = BTreeMap::from([("0".into(), "7".into()), ("1".into(), "7".into())]);
+        let result = compare(&code, &candidate, &input).unwrap();
+        // The seven-gas instruction saving becomes five receipt gas at the cap.
+        assert_eq!(
+            (result.baseline_gas, result.candidate_gas),
+            (24_813, 24_808)
+        );
+    }
+
+    #[test]
     #[ignore = "requires Lean 4.34.0"]
     fn checks_local_certificates_and_rejects_corruption() {
         let dir = tempdir().unwrap();
@@ -868,6 +1010,17 @@ mod tests {
         };
         let (source, names) = certificates(&[wrong]).unwrap();
         let path = dir.path().join("Underflow.lean");
+        fs::write(&path, source).unwrap();
+        assert!(proof::verify_named(&path, &names).is_err());
+        // Equality of two failing model executions is not a valid rewrite proof.
+        let both_fail = Rewrite {
+            original_pc: 0,
+            before: "fe".into(),
+            after: "fd".into(),
+            required_stack: 0,
+        };
+        let (source, names) = certificates(&[both_fail]).unwrap();
+        let path = dir.path().join("BothFail.lean");
         fs::write(&path, source).unwrap();
         assert!(proof::verify_named(&path, &names).is_err());
     }

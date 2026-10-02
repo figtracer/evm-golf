@@ -49,8 +49,8 @@ each extracted candidate is checked independently.
 
 ## revm checks
 
-The complete runtime is executed by revm under Cancun rules on 128 input pairs:
-an 8×8 boundary grid and 64 deterministic full-width samples. Output words and gas
+For expression commands, revm executes the complete runtime under Cancun on
+128 input pairs: an 8×8 boundary grid and 64 deterministic full-width samples. Output words and gas
 must match the reference evaluation and the static cost calculation.
 
 The hand-written Lean model has not been formally connected to the Ethereum

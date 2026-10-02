@@ -14,7 +14,7 @@ EVM Golf optimizes expressions and supported contract runtimes, checks local
 rewrites with Lean, and measures bytecode with revm. Expression equality is proved
 once and reused to certify expression bytecode.
 
-- **Optimize** — Search equivalent expressions with e-graphs, minimizing gas and byte size.
+- **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
 - **Verify** — Check expression equivalence and emitted bytecode against a Lean model.
 - **Compete** — Submit solutions to fixed puzzles and generate verified leaderboards.
 - **Evaluate** — Replay agent proposals and compare them with the built-in optimizer.
@@ -41,8 +41,13 @@ Optimize an expression:
 cargo run --locked -- optimize '(+ (* x 2) (- y y))' --out runs/optimization
 ```
 
-The output directory contains the bytecode, Lean proof, checker log, and score.
-Results belong in generated leaderboards; run artifacts are not checked in.
+Optimize a runtime using your [bytecode and execution cases](docs/runtime.md):
+
+```sh
+cargo run --locked -- optimize-runtime --bytecode runs/runtime.hex --cases runs/cases.json --out runs/runtime-1
+```
+
+Outputs include bytecode, proofs, logs, and scores. Keep generated results local.
 
 Submit a puzzle solution:
 
