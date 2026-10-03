@@ -12,7 +12,7 @@ use revm::{
         Interpreter,
         interpreter_types::{Jumps, LegacyBytecode},
     },
-    primitives::{Address, Log},
+    primitives::{Address, Log, U256},
 };
 use serde_json::json;
 use std::{
@@ -21,6 +21,8 @@ use std::{
     io::{BufReader, BufWriter, Read, Write},
     path::Path,
 };
+
+use super::layout::CodeCopy;
 
 // Match the fixture-input size budget per transaction. Gas does not bound
 // repeated observer reads of reused memory. This operational bound limits both
@@ -36,6 +38,8 @@ pub(super) struct Calls<'a> {
     stream: Stream,
     target: Address,
     accounts: &'a BTreeSet<Address>,
+    runtime: &'a [u8],
+    copies: &'a [CodeCopy],
     depth: usize,
     bytes: usize,
     failure: Option<String>,
@@ -46,11 +50,15 @@ impl<'a> Calls<'a> {
         path: &Path,
         target: Address,
         accounts: &'a BTreeSet<Address>,
+        runtime: &'a [u8],
+        copies: &'a [CodeCopy],
     ) -> Result<Self> {
         Ok(Self {
             stream: Stream::Record(BufWriter::new(File::create_new(path)?)),
             target,
             accounts,
+            runtime,
+            copies,
             depth: 0,
             bytes: 0,
             failure: None,
@@ -61,11 +69,15 @@ impl<'a> Calls<'a> {
         path: &Path,
         target: Address,
         accounts: &'a BTreeSet<Address>,
+        runtime: &'a [u8],
+        copies: &'a [CodeCopy],
     ) -> Result<Self> {
         Ok(Self {
             stream: Stream::Compare(BufReader::new(File::open(path)?)),
             target,
             accounts,
+            runtime,
+            copies,
             depth: 0,
             bytes: 0,
             failure: None,
@@ -135,6 +147,21 @@ impl<'a> Calls<'a> {
 }
 
 impl<CTX: ContextTr> Inspector<CTX> for Calls<'_> {
+    fn initialize_interp(&mut self, interpreter: &mut Interpreter, _context: &mut CTX) {
+        if self.failure.is_some() {
+            return;
+        }
+        let code_address = interpreter
+            .input
+            .bytecode_address
+            .unwrap_or(interpreter.input.target_address);
+        // This hook also runs for callbacks. revm keeps the frame's bytecode
+        // immutable; bind it once rather than scan it for every copied word.
+        if code_address == self.target && interpreter.bytecode.bytecode_slice() != self.runtime {
+            self.failure = Some("target runtime differs from the checked bytecode image".into());
+        }
+    }
+
     fn step(&mut self, interpreter: &mut Interpreter, _context: &mut CTX) {
         if self.failure.is_some() {
             return;
@@ -153,7 +180,17 @@ impl<CTX: ContextTr> Inspector<CTX> for Calls<'_> {
                 Some(0xf1 | 0xfa)
             ),
             0xf0 | 0xf2 | 0xf4 | 0xf5 | 0xff => true,
-            0x39 => code_address == self.target,
+            0x39 if code_address == self.target => !self.copies.iter().any(|copy| {
+                copy.pc == interpreter.bytecode.pc()
+                    && [
+                        copy.destination,
+                        U256::from(copy.source),
+                        U256::from(copy.len),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .all(|(index, expected)| interpreter.stack.peek(index) == Ok(expected))
+            }),
             0x3c | 0x3f => interpreter
                 .stack
                 .peek(0)
@@ -167,6 +204,16 @@ impl<CTX: ContextTr> Inspector<CTX> for Calls<'_> {
                 interpreter.bytecode.pc()
             ));
             return;
+        }
+        if opcode == 0x39 && code_address == self.target {
+            // The static certificate binds both images' copied bytes. Record
+            // the site and depth to compare path observations without repeatedly
+            // copying constant data or bypassing the existing trace budget.
+            self.event(
+                json!({"event":"codecopy", "depth":self.depth,
+                    "pc":interpreter.bytecode.pc()}),
+                &[],
+            );
         }
         if matches!(opcode, 0x55 | 0x5d) {
             let (Ok(key), Ok(value)) = (interpreter.stack.peek(0), interpreter.stack.peek(1))
@@ -273,23 +320,95 @@ impl<CTX: ContextTr> Inspector<CTX> for Calls<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use revm::{Context, MainContext, bytecode::Bytecode, interpreter::interpreter::ExtBytecode};
     use tempfile::tempdir;
+
+    #[test]
+    fn target_codecopy_requires_checked_image_site_and_all_operands() {
+        let runtime = [0x60, 1, 0x60, 8, 0x5f, 0x39, 0x39, 0, 0xab];
+        let copies = super::super::layout::code_copies(&runtime);
+        assert_eq!(copies.len(), 1);
+        let accounts = BTreeSet::new();
+        let directory = tempdir().unwrap();
+        let mut context = Context::mainnet();
+        for (name, pc, operands, changed_image, child, accepted) in [
+            ("valid", 5, vec![1u64, 8, 0], false, false, true),
+            ("length", 5, vec![2, 8, 0], false, false, false),
+            ("source", 5, vec![1, 7, 0], false, false, false),
+            ("destination", 5, vec![1, 8, 1], false, false, false),
+            ("underflow", 5, vec![8, 0], false, false, false),
+            ("uncertified", 6, vec![1, 8, 0], false, false, false),
+            ("different_image", 5, vec![1, 8, 0], true, false, false),
+            ("child_own_code", 6, vec![1, 8, 0], true, true, true),
+        ] {
+            let mut guard = Calls::record(
+                &directory.path().join(name),
+                Address::ZERO,
+                &accounts,
+                &runtime,
+                &copies,
+            )
+            .unwrap();
+            let mut interpreter = Interpreter::default_ext();
+            let mut actual = runtime.to_vec();
+            if changed_image {
+                actual[8] = 0xcd;
+            }
+            interpreter.bytecode = ExtBytecode::new(Bytecode::new_legacy(actual.into()));
+            if child {
+                interpreter.input.bytecode_address = Some(Address::with_last_byte(11));
+            }
+            guard.initialize_interp(&mut interpreter, &mut context);
+            interpreter.bytecode.absolute_jump(pc);
+            for operand in operands {
+                assert!(interpreter.stack.push(U256::from(operand)));
+            }
+            guard.step(&mut interpreter, &mut context);
+            assert_eq!(guard.finish().is_ok(), accepted, "{name}");
+        }
+    }
+
+    #[test]
+    fn target_callback_rechecks_runtime_identity() {
+        let directory = tempdir().unwrap();
+        let accounts = BTreeSet::new();
+        let mut guard = Calls::record(
+            &directory.path().join("callback"),
+            Address::ZERO,
+            &accounts,
+            &[0],
+            &[],
+        )
+        .unwrap();
+        let mut context = Context::mainnet();
+        let mut interpreter = Interpreter::default_ext();
+        interpreter.bytecode = ExtBytecode::new(Bytecode::new_legacy(vec![0].into()));
+        guard.initialize_interp(&mut interpreter, &mut context);
+        assert!(guard.failure.is_none());
+        interpreter.input.bytecode_address = Some(Address::with_last_byte(11));
+        interpreter.bytecode = ExtBytecode::new(Bytecode::new_legacy(vec![1].into()));
+        guard.initialize_interp(&mut interpreter, &mut context);
+        assert!(guard.failure.is_none());
+        interpreter.input.bytecode_address = Some(Address::ZERO);
+        guard.initialize_interp(&mut interpreter, &mut context);
+        assert!(guard.finish().is_err());
+    }
 
     #[test]
     fn exact_stream_requires_all_events_and_preserves_existing_evidence() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("calls.trace");
         let accounts = BTreeSet::new();
-        let mut baseline = Calls::record(&path, Address::ZERO, &accounts).unwrap();
+        let mut baseline = Calls::record(&path, Address::ZERO, &accounts, &[], &[]).unwrap();
         baseline.event(json!({"event":"sample"}), b"exact bytes");
         baseline.finish().unwrap();
-        assert!(Calls::record(&path, Address::ZERO, &accounts).is_err());
-        let mut candidate = Calls::compare(&path, Address::ZERO, &accounts).unwrap();
+        assert!(Calls::record(&path, Address::ZERO, &accounts, &[], &[]).is_err());
+        let mut candidate = Calls::compare(&path, Address::ZERO, &accounts, &[], &[]).unwrap();
         assert!(candidate.finish().is_err());
-        let mut candidate = Calls::compare(&path, Address::ZERO, &accounts).unwrap();
+        let mut candidate = Calls::compare(&path, Address::ZERO, &accounts, &[], &[]).unwrap();
         candidate.event(json!({"event":"sample"}), b"exact bytes");
         candidate.finish().unwrap();
-        let mut candidate = Calls::compare(&path, Address::ZERO, &accounts).unwrap();
+        let mut candidate = Calls::compare(&path, Address::ZERO, &accounts, &[], &[]).unwrap();
         candidate.event(json!({"event":"sample"}), b"other bytes");
         assert!(candidate.finish().is_err());
     }
@@ -300,7 +419,7 @@ mod tests {
         let path = directory.path().join("calls.trace");
         let accounts = BTreeSet::new();
         let payload = vec![0; 32 * 1024];
-        let mut baseline = Calls::record(&path, Address::ZERO, &accounts).unwrap();
+        let mut baseline = Calls::record(&path, Address::ZERO, &accounts, &[], &[]).unwrap();
         for _ in 0..64 {
             baseline.event(json!({"event":"sample"}), &payload);
         }
@@ -314,7 +433,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("calls.trace");
         let accounts = BTreeSet::new();
-        let mut baseline = Calls::record(&path, Address::ZERO, &accounts).unwrap();
+        let mut baseline = Calls::record(&path, Address::ZERO, &accounts, &[], &[]).unwrap();
         baseline.event(json!({"event":"sample"}), &vec![0; MAX_TRACE_BYTES]);
         assert!(baseline.finish().is_err());
         assert_eq!(std::fs::metadata(path).unwrap().len(), 0);

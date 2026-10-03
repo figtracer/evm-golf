@@ -474,14 +474,21 @@ fn optimize_checked(
     verification: &'static str,
     replay: impl FnOnce(&[u8]) -> Result<Vec<CaseResult>>,
 ) -> Result<Report> {
-    let (candidate, rewrites) = match mode {
-        RuntimeMode::Compact => transform(&analyze(code)?)?,
-        RuntimeMode::PreserveLayout => layout::transform(&layout::analyze(code, guard_calls)?)?,
+    let (candidate, rewrites, copies) = match mode {
+        RuntimeMode::Compact => {
+            let (candidate, rewrites) = transform(&analyze(code)?)?;
+            (candidate, rewrites, Vec::new())
+        }
+        RuntimeMode::PreserveLayout => {
+            let analysis = layout::analyze(code, guard_calls)?;
+            let (candidate, rewrites) = layout::transform(&analysis)?;
+            (candidate, rewrites, analysis.copies)
+        }
     };
     let verification = match mode {
         RuntimeMode::Compact => verification,
         RuntimeMode::PreserveLayout if guard_calls => {
-            "Lean: exact artifact reconstruction, unchanged offsets and local bounded/contextual stack equivalence. revm: supplied account-fixture transactions, guarded nested calls and ordered storage/log effects including reverted effects. No full-EVM correspondence, whole-contract, all-input, all-gas, deployment, or code-identity equivalence proof."
+            "Lean: exact artifact reconstruction, unchanged offsets, certified constant code-copy bytes and local bounded/contextual stack equivalence. revm: supplied account-fixture transactions, guarded nested calls and ordered storage/log effects including reverted effects. No full-EVM correspondence, whole-contract, all-input, all-gas, deployment, or code-identity equivalence proof."
         }
         RuntimeMode::PreserveLayout => {
             "Lean: exact artifact reconstruction, unchanged byte offsets, instruction boundaries, jump destinations, local stack profiles and gas-erased fragment equivalence under complete prefixes/suffixes in the bounded 1024-word model. Rust: conservative reachability; no global stack-height proof. revm: supplied transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof."
@@ -509,7 +516,9 @@ fn optimize_checked(
         let path = out.join("Rewrites.lean");
         let (source, names) = match mode {
             RuntimeMode::Compact => certificates(&rewrites)?,
-            RuntimeMode::PreserveLayout => artifact::certificate(code, &candidate, &rewrites)?,
+            RuntimeMode::PreserveLayout => {
+                artifact::certificate(code, &candidate, &rewrites, &copies)?
+            }
         };
         fs::write(&path, source)?;
         Some(proof::verify_named(

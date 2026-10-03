@@ -16,8 +16,8 @@ once and reused to certify expression bytecode. Fixed-layout runtime certificate
 check rewrite sites together, bind them to emitted bytes, and prove stack-limit
 behavior in complete instruction contexts within the Lean model. Account fixtures
 replay constructor-initialized state and support guarded external calls in
-fixed-layout mode. Rewrites include multiplication by powers of two without
-moving instructions.
+fixed-layout mode, including constant own-code reads with certified byte preservation.
+Rewrites include multiplication by powers of two without moving instructions.
 
 - **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
 - **Verify** — Check expression equivalence and emitted bytecode against a Lean model.

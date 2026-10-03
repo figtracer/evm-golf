@@ -20,6 +20,44 @@ pub struct LayoutAnalysis {
     instructions: Vec<Instruction>,
     #[serde(skip)]
     reachable: BTreeSet<usize>,
+    #[serde(skip)]
+    pub(super) copies: Vec<CodeCopy>,
+}
+
+/// Literal own-code read. Offsets are bounded before conversion to slices.
+#[derive(Debug)]
+pub(super) struct CodeCopy {
+    pub(super) pc: usize,
+    pub(super) prefix_start: usize,
+    pub(super) source: usize,
+    pub(super) len: usize,
+    pub(super) destination: U256,
+}
+
+// Include valid unreachable sites conservatively. Reachability analysis below
+// rejects every reachable CODECOPY that is absent from this list.
+pub(super) fn code_copies(code: &[u8]) -> Vec<CodeCopy> {
+    decode(code)
+        .windows(4)
+        .filter_map(|ops| {
+            if ops[3].bytes[0] != 0x39 {
+                return None;
+            }
+            let len = usize::try_from(push_value(&ops[0].bytes)?).ok()?;
+            let source = usize::try_from(push_value(&ops[1].bytes)?).ok()?;
+            let destination = push_value(&ops[2].bytes)?;
+            if source > code.len() || len > code.len() - source {
+                return None;
+            }
+            Some(CodeCopy {
+                pc: ops[3].pc,
+                prefix_start: ops[0].pc,
+                source,
+                len,
+                destination,
+            })
+        })
+        .collect()
 }
 
 pub(super) fn analyze(code: &[u8], guard_calls: bool) -> Result<LayoutAnalysis> {
@@ -32,6 +70,11 @@ pub(super) fn analyze(code: &[u8], guard_calls: bool) -> Result<LayoutAnalysis> 
         "EOF bytecode is unsupported"
     );
     let instructions = decode(code);
+    let copies = if guard_calls {
+        code_copies(code)
+    } else {
+        Vec::new()
+    };
     let index: BTreeMap<_, _> = instructions
         .iter()
         .enumerate()
@@ -66,6 +109,7 @@ pub(super) fn analyze(code: &[u8], guard_calls: bool) -> Result<LayoutAnalysis> 
                 .get(i + 1)
                 .is_some_and(|next| matches!(next.bytes[0], 0xf1 | 0xfa)),
             0x3b | 0xf1 | 0xfa if guard_calls => true,
+            0x39 if guard_calls => copies.iter().any(|copy| copy.pc == pc),
             0x5a | 0xfa => is_direct_ecrecover(&instructions, i),
             _ => allowed(op) || matches!(op, 0x38 | 0x58),
         };
@@ -95,6 +139,10 @@ pub(super) fn analyze(code: &[u8], guard_calls: bool) -> Result<LayoutAnalysis> 
         reachable_instructions: reachable.len(),
         jump_destinations: destinations.len(),
         instructions,
+        copies: copies
+            .into_iter()
+            .filter(|copy| reachable.contains(&copy.pc))
+            .collect(),
         reachable,
     })
 }
@@ -129,6 +177,12 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
             || !analysis.reachable.contains(&b.pc)
             || b.bytes[0] != 0x02
         {
+            continue;
+        }
+        // Preserve every byte that an admitted own-code read can observe.
+        if analysis.copies.iter().any(|copy| {
+            copy.len != 0 && a.pc < copy.source + copy.len && copy.source < b.pc + b.bytes.len()
+        }) {
             continue;
         }
         let Some(value) = push_value(&a.bytes) else {
@@ -217,6 +271,42 @@ mod tests {
             value: String::new(),
             storage: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn constant_copies_preserve_observed_bytes_and_reject_dynamic_ranges() {
+        // One multiplication is live; copy three bytes from its encoding.
+        let observed = bytes("600760020250600360025f3900");
+        assert!(analyze(&observed, false).is_err());
+        let (candidate, rewrites) = transform(&analyze(&observed, true).unwrap()).unwrap();
+        assert_eq!(candidate, observed);
+        assert!(rewrites.is_empty());
+        // Copying the following STOP leaves the multiplication eligible.
+        let disjoint = bytes("6007600202506001600b5f3900");
+        let (candidate, rewrites) = transform(&analyze(&disjoint, true).unwrap()).unwrap();
+        assert_eq!(rewrites.len(), 1);
+        assert_eq!(&candidate[6..], &disjoint[6..]);
+        for code in [
+            "600160ff5f3900",   // out of bounds
+            "600160005b5f3900", // executable entry splits the literal prefix
+            "60015f355f3900",   // dynamic source
+            "60015f3900",       // insufficient literal arguments
+        ] {
+            assert!(analyze(&bytes(code), true).is_err(), "{code}");
+        }
+        // Unreachable own-code reads must not suppress existing optimizations.
+        let unreachable = bytes("60076002025000600360025f3900");
+        for guarded in [false, true] {
+            let analysis = analyze(&unreachable, guarded).unwrap();
+            assert!(analysis.copies.is_empty());
+            assert_eq!(transform(&analysis).unwrap().1.len(), 1);
+        }
+        // JUMPDEST bytes inside immediate data do not create entry points.
+        let embedded = bytes("5f5f615b003900");
+        assert!(analyze(&embedded, true).is_ok());
+        assert_eq!(code_copies(&embedded)[0].destination, U256::from(0x5b00));
+        let oversized = bytes(&format!("5f7f{}5f3900", "ff".repeat(32)));
+        assert!(analyze(&oversized, true).is_err());
     }
 
     #[test]

@@ -96,4 +96,50 @@ structure LayoutArtifact (original candidate : List Nat) (sites : List Site) : P
     profile site.before == some (1, 0, 1) && profile site.after == some (1, 0, 1)) = true
   localProofs : CertifiedSites sites
 
+-- These certificates describe literal byte reads, not memory execution, gas,
+-- or control-flow equivalence. Both images are independently supplied above.
+structure CodeCopy where
+  pc : Nat
+  prefixStart : Nat
+  source : Nat
+  length : Nat
+  destination : Nat
+  deriving DecidableEq
+
+-- Decode a complete literal PUSH, including PUSH0, without EVM zero-padding.
+def literalPush (code : List Nat) (pc : Nat) : Option (Nat × Nat) := do
+  let op ← code[pc]?
+  if 95 ≤ op ∧ op ≤ 127 ∧ pc + (op - 95) + 1 ≤ code.length then
+    let value := ((code.drop (pc + 1)).take (op - 95)).foldl
+      (fun value byte => value * 256 + byte) 0
+    some (value, pc + (op - 95) + 1)
+  else none
+
+def copyPrefix (code : List Nat) (site : CodeCopy) : Bool :=
+  match literalPush code site.prefixStart with
+  | none => false
+  | some (length, second) =>
+    match literalPush code second with
+    | none => false
+    | some (source, third) =>
+      match literalPush code third with
+      | none => false
+      | some (destination, finish) =>
+        length == site.length && source == site.source &&
+        destination == site.destination && finish == site.pc && code[finish]? == some 57
+
+structure CodeCopyArtifact (original candidate : List Nat) (copies : List CodeCopy) : Prop where
+  prefixes : copies.all (fun site =>
+    ((scan original).map (fun item => item.1)).contains site.prefixStart &&
+    ((scan candidate).map (fun item => item.1)).contains site.prefixStart &&
+    copyPrefix original site && copyPrefix candidate site &&
+    (original.drop site.prefixStart).take (site.pc + 1 - site.prefixStart) ==
+      (candidate.drop site.prefixStart).take (site.pc + 1 - site.prefixStart)) = true
+  sourceBounds : copies.all (fun site =>
+    site.source + site.length ≤ original.length &&
+    site.source + site.length ≤ candidate.length) = true
+  copiedBytes : copies.all (fun site =>
+    (original.drop site.source).take site.length ==
+      (candidate.drop site.source).take site.length) = true
+
 end GolfLayout

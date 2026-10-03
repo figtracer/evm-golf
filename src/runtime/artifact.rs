@@ -3,7 +3,7 @@
 use anyhow::{Result, ensure};
 use std::fmt::Write as _;
 
-use super::{MAX_RUNTIME_BYTES, Rewrite, certificates, from_hex};
+use super::{MAX_RUNTIME_BYTES, Rewrite, certificates, from_hex, layout};
 
 const FRAGMENT_MODEL: &str = include_str!("../../lean/Fragment.lean");
 const LOCAL_CERTIFICATES: &str = include_str!("../../lean/Certificates.lean");
@@ -20,6 +20,7 @@ pub(super) fn certificate(
     original: &[u8],
     candidate: &[u8],
     rewrites: &[Rewrite],
+    copies: &[layout::CodeCopy],
 ) -> Result<(String, Vec<String>)> {
     ensure!(
         original.len() <= MAX_RUNTIME_BYTES && candidate.len() <= MAX_RUNTIME_BYTES,
@@ -62,7 +63,28 @@ pub(super) fn certificate(
     source.push_str(
         "]\nend GolfArtifact\n\ntheorem layout_artifact :\n  GolfLayout.LayoutArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.sites := by\n  refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩\n  exact GolfReflected.checkSites_sound GolfArtifact.sites (by decide +kernel)\n#print axioms layout_artifact\n",
     );
-    Ok((source, vec!["layout_artifact".into()]))
+    let mut names = vec!["layout_artifact".into()];
+    if !copies.is_empty() {
+        source.push_str("\nnamespace GolfArtifact\ndef copies : List GolfLayout.CodeCopy := [\n");
+        for (i, copy) in copies.iter().enumerate() {
+            writeln!(
+                source,
+                "  ⟨{}, {}, {}, {}, {}⟩{}",
+                copy.pc,
+                copy.prefix_start,
+                copy.source,
+                copy.len,
+                copy.destination,
+                if i + 1 == copies.len() { "" } else { "," }
+            )
+            .unwrap();
+        }
+        source.push_str(
+            "]\nend GolfArtifact\n\ntheorem codecopy_artifact :\n  GolfLayout.CodeCopyArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.copies := by\n  exact ⟨by decide +kernel, by decide +kernel, by decide +kernel⟩\n#print axioms codecopy_artifact\n",
+        );
+        names.push("codecopy_artifact".into());
+    }
+    Ok((source, names))
 }
 
 #[cfg(test)]
@@ -94,7 +116,7 @@ mod tests {
             },
         ];
         let check = |name: &str, original: &[u8], candidate: &[u8], rewrites: &[Rewrite]| {
-            let (source, names) = certificate(original, candidate, rewrites)?;
+            let (source, names) = certificate(original, candidate, rewrites, &[])?;
             let path = dir.path().join(format!("{name}.lean"));
             fs::write(&path, source).unwrap();
             proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational)
@@ -260,7 +282,7 @@ mod tests {
             // These deliberately unusual fragments need independent local
             // proofs so the test isolates the global boundary/profile gate.
             let (unbounded, _) = certificates(std::slice::from_ref(&rewrite)).unwrap();
-            let (source, _) = certificate(&original, &candidate, &[rewrite]).unwrap();
+            let (source, _) = certificate(&original, &candidate, &[rewrite], &[]).unwrap();
             let leaf = &unbounded[unbounded.find("theorem runtime_rewrite_0").unwrap()..];
             let before_bytes = from_hex(before).unwrap();
             let after_bytes = from_hex(after).unwrap();
@@ -323,7 +345,7 @@ mod tests {
             assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
         }
         // The new guarantee must depend on enforcing the actual 1,024-word bound.
-        let (source, names) = certificate(&original, &candidate, &rewrites).unwrap();
+        let (source, names) = certificate(&original, &candidate, &rewrites, &[]).unwrap();
         let path = dir.path().join("WrongStackLimit.lean");
         fs::write(
             &path,
@@ -335,7 +357,7 @@ mod tests {
         .unwrap();
         assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
         // Local theorems must be attached to their own concrete sites.
-        let (source, names) = certificate(&original, &candidate, &rewrites).unwrap();
+        let (source, names) = certificate(&original, &candidate, &rewrites, &[]).unwrap();
         let path = dir.path().join("WrongTheorem.lean");
         fs::write(
             &path,
@@ -378,6 +400,100 @@ mod tests {
     }
     #[test]
     #[ignore = "requires Lean 4.34.0"]
+    fn binds_constant_codecopy_prefixes_and_actual_copied_bytes() {
+        let dir = tempdir().unwrap();
+        let original = from_hex("600760020250600260005f3900").unwrap();
+        let candidate = from_hex("600760011b50600260005f3900").unwrap();
+        let rewrite = Rewrite {
+            original_pc: 2,
+            before: "600202".into(),
+            after: "60011b".into(),
+            required_stack: 1,
+        };
+        let (source, names) = certificate(
+            &original,
+            &candidate,
+            &[rewrite],
+            &layout::code_copies(&original),
+        )
+        .unwrap();
+        assert_eq!(names, ["layout_artifact", "codecopy_artifact"]);
+        let check = |name: &str, source: &str, names: &[String]| {
+            let path = dir.path().join(format!("{name}.lean"));
+            fs::write(&path, source).unwrap();
+            proof::verify_named(&path, names, proof::AxiomPolicy::Foundational)
+        };
+        check("DisjointCopy", &source, &names).unwrap();
+        // Isolate the new root: reconstruction must not mask a broken copy gate.
+        let start = source.find("theorem layout_artifact :").unwrap();
+        let end = source.find("#print axioms layout_artifact\n").unwrap()
+            + "#print axioms layout_artifact\n".len();
+        let mut isolated = source.clone();
+        isolated.replace_range(start..end, "");
+        let names = vec!["codecopy_artifact".into()];
+        check("CopyOnly", &isolated, &names).unwrap();
+        for (name, image, bytes) in [
+            ("OriginalCopy", "original", &original),
+            ("CandidateCopy", "candidate", &candidate),
+        ] {
+            let mut changed = bytes.clone();
+            changed[1] = 8;
+            let tampered = isolated.replace(
+                &format!("def {image} : List Nat := {bytes:?}"),
+                &format!("def {image} : List Nat := {changed:?}"),
+            );
+            assert!(check(name, &tampered, &names).is_err());
+        }
+        // A changed destination leaves copied bytes and source bounds intact.
+        let mut changed = candidate.clone();
+        changed[10] = 0x30; // ADDRESS is not the certified PUSH0 destination.
+        let tampered = isolated.replace(
+            &format!("def candidate : List Nat := {candidate:?}"),
+            &format!("def candidate : List Nat := {changed:?}"),
+        );
+        assert!(check("ChangedPrefix", &tampered, &names).is_err());
+        // Matching literal bytes inside another PUSH are not instruction edges.
+        let mut embedded = isolated.clone();
+        for (image, bytes) in [("original", &original), ("candidate", &candidate)] {
+            let mut changed = bytes.clone();
+            changed[0] = 0x6b;
+            embedded = embedded.replace(
+                &format!("def {image} : List Nat := {bytes:?}"),
+                &format!("def {image} : List Nat := {changed:?}"),
+            );
+        }
+        assert!(check("EmbeddedPrefix", &embedded, &names).is_err());
+        // Equal truncated slices do not prove an in-bounds copy. Use a matching
+        // literal prefix on both sides, leaving only sourceBounds false.
+        let mut bounds = isolated.clone();
+        for (image, bytes) in [("original", &original), ("candidate", &candidate)] {
+            let mut changed = bytes.clone();
+            changed[7] = 32;
+            changed[9] = 32;
+            bounds = bounds.replace(
+                &format!("def {image} : List Nat := {bytes:?}"),
+                &format!("def {image} : List Nat := {changed:?}"),
+            );
+        }
+        bounds = bounds.replace("⟨11, 6, 0, 2, 0⟩", "⟨11, 6, 32, 32, 0⟩");
+        let root = bounds.find("theorem codecopy_artifact :").unwrap();
+        let control = format!(
+            "{}\ntheorem copy_bounds_control :\n  GolfArtifact.copies.all (fun site => GolfLayout.copyPrefix GolfArtifact.original site && GolfLayout.copyPrefix GolfArtifact.candidate site) = true ∧\n  GolfArtifact.copies.all (fun site => (GolfArtifact.original.drop site.source).take site.length == (GolfArtifact.candidate.drop site.source).take site.length) = true ∧\n  GolfArtifact.copies.all (fun site => site.source + site.length ≤ GolfArtifact.original.length && site.source + site.length ≤ GolfArtifact.candidate.length) = false := by decide +kernel\n#print axioms copy_bounds_control\n",
+            &bounds[..root]
+        );
+        check(
+            "BoundsCounterexample",
+            &control,
+            &["copy_bounds_control".into()],
+        )
+        .unwrap();
+        assert!(check("OutOfBounds", &bounds, &names).is_err());
+        let missing_report = isolated.replace("#print axioms codecopy_artifact", "");
+        assert!(check("MissingCopyRoot", &missing_report, &names).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires Lean 4.34.0"]
     fn contextual_replacement_preserves_success_and_checks_its_boundaries() {
         let dir = tempdir().unwrap();
         let before = from_hex("600202").unwrap();
@@ -388,7 +504,7 @@ mod tests {
             after: hex::encode(&after),
             required_stack: 1,
         };
-        let (mut source, mut names) = certificate(&before, &after, &[rewrite]).unwrap();
+        let (mut source, mut names) = certificate(&before, &after, &[rewrite], &[]).unwrap();
         source.push_str(r#"theorem context_nonvacuous (x y : Golf.Word) :
   GolfBounded.run 9 [95,53,96,1,27,96,3,1] [] x y = some [3 + 2*x] := by
   exact GolfComposition.context_success (front := [95,53]) (suffix := [96,3,1])

@@ -26,6 +26,7 @@ use super::{
     calls::Calls,
     compare_results, execute_env, from_hex,
     input::{self, unique_map},
+    layout,
 };
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -253,9 +254,22 @@ pub(super) fn replay(
         info.code = Some(code);
         db.insert_account_info(target, info);
     }
-    if let ReplayPolicy::GuardedCalls(directory) = policy {
+    let copies = if let ReplayPolicy::GuardedCalls(directory) = policy {
+        let copies = layout::analyze(original, true)?.copies;
+        for copy in &copies {
+            ensure!(
+                candidate.get(copy.prefix_start..=copy.pc)
+                    == original.get(copy.prefix_start..=copy.pc)
+                    && candidate.get(copy.source..copy.source + copy.len)
+                        == original.get(copy.source..copy.source + copy.len),
+                "constant CODECOPY prefix or copied bytes changed"
+            );
+        }
         fs::create_dir(directory)?;
-    }
+        copies
+    } else {
+        Vec::new()
+    };
     scenario
         .transactions
         .iter()
@@ -283,7 +297,7 @@ pub(super) fn replay(
                     .build()?;
                 if let ReplayPolicy::GuardedCalls(directory) = policy {
                     let path = directory.join(format!("transaction-{i}.trace"));
-                    let mut baseline = Calls::record(&path, target, &addresses)?;
+                    let mut baseline = Calls::record(&path, target, &addresses, original, &copies)?;
                     let a = execute_env(
                         &mut left,
                         tx.clone(),
@@ -294,7 +308,8 @@ pub(super) fn replay(
                         Some(&mut baseline),
                     )?;
                     baseline.finish()?;
-                    let mut candidate = Calls::compare(&path, target, &addresses)?;
+                    let mut candidate =
+                        Calls::compare(&path, target, &addresses, candidate, &copies)?;
                     let b = execute_env(
                         &mut right,
                         tx,

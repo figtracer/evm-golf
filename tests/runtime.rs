@@ -656,3 +656,54 @@ fn cli_guards_external_calls_only_with_layout_account_fixtures() {
             .exists()
     );
 }
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn cli_certifies_constant_code_reads_and_preserves_observed_rewrites() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("runtime.hex");
+    let scenarios = directory.path().join("scenarios.json");
+    let caller = format!("0x{}", "11".repeat(20));
+    let target = format!("0x{}", "22".repeat(20));
+    fs::write(
+        &scenarios,
+        serde_json::to_vec(&serde_json::json!([{
+            "caller":caller, "target":target,
+            "accounts":{&caller:{"balance":"1000000"}, &target:{}},
+            "transactions":[{"calldata":"","gas_limit":100000}]
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    for (name, code, count) in [
+        ("disjoint", "600760020250600360105f3960035ff300abcdef", 1),
+        ("observed", "600760020250600360025f3960035ff300abcdef", 0),
+    ] {
+        fs::write(&input, code).unwrap();
+        let out = directory.path().join(name);
+        let result = Command::new(env!("CARGO_BIN_EXE_evm-golf"))
+            .args(["optimize-runtime", "--preserve-layout", "--bytecode"])
+            .arg(&input)
+            .arg("--scenarios")
+            .arg(&scenarios)
+            .arg("--out")
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let report: Value =
+            serde_json::from_slice(&fs::read(out.join("result.json")).unwrap()).unwrap();
+        assert_eq!(report["rewrites"].as_array().unwrap().len(), count);
+        assert_eq!(
+            report["cases"][0]["baseline_gas"].as_u64().unwrap()
+                - report["cases"][0]["candidate_gas"].as_u64().unwrap(),
+            (count * 2) as u64
+        );
+        let proof = fs::read_to_string(out.join("Rewrites.lean")).unwrap();
+        assert!(proof.contains("codecopy_artifact"));
+    }
+}

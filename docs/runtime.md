@@ -5,8 +5,9 @@ complete contracts within a conservative subset: resolved jumps and internal
 returns, storage, memory, logs, returns, and reverts. `--preserve-layout` also
 supports dynamic jumps, PC, and CODESIZE by keeping every byte offset unchanged.
 Both modes admit restricted ECRECOVER precompile calls described below. With
-explicit account fixtures, fixed-layout mode also admits guarded CALL/STATICCALL
-and EXTCODESIZE. Creation, delegation, selfdestruct, code-content introspection
+explicit account fixtures, fixed-layout mode also admits guarded CALL/STATICCALL,
+EXTCODESIZE, and certified constant CODECOPY reads. Creation, delegation,
+selfdestruct, dynamic code-content introspection
 and standalone gas introspection remain unsupported in the optimized runtime.
 The separate `check-runtime` command can
 execute these operations against supplied account fixtures; it does not optimize
@@ -181,7 +182,15 @@ delegation, creation and selfdestruct are rejected. This currently excludes prox
 assets that use DELEGATECALL.
 
 The guard runs in every executed frame, including callbacks into the optimized
-target. It rejects standalone GAS, target CODECOPY, and EXTCODECOPY/EXTCODEHASH of
+target. Constant target CODECOPY is admitted only after three complete literal
+PUSH instructions (length, source, destination), with an in-bounds source range.
+Lean checks the unchanged prefix and equal copied bytes in both complete images;
+rewrites touching copied bytes are skipped. Replay checks the actual image, site,
+and stack arguments, including callbacks. Dynamic reads and out-of-bounds ranges
+(including zero-length reads with an out-of-bounds source) remain unsupported.
+This is byte-preservation evidence, not a formal EVM memory or gas theorem.
+
+The guard rejects standalone GAS and EXTCODECOPY/EXTCODEHASH of
 the target. Other accounts retain their original code. Exceptional failures,
 including failed child calls whose results are discarded, reject optimization;
 matching explicit REVERT is allowed. ECRECOVER must execute successfully as a
@@ -193,7 +202,8 @@ later rolled back. Independent databases retain the existing receipt, output,
 committed-state and non-increasing gas checks. Forwarded gas may differ: the
 trace comparison is concrete evidence for the supplied executions, not an
 all-gas or whole-contract proof. Untested paths and observations remain unproved.
-The Lean artifact proposition is unchanged and does not interpret calls.
+The existing Lean layout proposition does not interpret calls. Constant own-code
+reads add a separate certificate for their literal prefixes, bounds, and bytes.
 
 Baseline traces are streamed to `scenario-N-calls/transaction-M.trace` and
 candidates compare them byte for byte. Each transaction is limited to 1 MiB of
