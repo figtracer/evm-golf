@@ -473,6 +473,64 @@ theorem literal_rejection_controls :
 
     #[test]
     #[ignore = "requires Lean 4.34.0"]
+    fn binds_zero_dup_to_actual_artifact_and_stack_profile() {
+        let dir = tempdir().unwrap();
+        let original = from_hex("60008060020200").unwrap();
+        let candidate = from_hex("60005f60011b00").unwrap();
+        let rewrites = [
+            Rewrite {
+                original_pc: 0,
+                before: "600080".into(),
+                after: "60005f".into(),
+                required_stack: 0,
+            },
+            Rewrite {
+                original_pc: 3,
+                before: "600202".into(),
+                after: "60011b".into(),
+                required_stack: 1,
+            },
+        ];
+        let (mut source, mut names) = certificate(&original, &candidate, &rewrites, &[]).unwrap();
+        source.push_str(
+            r#"
+theorem zero_dup_controls :
+  GolfLayout.profile [128] = some (1,1,1) ∧
+  GolfLayout.profile [96,0,128] = some (0,2,2) ∧
+  GolfLayout.profile [96,0,95] = some (0,2,2) ∧
+  ((GolfLayout.profile [96,0,96,0,80] == some (0,1,2) &&
+      GolfLayout.profile [96,0,128] == some (0,1,2)) ||
+    (GolfLayout.profile [96,0,96,0,80] == some (0,2,2) &&
+      GolfLayout.profile [96,0,128] == some (0,2,2))) = false ∧
+  GolfReflected.checkSite ⟨0,[96,1,128],[96,1,95],0⟩ = false ∧
+  GolfReflected.checkSite ⟨0,[96,0,129],[96,0,95],0⟩ = false ∧
+  GolfReflected.checkSite ⟨0,[96,0,128],[96,0,80],0⟩ = false ∧
+  GolfReflected.checkSite ⟨0,[97,0,0,128],[97,0,0,95],0⟩ = false ∧
+  GolfReflected.checkSite ⟨0,[96,0,128],[96,0,95],1⟩ = false := by decide +kernel
+#print axioms zero_dup_controls
+"#,
+        );
+        names.push("zero_dup_controls".into());
+        let path = dir.path().join("ZeroDup.lean");
+        fs::write(&path, &source).unwrap();
+        proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).unwrap();
+        // A changed zero immediate must fail the aggregate proof, not only a leaf check.
+        let mut bad_original = original.clone();
+        let mut bad_candidate = candidate.clone();
+        let mut bad_rewrites = rewrites;
+        bad_original[1] = 1;
+        bad_candidate[1] = 1;
+        bad_rewrites[0].before = "600180".into();
+        bad_rewrites[0].after = "60015f".into();
+        let (source, names) =
+            certificate(&bad_original, &bad_candidate, &bad_rewrites, &[]).unwrap();
+        let path = dir.path().join("NonzeroDup.lean");
+        fs::write(&path, source).unwrap();
+        assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires Lean 4.34.0"]
     fn binds_constant_codecopy_prefixes_and_actual_copied_bytes() {
         let dir = tempdir().unwrap();
         let original = from_hex("600760020250600260005f3900").unwrap();

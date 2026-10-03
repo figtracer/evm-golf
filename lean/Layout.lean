@@ -68,6 +68,9 @@ def profileAux : Nat → List Nat → Int → Nat → Nat → Option (Nat × Int
       else none
     else if op = 1 ∨ op = 2 ∨ op = 22 ∨ op = 27 then
       profileAux fuel rest (height - 1) (max required (2 - height).toNat) peak
+    else if op = 128 then
+      let next := height + 1
+      profileAux fuel rest next (max required (1 - height).toNat) (max peak next.toNat)
     else if op = 80 then
       profileAux fuel rest (height - 1) (max required (1 - height).toNat) peak
     else none
@@ -109,7 +112,8 @@ structure LayoutArtifact (original candidate : List Nat) (sites : List Site) : P
     if site.requiredStack == 1 then
       profile site.before == some (1, 0, 1) && profile site.after == some (1, 0, 1)
     else site.requiredStack == 0 &&
-      profile site.before == some (0, 1, 2) && profile site.after == some (0, 1, 2)) = true
+      ((profile site.before == some (0, 1, 2) && profile site.after == some (0, 1, 2)) ||
+        (profile site.before == some (0, 2, 2) && profile site.after == some (0, 2, 2)))) = true
   localProofs : CertifiedSites sites
 
 -- These certificates describe literal byte reads, not memory execution, gas,

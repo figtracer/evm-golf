@@ -267,10 +267,13 @@ so PC, CODESIZE, and computed jump offsets remain stable.
 The rules replace multiplication by zero or one with AND zero or ADD zero, and
 multiplication by any other 256-bit power of two with SHL by its exponent. They
 retain the original PUSH width, including padded constants, and save two opcode
-gas before refunds. Two-literal AND/SHL folds keep both PUSH widths and replace
+gas before refunds. The exact `PUSH1 0; DUP1` pair becomes `PUSH1 0; PUSH0`,
+saving one opcode gas with the same two-slot stack peak. Two-literal AND/SHL folds
+keep both PUSH widths and replace
 the operation with POP, storing the result in the first literal when it fits.
 These save one opcode gas while preserving the temporary two-word stack peak.
-Both families preserve input requirements and final height. Lean validates the exact site list with a [proved checker](../lean/Certificates.lean),
+These rewrites preserve input requirements and final height. Lean validates the
+exact site list with a [proved checker](../lean/Certificates.lean),
 reusing symbolic fragment proofs. The full certificate contains independently
 embedded original and candidate byte arrays. The certificate checks
 that sorted, nonoverlapping replacements reconstruct the candidate, that every

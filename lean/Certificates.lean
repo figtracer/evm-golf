@@ -176,10 +176,20 @@ theorem checkLiteral_sound (site : GolfLayout.Site) (checked : checkLiteral site
   exact GolfLiterals.certify _ _ _ _ _ firstWidth secondWidth
     (by omega) (by omega) operation value
 
+-- Only the exact zero/DUP1 pair is admitted, not arbitrary stack rewrites.
+def checkZeroDup (site : GolfLayout.Site) : Bool :=
+  decide (site.before = [96, 0, 128]) && decide (site.after = [96, 0, 95])
+
+theorem checkZeroDup_sound (site : GolfLayout.Site) (checked : checkZeroDup site = true) :
+    GolfLiterals.LocalCertificate site.before site.after := by
+  simp only [checkZeroDup, Bool.and_eq_true, decide_eq_true_eq] at checked
+  rw [checked.1, checked.2]
+  exact GolfLiterals.certify_zero_dup
+
 -- Stack metadata chooses the certificate proposition, not merely a profile.
 def checkSite (site : GolfLayout.Site) : Bool :=
   if site.requiredStack = 1 then checkLocal site
-  else if site.requiredStack = 0 then checkLiteral site else false
+  else if site.requiredStack = 0 then checkLiteral site || checkZeroDup site else false
 
 -- Structurally recursive Bool traversal; each occurrence checks its exact bytes.
 def checkSites (sites : List GolfLayout.Site) : Bool := sites.all checkSite
@@ -199,7 +209,11 @@ theorem checkSites_sound (sites : List GolfLayout.Site) (checked : checkSites si
         localProof.contextual (ih checked.2)
     · split at localCheck
       · rename_i required
-        have localProof := checkLiteral_sound site localCheck
+        have localProof : GolfLiterals.LocalCertificate site.before site.after := by
+          simp only [Bool.or_eq_true] at localCheck
+          rcases localCheck with literal | zeroDup
+          · exact checkLiteral_sound site literal
+          · exact checkZeroDup_sound site zeroDup
         exact GolfLayout.CertifiedSites.literalCons required localProof.unbounded localProof.bounded
           localProof.contextual (ih checked.2)
       · cases localCheck

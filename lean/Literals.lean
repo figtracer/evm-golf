@@ -2,6 +2,7 @@
 Exact two-literal folds in the small Golf model. Both programs retain two PUSH
 instructions, including the temporary peak of two additional stack words.
 The equality premise binds the folded literal to the original word operation.
+The exact zero-duplication rule also preserves two additional stack words.
 -/
 namespace GolfLiterals
 
@@ -114,5 +115,66 @@ theorem certify (first second folded discard : List Nat) (op : Nat)
   refine ⟨word folded :: stack, ?_, ?_⟩
   · rw [beforeRun, expression]
   · rw [afterRun]; rfl
+
+-- Exact zero duplication retains two free stack slots and both instruction boundaries.
+theorem zero_dup_before (stack : List Golf.Word) (x y : Golf.Word) :
+    GolfBounded.run 4 [96, 0, 128] stack x y =
+      if stack.length ≤ 1022 then some (0 :: 0 :: stack) else none := by
+  by_cases good : stack.length ≤ 1022
+  · have h0 : ¬1024 < stack.length := by omega
+    have h1 : ¬1024 < stack.length + 1 := by omega
+    have h2 : ¬1024 < stack.length + 1 + 1 := by omega
+    simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1, h2]
+  · by_cases h0 : 1024 < stack.length
+    · simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0]
+    · by_cases h1 : 1024 < stack.length + 1
+      · simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1]
+      · have h2 : 1024 < stack.length + 1 + 1 := by omega
+        simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1, h2]
+
+theorem zero_dup_after (stack : List Golf.Word) (x y : Golf.Word) :
+    GolfBounded.run 4 [96, 0, 95] stack x y =
+      if stack.length ≤ 1022 then some (0 :: 0 :: stack) else none := by
+  by_cases good : stack.length ≤ 1022
+  · have h0 : ¬1024 < stack.length := by omega
+    have h1 : ¬1024 < stack.length + 1 := by omega
+    have h2 : ¬1024 < stack.length + 1 + 1 := by omega
+    simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1, h2]
+  · by_cases h0 : 1024 < stack.length
+    · simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0]
+    · by_cases h1 : 1024 < stack.length + 1
+      · simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1]
+      · have h2 : 1024 < stack.length + 1 + 1 := by omega
+        simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1, h2]
+
+theorem zero_dup_complete_before : GolfComposition.Complete [96, 0, 128] 2 := by
+  exact GolfComposition.Complete.step (op := 96) (immediate := [0]) (by decide +kernel)
+    (GolfComposition.Complete.step (op := 128) (immediate := []) (by decide +kernel)
+      GolfComposition.Complete.nil)
+
+theorem zero_dup_complete_after : GolfComposition.Complete [96, 0, 95] 2 := by
+  exact GolfComposition.Complete.step (op := 96) (immediate := [0]) (by decide +kernel)
+    (GolfComposition.Complete.step (op := 95) (immediate := []) (by decide +kernel)
+      GolfComposition.Complete.nil)
+
+theorem certify_zero_dup : GolfLiterals.LocalCertificate [96, 0, 128] [96, 0, 95] := by
+  have bounded : GolfBounded.LiteralEquivalent [96, 0, 128] [96, 0, 95] := by
+    refine ⟨?_, ?_, ?_⟩
+    · intro stack x y
+      exact (zero_dup_before stack x y).trans (zero_dup_after stack x y).symm
+    · intro stack x y height
+      refine ⟨0 :: 0 :: stack, ?_, ?_⟩
+      · simpa only [List.length_cons, List.length_nil, Nat.reduceAdd, if_pos height] using
+          zero_dup_before stack x y
+      · simpa only [List.length_cons, List.length_nil, Nat.reduceAdd, if_pos height] using
+          zero_dup_after stack x y
+    · intro stack x y height
+      simp only [List.length_cons, List.length_nil, Nat.reduceAdd]
+      rw [zero_dup_before, zero_dup_after]
+      simp [show ¬stack.length ≤ 1022 by omega]
+  refine ⟨?_, bounded, GolfComposition.context_of_equal
+    zero_dup_complete_before zero_dup_complete_after bounded.equal⟩
+  intro stack x y
+  exact ⟨0 :: 0 :: stack, rfl, rfl⟩
 
 end GolfLiterals

@@ -173,6 +173,33 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
     for i in 0..instructions.len().saturating_sub(1) {
         let a = &instructions[i];
         let b = &instructions[i + 1];
+        // Catalog entries must refer to disjoint bytes in the original image.
+        // Never feed a generated opcode back into this pass's next rewrite.
+        if rewrites
+            .last()
+            .is_some_and(|rewrite: &Rewrite| a.pc < rewrite.original_pc + rewrite.before.len() / 2)
+        {
+            continue;
+        }
+        if a.bytes == [0x60, 0]
+            && b.bytes == [0x80]
+            && [a.pc, b.pc]
+                .iter()
+                .all(|pc| analysis.reachable.contains(pc))
+            && !analysis.copies.iter().any(|copy| {
+                copy.len != 0 && a.pc < copy.source + copy.len && copy.source < b.pc + b.bytes.len()
+            })
+        {
+            let source_pc = a.pc;
+            instructions[i + 1].bytes[0] = 0x5f;
+            rewrites.push(Rewrite {
+                original_pc: source_pc,
+                before: "600080".into(),
+                after: "60005f".into(),
+                required_stack: 0,
+            });
+            continue;
+        }
         // Fold two constants without removing either PUSH: the transient peak
         // must remain two words even when the result could use a single PUSH.
         if let Some(c) = instructions.get(i + 2)
@@ -397,6 +424,79 @@ mod tests {
             gas_limit: 200_000,
             value: String::new(),
             storage: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn zero_dup_preserves_stack_limits_and_immutable_catalogs() {
+        let original = bytes("6000805f5260205260405ff3");
+        let (candidate, rewrites) = transform(&analyze(&original, false).unwrap()).unwrap();
+        assert_eq!(rewrites.len(), 1);
+        assert_eq!(rewrites[0].before, "600080");
+        assert_eq!(rewrites[0].after, "60005f");
+        assert_eq!(rewrites[0].required_stack, 0);
+        let result = compare(&original, &candidate, &case("")).unwrap();
+        assert_eq!(result.baseline_gas - result.candidate_gas, 1);
+        for code in ["600080", "60005f"] {
+            assert_eq!(stack_signature(&bytes(code)).unwrap(), (0, 2, 2));
+        }
+        for height in [0, 1022, 1023, 1024] {
+            let mut before = vec![0x5f; height];
+            before.extend(bytes("60008000"));
+            let mut after = vec![0x5f; height];
+            after.extend(bytes("60005f00"));
+            let left = execute(&before, &case("")).unwrap().result;
+            let right = execute(&after, &case("")).unwrap().result;
+            assert_eq!(left.is_halt(), height >= 1023);
+            assert_eq!(left.is_halt(), right.is_halt());
+            if left.is_halt() {
+                assert_eq!(left, right);
+            }
+        }
+        // Generated PUSH0 must not start a second overlapping rule in this pass.
+        for (before, after) in [
+            ("60008060011600", "60005f60011600"),
+            ("6000800200", "60005f0200"),
+            ("6000808000", "60005f8000"),
+        ] {
+            let original = bytes(before);
+            let analysis = analyze(&original, false).unwrap();
+            let catalog = opportunities(&analysis).unwrap();
+            assert_eq!(catalog.len(), 1);
+            let (candidate, rewrites) = transform_selected(&analysis, &[0]).unwrap();
+            assert_eq!(candidate, bytes(after));
+            validate_catalog(&original, &candidate, &rewrites).unwrap();
+        }
+        for protected in [
+            "60018000",
+            "6100008000",
+            "60008100",
+            "6260008000",
+            "00600080",
+            "60008050600160015f3900",
+            "60008050600160025f3900",
+        ] {
+            let original = bytes(protected);
+            let (candidate, rewrites) = transform(&analyze(&original, true).unwrap()).unwrap();
+            assert_eq!(candidate, original);
+            assert!(rewrites.is_empty());
+        }
+        let original = bytes("60008050600260020250600760031600");
+        let analysis = analyze(&original, false).unwrap();
+        let catalog = opportunities(&analysis).unwrap();
+        assert_eq!(
+            catalog.iter().map(|r| r.original_pc).collect::<Vec<_>>(),
+            [0, 6, 10]
+        );
+        for mask in 0..8 {
+            let selected: Vec<_> = catalog
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| (mask & (1 << i) != 0).then_some(r.original_pc))
+                .collect();
+            let (candidate, rewrites) = transform_selected(&analysis, &selected).unwrap();
+            validate_catalog(&original, &candidate, &rewrites).unwrap();
+            compare(&original, &candidate, &case("")).unwrap();
         }
     }
 

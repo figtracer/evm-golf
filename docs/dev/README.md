@@ -16,7 +16,7 @@
 | `lean/upstream/` | Generic upstream interpreter region lemmas and trusted generation templates |
 | `lean/Model.lean` | The limited bytecode semantics used by the proofs |
 | `lean/Fragment.lean` | Reusable exact power-of-two fragment execution proofs |
-| `lean/Literals.lean` | Two-literal AND/SHL folds with preserved transient stack peaks |
+| `lean/Literals.lean` | Two-literal folds and exact zero duplication with preserved stack peaks |
 | `lean/Stack.lean` | Operational instruction-boundary stack limits for local fragments |
 | `lean/Composition.lean` | Decoded boundaries, fuel and contextual substitution in the bounded model |
 | `lean/Certificates.lean` | Soundness of the shared exact-site checker |
