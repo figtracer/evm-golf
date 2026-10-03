@@ -222,9 +222,11 @@ so PC, CODESIZE, and computed jump offsets remain stable.
 
 The rules replace multiplication by zero or one with AND zero or ADD zero, and
 multiplication by any other 256-bit power of two with SHL by its exponent. They
-retain the original PUSH width, including padded constants. Each has the same input
-stack requirement, peak growth, and final height, and saves two opcode gas before
-refunds. Lean validates the exact site list with a [proved checker](../lean/Certificates.lean),
+retain the original PUSH width, including padded constants, and save two opcode
+gas before refunds. Two-literal AND/SHL folds keep both PUSH widths and replace
+the operation with POP, storing the result in the first literal when it fits.
+These save one opcode gas while preserving the temporary two-word stack peak.
+Both families preserve input requirements and final height. Lean validates the exact site list with a [proved checker](../lean/Certificates.lean),
 reusing symbolic fragment proofs. The full certificate contains independently
 embedded original and candidate byte arrays. The certificate checks
 that sorted, nonoverlapping replacements reconstruct the candidate, that every
@@ -233,9 +235,11 @@ length, and local stack profiles agree. Replacements inside PUSH data are reject
 The artifact model is [lean/Layout.lean](../lean/Layout.lean). Each site's
 certificate also executes its exact fragments under
 [lean/Stack.lean](../lean/Stack.lean), which enforces the 1,024-word bound at every
-instruction boundary. It proves equal successful results for incoming heights
-1–1,023, underflow on an empty stack, and overflow at height 1,024. These local
-properties do not establish the heights reached by the surrounding program.
+instruction boundary. Multiplication rewrites prove equal successful results at
+incoming heights 1–1,023, underflow on an empty stack, and overflow at height 1,024.
+Literal folds use a separate proposition: success at heights 0–1,022 and overflow
+from 1,023 upward. The emitted required-stack metadata selects the corresponding
+proof; matching stack profiles alone cannot certify a rewrite. These local properties do not establish the heights reached by the surrounding program.
 [lean/Composition.lean](../lean/Composition.lean) additionally proves that each
 replacement preserves the result under any completely decoded prefix and suffix
 in the bounded model, including preservation of successful execution. The proof

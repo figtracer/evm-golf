@@ -707,3 +707,43 @@ fn cli_certifies_constant_code_reads_and_preserves_observed_rewrites() {
         assert!(proof.contains("codecopy_artifact"));
     }
 }
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn cli_proves_literal_folds_with_zero_required_stack() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("runtime.hex");
+    let cases = directory.path().join("cases.json");
+    fs::write(&input, "60076003165f5260205ff3").unwrap();
+    fs::write(&cases, r#"[{"calldata":"","gas_limit":100000}]"#).unwrap();
+    let out = directory.path().join("folded");
+    let result = Command::new(env!("CARGO_BIN_EXE_evm-golf"))
+        .args(["optimize-runtime", "--preserve-layout", "--bytecode"])
+        .arg(&input)
+        .arg("--cases")
+        .arg(&cases)
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: Value =
+        serde_json::from_slice(&fs::read(out.join("result.json")).unwrap()).unwrap();
+    assert_eq!(report["rewrites"].as_array().unwrap().len(), 1);
+    assert_eq!(report["rewrites"][0]["required_stack"], 0);
+    assert_eq!(
+        report["cases"][0]["baseline_gas"].as_u64().unwrap()
+            - report["cases"][0]["candidate_gas"].as_u64().unwrap(),
+        1
+    );
+    assert_eq!(
+        fs::read_to_string(out.join("candidate.hex"))
+            .unwrap()
+            .trim(),
+        "60036000505f5260205ff3"
+    );
+}

@@ -9,6 +9,7 @@ structure Site where
   pc : Nat
   before : List Nat
   after : List Nat
+  requiredStack : Nat
   deriving DecidableEq
 
 -- PUSH data is skipped even when its final immediate is truncated. The scanner
@@ -67,6 +68,8 @@ def profileAux : Nat → List Nat → Int → Nat → Nat → Option (Nat × Int
       else none
     else if op = 1 ∨ op = 2 ∨ op = 22 ∨ op = 27 then
       profileAux fuel rest (height - 1) (max required (2 - height).toNat) peak
+    else if op = 80 then
+      profileAux fuel rest (height - 1) (max required (1 - height).toNat) peak
     else none
 
 def profile (code : List Nat) : Option (Nat × Int × Nat) :=
@@ -77,11 +80,21 @@ def FragmentEquivalent (before after : List Nat) : Prop :=
     ∃ output, Golf.run (before.length + 1) before (a :: tail) x y = some output ∧
       Golf.run (after.length + 1) after (a :: tail) x y = some output
 
+def LiteralEquivalent (before after : List Nat) : Prop :=
+  ∀ (stack : List Golf.Word) (x y : Golf.Word),
+    ∃ output, Golf.run (before.length + 1) before stack x y = some output ∧
+      Golf.run (after.length + 1) after stack x y = some output
+
 inductive CertifiedSites : List Site → Prop where
   | nil : CertifiedSites []
   | cons {site : Site} {sites : List Site} :
-      FragmentEquivalent site.before site.after →
+      site.requiredStack = 1 → FragmentEquivalent site.before site.after →
       GolfBounded.FragmentEquivalent site.before site.after →
+      GolfComposition.ContextEquivalent site.before site.after → CertifiedSites sites →
+        CertifiedSites (site :: sites)
+  | literalCons {site : Site} {sites : List Site} :
+      site.requiredStack = 0 → LiteralEquivalent site.before site.after →
+      GolfBounded.LiteralEquivalent site.before site.after →
       GolfComposition.ContextEquivalent site.before site.after → CertifiedSites sites →
         CertifiedSites (site :: sites)
 
@@ -93,7 +106,10 @@ structure LayoutArtifact (original candidate : List Nat) (sites : List Site) : P
   sameLayout : scan original = scan candidate
   siteBoundaries : aligned sites ((scan original).map (fun item => item.1) ++ [original.length]) = true
   stackProfiles : sites.all (fun site =>
-    profile site.before == some (1, 0, 1) && profile site.after == some (1, 0, 1)) = true
+    if site.requiredStack == 1 then
+      profile site.before == some (1, 0, 1) && profile site.after == some (1, 0, 1)
+    else site.requiredStack == 0 &&
+      profile site.before == some (0, 1, 2) && profile site.after == some (0, 1, 2)) = true
   localProofs : CertifiedSites sites
 
 -- These certificates describe literal byte reads, not memory execution, gas,

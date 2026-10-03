@@ -1,5 +1,5 @@
 /-!
-Reflect exact zero, one and power-of-two MUL rewrites into the existing local
+Reflect exact MUL identities and two-literal AND/SHL folds into the local
 unbounded, bounded and contextual certificate propositions. The checker validates
 actual byte lists; it does not define a substitute execution semantics.
 -/
@@ -142,8 +142,47 @@ theorem checkLocal_sound (site : GolfLayout.Site) (checked : checkLocal site = t
           ⟨afterPositive, afterWidth⟩ beforeValue rfl exponentBound)
     · cases power
 
+-- Each immediate is only a proposed slice; exact reconstructed code and widths
+-- below reject truncated PUSHs, extra instructions and malformed opcodes.
+def firstPart (code : List Nat) : List Nat :=
+  code.drop 1 |>.take (code.head! - 95)
+
+def secondPart (code : List Nat) : List Nat :=
+  firstPart (code.drop ((firstPart code).length + 1))
+
+def checkLiteral (site : GolfLayout.Site) : Bool :=
+  let first := firstPart site.before
+  let second := secondPart site.before
+  let folded := firstPart site.after
+  let discard := secondPart site.after
+  let op := site.before.getLast!
+  decide (first.length ≤ 32) &&
+    (decide (second.length ≤ 32) &&
+      (decide (folded.length = first.length) &&
+        (decide (discard.length = second.length) &&
+          (decide (op = 22 ∨ op = 27) &&
+            (decide (site.before = GolfLiterals.code first second op) &&
+              (decide (site.after = GolfLiterals.code folded discard 80) &&
+                decide (GolfLiterals.word folded =
+                  if op = 22 then GolfLiterals.word second &&& GolfLiterals.word first
+                  else GolfLiterals.word first <<< (GolfLiterals.word second).toNat)))))))
+
+theorem checkLiteral_sound (site : GolfLayout.Site) (checked : checkLiteral site = true) :
+    GolfLiterals.LocalCertificate site.before site.after := by
+  simp only [checkLiteral, Bool.and_eq_true, decide_eq_true_eq] at checked
+  rcases checked with ⟨firstWidth, secondWidth, foldedWidth, discardWidth,
+    operation, beforeCode, afterCode, value⟩
+  rw [beforeCode, afterCode]
+  exact GolfLiterals.certify _ _ _ _ _ firstWidth secondWidth
+    (by omega) (by omega) operation value
+
+-- Stack metadata chooses the certificate proposition, not merely a profile.
+def checkSite (site : GolfLayout.Site) : Bool :=
+  if site.requiredStack = 1 then checkLocal site
+  else if site.requiredStack = 0 then checkLiteral site else false
+
 -- Structurally recursive Bool traversal; each occurrence checks its exact bytes.
-def checkSites (sites : List GolfLayout.Site) : Bool := sites.all checkLocal
+def checkSites (sites : List GolfLayout.Site) : Bool := sites.all checkSite
 
 theorem checkSites_sound (sites : List GolfLayout.Site) (checked : checkSites sites = true) :
     GolfLayout.CertifiedSites sites := by
@@ -151,8 +190,18 @@ theorem checkSites_sound (sites : List GolfLayout.Site) (checked : checkSites si
   | nil => exact GolfLayout.CertifiedSites.nil
   | cons site sites ih =>
     simp only [checkSites, List.all_cons, Bool.and_eq_true] at checked
-    have localProof := checkLocal_sound site checked.1
-    exact GolfLayout.CertifiedSites.cons localProof.unbounded localProof.bounded localProof.contextual
-      (ih checked.2)
+    have localCheck := checked.1
+    simp only [checkSite] at localCheck
+    split at localCheck
+    · rename_i required
+      have localProof := checkLocal_sound site localCheck
+      exact GolfLayout.CertifiedSites.cons required localProof.unbounded localProof.bounded
+        localProof.contextual (ih checked.2)
+    · split at localCheck
+      · rename_i required
+        have localProof := checkLiteral_sound site localCheck
+        exact GolfLayout.CertifiedSites.literalCons required localProof.unbounded localProof.bounded
+          localProof.contextual (ih checked.2)
+      · cases localCheck
 
 end GolfReflected

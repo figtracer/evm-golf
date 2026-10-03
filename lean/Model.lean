@@ -3,7 +3,7 @@ import Std
 /-!
 A deliberately small, pure EVM bytecode model. A program starts with an empty
 stack and receives two calldata words. It supports PUSH0, PUSH1..32, CALLDATALOAD
-at offsets 0 and 32, DUP1, ADD, MUL, SUB, AND, OR, XOR, NOT, and SHL. The stack head is
+at offsets 0 and 32, DUP1, POP, ADD, MUL, SUB, AND, OR, XOR, NOT, and SHL. The stack head is
 the EVM top. Unsupported opcodes, truncated immediates and stack underflow fail.
 
 This models the expression body, before the shared memory/RETURN wrapper. It
@@ -32,6 +32,10 @@ def run (fuel : Nat) (code : List Nat) (stack : List Word) (x y : Word) :
           run fuel (rest.drop size)
             (BitVec.ofNat 256 (immediate (rest.take size)) :: stack) x y
         else none
+      else if op = 80 then
+        match stack with
+        | _ :: tail => run fuel rest tail x y
+        | _ => none
       else if op = 128 then
         match stack with
         | a :: tail => run fuel rest (a :: a :: tail) x y

@@ -8,7 +8,7 @@ use revm::{
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use super::{Instruction, MAX_RUNTIME_BYTES, Rewrite, allowed, decode, push_value};
+use super::{Instruction, MAX_RUNTIME_BYTES, Rewrite, allowed, decode, push_value, replacement};
 
 /// Conservative instruction reachability without stack-height or label proofs.
 #[derive(Debug, Serialize)]
@@ -173,6 +173,46 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
     for i in 0..instructions.len().saturating_sub(1) {
         let a = &instructions[i];
         let b = &instructions[i + 1];
+        // Fold two constants without removing either PUSH: the transient peak
+        // must remain two words even when the result could use a single PUSH.
+        if let Some(c) = instructions.get(i + 2)
+            && [a.pc, b.pc, c.pc]
+                .iter()
+                .all(|pc| analysis.reachable.contains(pc))
+            && matches!(c.bytes[0], 0x16 | 0x1b)
+            && !analysis.copies.iter().any(|copy| {
+                copy.len != 0 && a.pc < copy.source + copy.len && copy.source < c.pc + c.bytes.len()
+            })
+            && let Some((3, folded, 0)) = replacement(&[a, b, c])
+            && folded.len() <= a.bytes.len()
+        {
+            let before: Vec<_> = [a, b, c]
+                .iter()
+                .flat_map(|op| op.bytes.iter().copied())
+                .collect();
+            let mut first = a.bytes.clone();
+            first[1..].fill(0);
+            let start = first.len() - (folded.len() - 1);
+            first[start..].copy_from_slice(&folded[1..]);
+            let mut second = b.bytes.clone();
+            second[1..].fill(0);
+            let after: Vec<_> = first.iter().chain(&second).copied().chain([0x50]).collect();
+            ensure!(
+                stack_signature(&before)? == (0, 1, 2) && stack_signature(&after)? == (0, 1, 2),
+                "literal fold changes stack requirements or peak growth"
+            );
+            let source_pc = a.pc;
+            instructions[i].bytes = first;
+            instructions[i + 1].bytes = second;
+            instructions[i + 2].bytes[0] = 0x50;
+            rewrites.push(Rewrite {
+                original_pc: source_pc,
+                before: hex::encode(before),
+                after: hex::encode(after),
+                required_stack: 0,
+            });
+            continue;
+        }
         if !analysis.reachable.contains(&a.pc)
             || !analysis.reachable.contains(&b.pc)
             || b.bytes[0] != 0x02
@@ -307,6 +347,89 @@ mod tests {
         assert_eq!(code_copies(&embedded)[0].destination, U256::from(0x5b00));
         let oversized = bytes(&format!("5f7f{}5f3900", "ff".repeat(32)));
         assert!(analyze(&oversized, true).is_err());
+    }
+
+    #[test]
+    fn literal_folds_preserve_values_peaks_and_copied_ranges() {
+        for width in [0usize, 1, 2, 32] {
+            let mut first = vec![0x5f + width as u8];
+            first.extend(std::iter::repeat_n(0xff, width));
+            for second in [
+                U256::ZERO,
+                U256::from(1),
+                U256::from(255),
+                U256::from(256),
+                U256::MAX,
+            ] {
+                for op in [0x16, 0x1b] {
+                    let mut code = first.clone();
+                    code.push(0x7f);
+                    code.extend(second.to_be_bytes::<32>());
+                    code.push(op);
+                    code.extend(bytes("5f5260205ff3"));
+                    let (candidate, rewrites) = transform(&analyze(&code, false).unwrap()).unwrap();
+                    let result = compare(&code, &candidate, &case("")).unwrap();
+                    assert_eq!(candidate.len(), code.len());
+                    assert_eq!(
+                        result.baseline_gas - result.candidate_gas,
+                        rewrites.len() as u64
+                    );
+                    for rewrite in rewrites {
+                        assert_eq!(rewrite.required_stack, 0);
+                        assert_eq!(stack_signature(&bytes(&rewrite.before)).unwrap(), (0, 1, 2));
+                        assert_eq!(stack_signature(&bytes(&rewrite.after)).unwrap(), (0, 1, 2));
+                    }
+                }
+            }
+        }
+        // The folded value must fit the first PUSH, without discarding high bits.
+        for (code, count) in [
+            ("608060011b00", 0),
+            ("600160081b00", 0),
+            ("600160071b00", 1),
+            ("5f5f1600", 1),
+        ] {
+            assert_eq!(
+                transform(&analyze(&bytes(code), false).unwrap())
+                    .unwrap()
+                    .1
+                    .len(),
+                count
+            );
+        }
+        for height in [0, 1, 1022, 1023, 1024] {
+            let mut code = vec![0x5f; height];
+            code.extend(bytes("600760031600"));
+            let (candidate, rewrites) = transform(&analyze(&code, false).unwrap()).unwrap();
+            assert_eq!(rewrites.len(), 1);
+            let left = execute(&code, &case("")).unwrap().result;
+            let right = execute(&candidate, &case("")).unwrap().result;
+            assert_eq!(left.is_halt(), height >= 1023);
+            assert_eq!(left.is_halt(), right.is_halt());
+            if left.is_halt() {
+                assert_eq!(left, right);
+            }
+        }
+        // Copy the fold's first literal; even partial contact protects the site.
+        let protected = bytes("600760031650600160015f3900");
+        let (candidate, rewrites) = transform(&analyze(&protected, true).unwrap()).unwrap();
+        assert_eq!(candidate, protected);
+        assert!(rewrites.is_empty());
+        // Multiple folds plus the previous MUL family remain ordered/disjoint.
+        let mixed = bytes("60076003166002600202600f60031600");
+        let (_, rewrites) = transform(&analyze(&mixed, false).unwrap()).unwrap();
+        assert_eq!(
+            rewrites
+                .iter()
+                .map(|r| r.required_stack)
+                .collect::<Vec<_>>(),
+            [0, 1, 0]
+        );
+        assert!(
+            rewrites
+                .windows(2)
+                .all(|pair| pair[0].original_pc + pair[0].before.len() / 2 <= pair[1].original_pc)
+        );
     }
 
     #[test]

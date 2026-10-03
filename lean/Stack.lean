@@ -76,6 +76,17 @@ structure FragmentEquivalent (before after : List Nat) : Prop where
     run (before.length + 1) before stack x y = none ∧
       run (after.length + 1) after stack x y = none
 
+-- Two literal pushes need two free slots, including on an empty input stack.
+structure LiteralEquivalent (before after : List Nat) : Prop where
+  equal : ∀ stack x y,
+    run (before.length + 1) before stack x y = run (after.length + 1) after stack x y
+  success : ∀ stack x y, stack.length ≤ 1022 →
+    ∃ output, run (before.length + 1) before stack x y = some output ∧
+      run (after.length + 1) after stack x y = some output
+  overflow : ∀ stack x y, 1023 ≤ stack.length →
+    run (before.length + 1) before stack x y = none ∧
+      run (after.length + 1) after stack x y = none
+
 -- A proved bridge, never a profile-based definition of execution.
 structure Behavior (code : List Nat) : Prop where
   bridge : ∀ stack x y, run (code.length + 1) code stack x y =

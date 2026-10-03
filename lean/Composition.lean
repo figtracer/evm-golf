@@ -75,13 +75,15 @@ theorem byte_fuel {code : List Nat} {count : Nat} (complete : Complete code coun
     omega
   simpa only [fuel] using fuel_stable complete (code.length - count) stack x y
 
-theorem replace_context {front before after suffix : List Nat}
+theorem replace_context_of_equal {front before after suffix : List Nat}
     {prefixCount beforeCount afterCount suffixCount : Nat}
     (prefixComplete : Complete front prefixCount)
     (beforeComplete : Complete before beforeCount)
     (afterComplete : Complete after afterCount)
     (suffixComplete : Complete suffix suffixCount)
-    (replacement : GolfBounded.FragmentEquivalent before after)
+    (replacement : ∀ stack x y,
+      GolfBounded.run (before.length + 1) before stack x y =
+        GolfBounded.run (after.length + 1) after stack x y)
     (stack : List Golf.Word) (x y : Golf.Word) :
     GolfBounded.run ((front ++ (before ++ suffix)).length + 1)
         (front ++ (before ++ suffix)) stack x y =
@@ -93,9 +95,24 @@ theorem replace_context {front before after suffix : List Nat}
   congr 1
   funext middle
   rw [run_append beforeComplete, run_append afterComplete]
-  have equal := replacement.equal middle x y
+  have equal := replacement middle x y
   rw [byte_fuel beforeComplete, byte_fuel afterComplete] at equal
   rw [equal]
+
+theorem replace_context {front before after suffix : List Nat}
+    {prefixCount beforeCount afterCount suffixCount : Nat}
+    (prefixComplete : Complete front prefixCount)
+    (beforeComplete : Complete before beforeCount)
+    (afterComplete : Complete after afterCount)
+    (suffixComplete : Complete suffix suffixCount)
+    (replacement : GolfBounded.FragmentEquivalent before after)
+    (stack : List Golf.Word) (x y : Golf.Word) :
+    GolfBounded.run ((front ++ (before ++ suffix)).length + 1)
+        (front ++ (before ++ suffix)) stack x y =
+      GolfBounded.run ((front ++ (after ++ suffix)).length + 1)
+        (front ++ (after ++ suffix)) stack x y :=
+  replace_context_of_equal prefixComplete beforeComplete afterComplete suffixComplete
+    replacement.equal stack x y
 
 -- This is contextual equivalence inside the deliberately small Golf model,
 -- not execution equivalence for arbitrary EVM contracts. Unsupported contexts
@@ -108,6 +125,17 @@ def ContextEquivalent (before after : List Nat) : Prop :=
           (front ++ (before ++ suffix)) stack x y =
         GolfBounded.run ((front ++ (after ++ suffix)).length + 1)
           (front ++ (after ++ suffix)) stack x y
+
+theorem context_of_equal {before after : List Nat} {beforeCount afterCount : Nat}
+    (beforeComplete : Complete before beforeCount)
+    (afterComplete : Complete after afterCount)
+    (replacement : ∀ stack x y,
+      GolfBounded.run (before.length + 1) before stack x y =
+        GolfBounded.run (after.length + 1) after stack x y) :
+    ContextEquivalent before after := by
+  intro front suffix frontCount suffixCount frontComplete suffixComplete stack x y
+  exact replace_context_of_equal frontComplete beforeComplete afterComplete suffixComplete
+    replacement stack x y
 
 theorem context_of_fragment {before after : List Nat} {beforeCount afterCount : Nat}
     (beforeComplete : Complete before beforeCount)

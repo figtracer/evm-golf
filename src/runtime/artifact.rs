@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use super::{MAX_RUNTIME_BYTES, Rewrite, certificates, from_hex, layout};
 
 const FRAGMENT_MODEL: &str = include_str!("../../lean/Fragment.lean");
+const LITERAL_MODEL: &str = include_str!("../../lean/Literals.lean");
 const LOCAL_CERTIFICATES: &str = include_str!("../../lean/Certificates.lean");
 const STACK_MODEL: &str = include_str!("../../lean/Stack.lean");
 const COMPOSITION_MODEL: &str = include_str!("../../lean/Composition.lean");
@@ -27,15 +28,15 @@ pub(super) fn certificate(
         "layout artifact exceeds EIP-170 size limit"
     );
     ensure!(
-        rewrites.iter().all(|rewrite| rewrite.required_stack == 1),
-        "layout artifacts require one-word fragment prefixes"
+        rewrites.iter().all(|rewrite| rewrite.required_stack <= 1),
+        "layout artifacts require zero- or one-word fragment prefixes"
     );
     // Local soundness is proved once; the kernel checks every actual site below.
     // Compact-mode certificates still emit their individual fragment theorems.
     let (mut source, _) = certificates(&[])?;
     writeln!(
         source,
-        "\n{FRAGMENT_MODEL}\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_MODEL}"
+        "\n{FRAGMENT_MODEL}\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_MODEL}\n{LITERAL_MODEL}"
     )
     .unwrap();
     writeln!(
@@ -52,8 +53,9 @@ pub(super) fn certificate(
         let after = from_hex(&rewrite.after)?;
         writeln!(
             source,
-            "  ⟨{}, {before:?}, {after:?}⟩{}",
+            "  ⟨{}, {before:?}, {after:?}, {}⟩{}",
             rewrite.original_pc,
+            rewrite.required_stack,
             if i + 1 == rewrites.len() { "" } else { "," }
         )
         .unwrap();
@@ -305,7 +307,7 @@ mod tests {
             local.push_str("#print axioms runtime_context_0\n");
             let checked_source = source
                 .replace("theorem layout_artifact :", &format!("{local}\ntheorem layout_artifact :"))
-                .replace("GolfReflected.checkSites_sound GolfArtifact.sites (by decide +kernel)", "GolfLayout.CertifiedSites.cons runtime_rewrite_0 runtime_bounded_0 runtime_context_0 GolfLayout.CertifiedSites.nil");
+                .replace("GolfReflected.checkSites_sound GolfArtifact.sites (by decide +kernel)", "GolfLayout.CertifiedSites.cons (by decide +kernel) runtime_rewrite_0 runtime_bounded_0 runtime_context_0 GolfLayout.CertifiedSites.nil");
             let names = [
                 "runtime_rewrite_0",
                 "runtime_bounded_0",
@@ -326,7 +328,7 @@ mod tests {
   GolfLayout.aligned GolfArtifact.sites ((GolfLayout.scan GolfArtifact.original).map (fun item => item.1) ++ [GolfArtifact.original.length]) = true ∧
   ({mismatch}) ∧ GolfLayout.CertifiedSites GolfArtifact.sites := by
   refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩
-  exact GolfLayout.CertifiedSites.cons runtime_rewrite_0 runtime_bounded_0 runtime_context_0 GolfLayout.CertifiedSites.nil
+  exact GolfLayout.CertifiedSites.cons (by decide +kernel) runtime_rewrite_0 runtime_bounded_0 runtime_context_0 GolfLayout.CertifiedSites.nil
 #print axioms isolated_failure
 ");
             let path = dir.path().join(format!("{name}Prerequisites.lean"));
@@ -363,7 +365,7 @@ mod tests {
             &path,
             source.replace(
                 "GolfReflected.checkSites_sound GolfArtifact.sites",
-                "GolfReflected.checkSites_sound [⟨2, [96,2,2], [96,1,27]⟩, ⟨2, [96,2,2], [96,1,27]⟩]",
+                "GolfReflected.checkSites_sound [⟨2, [96,2,2], [96,1,27], 1⟩, ⟨2, [96,2,2], [96,1,27], 1⟩]",
             ),
         )
         .unwrap();
@@ -398,6 +400,77 @@ mod tests {
             assert!(check(&format!("WrongPower{exponent}"), &before, &after, &[wrong]).is_err());
         }
     }
+    #[test]
+    #[ignore = "requires Lean 4.34.0"]
+    fn binds_literal_folds_and_stack_requirements() {
+        let dir = tempdir().unwrap();
+        let mut original = Vec::new();
+        let mut candidate = Vec::new();
+        let mut rewrites = Vec::new();
+        // Empty input stack, PUSH0, unequal widths, and oversized shifts.
+        for (before, after) in [
+            ("5f5f16", "5f5f50"),
+            ("60f0600f16", "6000600050"),
+            ("61012360ff16", "610023600050"),
+            ("60016101001b", "600061000050"),
+        ] {
+            rewrites.push(Rewrite {
+                original_pc: original.len(),
+                before: before.into(),
+                after: after.into(),
+                required_stack: 0,
+            });
+            original.extend(from_hex(before).unwrap());
+            candidate.extend(from_hex(after).unwrap());
+        }
+        let mut before = vec![0x7f];
+        before.extend_from_slice(&U256::from(1).to_be_bytes::<32>());
+        before.extend([0x60, 255, 0x1b]);
+        let mut after = vec![0x7f];
+        after.extend_from_slice(&(U256::from(1) << 255usize).to_be_bytes::<32>());
+        after.extend([0x60, 0, 0x50]);
+        rewrites.push(Rewrite {
+            original_pc: original.len(),
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: 0,
+        });
+        original.extend(before);
+        candidate.extend(after);
+        original.push(0);
+        candidate.push(0);
+        let check = |name: &str, source: &str, names: &[String]| {
+            let path = dir.path().join(format!("{name}.lean"));
+            fs::write(&path, source).unwrap();
+            proof::verify_named(&path, names, proof::AxiomPolicy::Foundational)
+        };
+        let (mut source, mut names) = certificate(&original, &candidate, &rewrites, &[]).unwrap();
+        // Concrete false-checker witnesses preserve the reason for rejection:
+        // wrong result, missing POP, truncated PUSH, unsupported operator, and
+        // a one-word rewrite falsely claiming to need no initial stack.
+        source.push_str(
+            r#"
+theorem literal_rejection_controls :
+  GolfReflected.checkSite ⟨0, [96,240,96,15,22], [96,1,96,0,80], 0⟩ = false ∧
+  GolfReflected.checkSite ⟨0, [96,240,96,15,22], [96,0,96,0,22], 0⟩ = false ∧
+  GolfReflected.checkSite ⟨0, [97,1,95,22], [97,0,95,80], 0⟩ = false ∧
+  GolfReflected.checkSite ⟨0, [95,95,23], [95,95,80], 0⟩ = false ∧
+  GolfReflected.checkSite ⟨0, [96,2,2], [96,1,27], 0⟩ = false := by decide +kernel
+#print axioms literal_rejection_controls
+"#,
+        );
+        names.push("literal_rejection_controls".into());
+        check("LiteralFamilies", &source, &names).unwrap();
+        rewrites[0].required_stack = 1;
+        let (source, names) = certificate(&original, &candidate, &rewrites, &[]).unwrap();
+        assert!(check("FalseRequirement", &source, &names).is_err());
+        rewrites[0].required_stack = 0;
+        rewrites[1].after = "6001600050".into();
+        candidate[4] = 1;
+        let (source, names) = certificate(&original, &candidate, &rewrites, &[]).unwrap();
+        assert!(check("WrongLiteralValue", &source, &names).is_err());
+    }
+
     #[test]
     #[ignore = "requires Lean 4.34.0"]
     fn binds_constant_codecopy_prefixes_and_actual_copied_bytes() {
@@ -508,7 +581,7 @@ mod tests {
         source.push_str(r#"theorem context_nonvacuous (x y : Golf.Word) :
   GolfBounded.run 9 [95,53,96,1,27,96,3,1] [] x y = some [3 + 2*x] := by
   exact GolfComposition.context_success (front := [95,53]) (suffix := [96,3,1])
-    (GolfReflected.checkLocal_sound ⟨0, [96,2,2], [96,1,27]⟩ (by decide +kernel)).contextual ((GolfComposition.Complete.step (op := 95) (immediate := []) (by decide +kernel) (GolfComposition.Complete.step (op := 53) (immediate := []) (by decide +kernel) GolfComposition.Complete.nil))) ((GolfComposition.Complete.step (op := 96) (immediate := [3]) (by decide +kernel) (GolfComposition.Complete.step (op := 1) (immediate := []) (by decide +kernel) GolfComposition.Complete.nil))) [] x y [3 + 2*x]
+    (GolfReflected.checkLocal_sound ⟨0, [96,2,2], [96,1,27], 1⟩ (by decide +kernel)).contextual ((GolfComposition.Complete.step (op := 95) (immediate := []) (by decide +kernel) (GolfComposition.Complete.step (op := 53) (immediate := []) (by decide +kernel) GolfComposition.Complete.nil))) ((GolfComposition.Complete.step (op := 96) (immediate := [3]) (by decide +kernel) (GolfComposition.Complete.step (op := 1) (immediate := []) (by decide +kernel) GolfComposition.Complete.nil))) [] x y [3 + 2*x]
     (by simp [GolfBounded.run, Golf.run, Golf.immediate])
 #print axioms context_nonvacuous
 -- A changed shift immediate is a semantic error even when all boundaries match.
