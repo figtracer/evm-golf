@@ -7,7 +7,7 @@ Every `--out` directory must be new; existing output is never overwritten.
 | Command | Purpose |
 | --- | --- |
 | `analyze-runtime --bytecode <hex-file> [--preserve-layout]` | Analyze compact relocation or fixed byte offsets |
-| `optimize-runtime --bytecode <hex-file> (--cases <json-file> or --sequences <json-file>) --out <dir>` | Optimize a supported runtime with local proofs and isolated calls or stateful sequences |
+| `optimize-runtime --bytecode <hex-file> (--cases <json-file> or --sequences <json-file> or --scenarios <json-file>) --out <dir>` | Optimize a supported runtime with local proofs; fixed-layout account fixtures also guard external calls |
 | `check-runtime --original <hex-file> --candidate <hex-file> --scenarios <json-file> --out <dir>` | Compare arbitrary Cancun runtimes on supplied account fixtures; concrete tests only |
 | `optimize <expression> --out <dir>` | Search for a cheaper expression, then verify it |
 | `check <original> <candidate> --out <dir>` | Verify an independently proposed replacement |

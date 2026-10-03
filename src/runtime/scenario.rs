@@ -22,7 +22,9 @@ use std::{
 };
 
 use super::{
-    CaseResult, ReplayPolicy, Transaction, compare_results, execute_env, from_hex,
+    CaseResult, ReplayPolicy, Transaction,
+    calls::Calls,
+    compare_results, execute_env, from_hex,
     input::{self, unique_map},
 };
 
@@ -135,7 +137,7 @@ pub(super) fn replay(
     original: &[u8],
     candidate: &[u8],
     scenario: &Scenario,
-    policy: ReplayPolicy,
+    policy: ReplayPolicy<'_>,
 ) -> Result<Vec<CaseResult>> {
     ensure!(
         !scenario.transactions.is_empty(),
@@ -251,6 +253,9 @@ pub(super) fn replay(
         info.code = Some(code);
         db.insert_account_info(target, info);
     }
+    if let ReplayPolicy::GuardedCalls(directory) = policy {
+        fs::create_dir(directory)?;
+    }
     scenario
         .transactions
         .iter()
@@ -276,17 +281,53 @@ pub(super) fn replay(
                     })
                     .data(Bytes::from(from_hex(&transaction.calldata)?))
                     .build()?;
-                compare_results(
-                    execute_env(
+                if let ReplayPolicy::GuardedCalls(directory) = policy {
+                    let path = directory.join(format!("transaction-{i}.trace"));
+                    let mut baseline = Calls::record(&path, target, &addresses)?;
+                    let a = execute_env(
                         &mut left,
                         tx.clone(),
                         block.clone(),
                         chain_id,
                         target,
                         policy,
-                    )?,
-                    execute_env(&mut right, tx, block.clone(), chain_id, target, policy)?,
-                )
+                        Some(&mut baseline),
+                    )?;
+                    baseline.finish()?;
+                    let mut candidate = Calls::compare(&path, target, &addresses)?;
+                    let b = execute_env(
+                        &mut right,
+                        tx,
+                        block.clone(),
+                        chain_id,
+                        target,
+                        policy,
+                        Some(&mut candidate),
+                    )?;
+                    candidate.finish()?;
+                    compare_results(a, b)
+                } else {
+                    compare_results(
+                        execute_env(
+                            &mut left,
+                            tx.clone(),
+                            block.clone(),
+                            chain_id,
+                            target,
+                            policy,
+                            None,
+                        )?,
+                        execute_env(
+                            &mut right,
+                            tx,
+                            block.clone(),
+                            chain_id,
+                            target,
+                            policy,
+                            None,
+                        )?,
+                    )
+                }
             })()
             .with_context(|| format!("transaction {i}"))
         })
@@ -516,6 +557,7 @@ mod tests {
                 1,
                 target,
                 ReplayPolicy::Transactions,
+                None,
             )
             .unwrap();
             (execution.result, execution.state)
@@ -687,5 +729,207 @@ mod tests {
         assert!(environment.to_string().contains("duplicate map key: 1"));
         let scenario = serde_json::from_str::<Scenario>(r#"{"target":"target","caller":"caller","accounts":{"caller":{},"caller":{}},"transactions":[]}"#).unwrap_err();
         assert!(scenario.to_string().contains("duplicate map key: caller"));
+    }
+
+    fn guarded_call(target: Address, opcode: u8, input_len: u8) -> Vec<u8> {
+        let value = if opcode == 0xf1 { "5f" } else { "" };
+        from_hex(&format!(
+            "5f5f60{input_len:02x}5f{value}73{}5a{opcode:02x}50",
+            hex::encode(target)
+        ))
+        .unwrap()
+    }
+
+    fn assert_guarded_replay(
+        scenario: &Scenario,
+        original: &[u8],
+        candidate: &[u8],
+        rejection: Option<&str>,
+    ) {
+        // Each negative control deliberately passes ordinary fixture comparison:
+        // its rejection must come from the stronger observation policy.
+        replay(original, candidate, scenario, ReplayPolicy::Transactions).unwrap();
+        let directory = tempdir().unwrap();
+        let traces = directory.path().join("calls");
+        let result = replay(
+            original,
+            candidate,
+            scenario,
+            ReplayPolicy::GuardedCalls(&traces),
+        );
+        if let Some(expected) = rejection {
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(error.contains(expected), "expected {expected}: {error}");
+        } else {
+            result.unwrap();
+        }
+    }
+
+    #[test]
+    fn guarded_calls_preserve_persistent_state_static_results_and_child_reverts() {
+        let child = Address::repeat_byte(0x33);
+        for (opcode, helper) in [
+            (0xf1, "60015f5560075f5260205ff3"),
+            (0xfa, "60075f5260205ff3"),
+            (0xf1, "60075f5260205ffd"),
+        ] {
+            let mut scenario = fixture();
+            scenario.transactions.push(Transaction {
+                calldata: String::new(),
+                value: String::new(),
+                gas_limit: 500_000,
+            });
+            scenario.accounts.insert(
+                child.to_string(),
+                Account {
+                    code: helper.into(),
+                    ..Default::default()
+                },
+            );
+            let call = guarded_call(child, opcode, 0);
+            let mut original = from_hex("600260020250").unwrap();
+            let mut candidate = from_hex("600260011b50").unwrap();
+            original.extend(&call);
+            candidate.extend(&call);
+            original.push(0);
+            candidate.push(0);
+            assert_guarded_replay(&scenario, &original, &candidate, None);
+        }
+    }
+
+    #[test]
+    fn guarded_calls_follow_nested_callbacks_into_the_substituted_target() {
+        let child = Address::repeat_byte(0x33);
+        let target = Address::repeat_byte(0x22);
+        let mut scenario = fixture();
+        let mut helper = guarded_call(target, 0xf1, 1);
+        helper.push(0);
+        scenario.accounts.insert(
+            child.to_string(),
+            Account {
+                code: hex::encode(helper),
+                ..Default::default()
+            },
+        );
+        let mut body = from_hex("365f1460005760075f55005b").unwrap();
+        let prefix_bytes = 6;
+        body[4] = (prefix_bytes + body.len() - 1) as u8;
+        body.extend(guarded_call(child, 0xf1, 0));
+        body.push(0);
+        let mut original = from_hex("600260020250").unwrap();
+        let mut candidate = from_hex("600260011b50").unwrap();
+        original.extend(&body);
+        candidate.extend(&body);
+        assert_eq!(original[usize::from(body[4])], 0x5b);
+        assert_guarded_replay(&scenario, &original, &candidate, None);
+    }
+
+    #[test]
+    fn guarded_calls_reject_exceptional_children_and_gas_observation() {
+        let child = Address::repeat_byte(0x33);
+        for (helper, expected) in [
+            ("fe", "exceptional call halt"),
+            ("5a5000", "unsupported gas, code or call observation"),
+        ] {
+            let mut scenario = fixture();
+            scenario.accounts.insert(
+                child.to_string(),
+                Account {
+                    code: helper.into(),
+                    ..Default::default()
+                },
+            );
+            let mut code = guarded_call(child, 0xf1, 0);
+            code.push(0);
+            assert_guarded_replay(&scenario, &code, &code, Some(expected));
+        }
+    }
+
+    #[test]
+    fn guarded_calls_reject_target_code_hash_including_high_word_aliases() {
+        let child = Address::repeat_byte(0x33);
+        let target = Address::repeat_byte(0x22);
+        for address in [
+            hex::encode(target),
+            format!("{}{}", "ff".repeat(12), hex::encode(target)),
+        ] {
+            let push = 0x5f + address.len() / 2;
+            let mut scenario = fixture();
+            scenario.accounts.insert(
+                child.to_string(),
+                Account {
+                    code: format!("{push:02x}{address}3f5000"),
+                    ..Default::default()
+                },
+            );
+            let mut code = guarded_call(child, 0xf1, 0);
+            code.push(0);
+            assert_guarded_replay(
+                &scenario,
+                &code,
+                &code,
+                Some("unsupported gas, code or call observation"),
+            );
+        }
+    }
+
+    #[test]
+    fn guarded_calls_require_explicit_callees_and_reject_other_precompiles() {
+        let scenario = fixture();
+        // Missing fixture code executes as an empty account in ordinary replay.
+        // Native identity succeeds too, but neither is admitted by this policy.
+        for child in [Address::repeat_byte(0x33), Address::with_last_byte(4)] {
+            let mut code = guarded_call(child, 0xf1, 0);
+            code.push(0);
+            assert_guarded_replay(&scenario, &code, &code, Some("callee or call scheme"));
+        }
+    }
+
+    #[test]
+    fn guarded_calls_reject_delegatecall_creation_and_selfdestruct_in_children() {
+        let child = Address::repeat_byte(0x33);
+        let target = Address::repeat_byte(0x22);
+        let mut delegate = guarded_call(target, 0xf4, 1);
+        delegate.push(0);
+        // The delegated root stops when called with nonempty calldata, avoiding
+        // recursion in the ordinary replay control.
+        let mut root = from_hex("3615600657005b").unwrap();
+        root.extend(guarded_call(child, 0xf1, 0));
+        root.push(0);
+        for helper in [
+            delegate,
+            from_hex("5f5f5ff05000").unwrap(),
+            from_hex(&format!("73{}ff", hex::encode(Address::repeat_byte(0x11)))).unwrap(),
+        ] {
+            let mut scenario = fixture();
+            scenario.accounts.insert(
+                child.to_string(),
+                Account {
+                    code: hex::encode(helper),
+                    ..Default::default()
+                },
+            );
+            assert_guarded_replay(
+                &scenario,
+                &root,
+                &root,
+                Some("unsupported gas, code or call observation"),
+            );
+        }
+    }
+
+    #[test]
+    fn guarded_replay_compares_rolled_back_storage_transient_writes_and_logs() {
+        let scenario = fixture();
+        for suffix in ["5f555f5ffd", "5f5d5f5ffd", "5f5260205fa05f5ffd"] {
+            let original = from_hex(&format!("6001{suffix}")).unwrap();
+            let candidate = from_hex(&format!("6002{suffix}")).unwrap();
+            assert_guarded_replay(
+                &scenario,
+                &original,
+                &candidate,
+                Some("call, storage-write or log observations diverged"),
+            );
+        }
     }
 }

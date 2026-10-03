@@ -4,9 +4,11 @@ The runtime optimizer works directly on deployed Cancun bytecode. It can shrink
 complete contracts within a conservative subset: resolved jumps and internal
 returns, storage, memory, logs, returns, and reverts. `--preserve-layout` also
 supports dynamic jumps, PC, and CODESIZE by keeping every byte offset unchanged.
-Both modes admit restricted ECRECOVER precompile calls described below. Other
-reachable calls, creation, selfdestruct, code-content introspection, and gas
-introspection remain unsupported. The separate `check-runtime` command can
+Both modes admit restricted ECRECOVER precompile calls described below. With
+explicit account fixtures, fixed-layout mode also admits guarded CALL/STATICCALL
+and EXTCODESIZE. Creation, delegation, selfdestruct, code-content introspection
+and standalone gas introspection remain unsupported in the optimized runtime.
+The separate `check-runtime` command can
 execute these operations against supplied account fixtures; it does not optimize
 or formally prove the proposed candidate.
 
@@ -19,7 +21,8 @@ must already be patched: unpatched compiler templates are not concrete runtime
 images. For contracts without immutables, solc's
 `--evm-version cancun --bin-runtime` output contains the appropriate hex section.
 
-Analyze it first:
+For the conservative default opcode subset, analyze it first. General external
+calls require the fixture-aware optimization path below:
 
 ```sh
 cargo run --locked -- analyze-runtime --bytecode runs/runtime.hex
@@ -88,11 +91,11 @@ cargo run --locked -- optimize-runtime --bytecode runs/runtime.hex \
   --scenarios runs/scenarios.json --preserve-layout --out runs/fixture-1
 ```
 
-Choose exactly one input format. Fixtures use the same optimization, Lean proof,
-and replay gates; they do not permit additional opcodes. Contracts with reachable
-external calls other than the restricted ECRECOVER pattern remain unsupported,
-even though `check-runtime` can replay them. Scenario runs save `scenarios.json` and order report cases by
-scenario, then transaction.
+Choose exactly one input format. Fixed-layout fixtures use the same local Lean
+artifact proofs and add the [external-call guard](#guarded-external-calls).
+Compact mode, isolated cases and sequences retain the restricted ECRECOVER
+policy. Scenario runs save `scenarios.json` and order report cases by scenario,
+then transaction.
 
 Use a new output directory. Successful runs write `candidate.hex` and
 `result.json`. Inputs, exact rewrite pairs, and Lean diagnostics remain local;
@@ -153,7 +156,8 @@ word `1` (ECRECOVER) on every analyzed path. GAS must be consumed immediately;
 it cannot be stored, copied or used by arithmetic. Compact mode follows PUSH
 provenance through existing stack operations. Fixed-layout mode requires the
 literal sequence `PUSH1..32 1; GAS; STATICCALL`. Neither mode rewrites the call.
-Other callees, call types, and gas-forwarding patterns are rejected.
+Other callees, call types, and gas-forwarding patterns are rejected by this
+policy. Fixed-layout account fixtures use the broader guard below.
 
 Optimization replay requires every observed ECRECOVER call to succeed on both
 sides, including calls whose result is discarded or whose parent later reverts.
@@ -166,6 +170,37 @@ This is a concrete replay guard, not an all-gas proof: savings can move a call
 across ECRECOVER's 3,000-gas threshold. Supplied cases cannot establish that all
 other executions remain above that threshold. The general `check-runtime`
 command retains ordinary failed-subcall behavior without this optimizer guard.
+
+## Guarded external calls
+
+`--preserve-layout --scenarios` admits CALL, STATICCALL and EXTCODESIZE. GAS is
+allowed only immediately before CALL or STATICCALL. Calls are never rewritten.
+Every observed callee must have an explicit fixture account, including empty-code
+accounts; native ECRECOVER at address 1 is the only exception. Other precompiles,
+delegation, creation and selfdestruct are rejected. This currently excludes proxy
+assets that use DELEGATECALL.
+
+The guard runs in every executed frame, including callbacks into the optimized
+target. It rejects standalone GAS, target CODECOPY, and EXTCODECOPY/EXTCODEHASH of
+the target. Other accounts retain their original code. Exceptional failures,
+including failed child calls whose results are discarded, reject optimization;
+matching explicit REVERT is allowed. ECRECOVER must execute successfully as a
+native precompile.
+
+Replay compares exact ordered call contexts, calldata, output regions, outcomes
+and returndata, plus SSTORE/TSTORE attempts and emitted logs, including effects
+later rolled back. Independent databases retain the existing receipt, output,
+committed-state and non-increasing gas checks. Forwarded gas may differ: the
+trace comparison is concrete evidence for the supplied executions, not an
+all-gas or whole-contract proof. Untested paths and observations remain unproved.
+The Lean artifact proposition is unchanged and does not interpret calls.
+
+Baseline traces are streamed to `scenario-N-calls/transaction-M.trace` and
+candidates compare them byte for byte. Each transaction is limited to 1 MiB of
+serialized observations per side, checked before payload traversal. This bounds
+repeated reads of reused memory independently of EVM gas; exceeding the budget
+rejects the run without an accepted candidate. No trace is silently truncated.
+`check-runtime` retains its general transaction-replay policy.
 
 ## Preserve byte offsets
 

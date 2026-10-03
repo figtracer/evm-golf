@@ -563,3 +563,96 @@ fn cli_preserves_unknown_halt_branches_without_accepting_halted_cases() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn cli_guards_external_calls_only_with_layout_account_fixtures() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("runtime.hex");
+    let scenarios = directory.path().join("scenarios.json");
+    let caller = format!("0x{}", "11".repeat(20));
+    let target = format!("0x{}", "22".repeat(20));
+    let child = format!("0x{}", "33".repeat(20));
+    fs::write(
+        &input,
+        format!("60026002025060205f5f5f5f73{}5af15060205ff3", &child[2..]),
+    )
+    .unwrap();
+    let mut fixture = serde_json::json!([{
+        "caller":caller, "target":target,
+        "accounts":{
+            &caller:{"balance":"1000000"}, &target:{},
+            &child:{"code":"60075f5560015f5260205ff3"}
+        },
+        "transactions":[{"calldata":"","gas_limit":200000},{"calldata":"","gas_limit":200000}]
+    }]);
+    fs::write(&scenarios, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    let run = |name: &str, layout: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_evm-golf"));
+        command
+            .args(["optimize-runtime", "--bytecode"])
+            .arg(&input)
+            .arg("--scenarios")
+            .arg(&scenarios)
+            .arg("--out")
+            .arg(directory.path().join(name));
+        if layout {
+            command.arg("--preserve-layout");
+        }
+        command.output().unwrap()
+    };
+    assert!(!run("compact", false).status.success());
+    let output = run("guarded", true);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value =
+        serde_json::from_slice(&fs::read(directory.path().join("guarded/result.json")).unwrap())
+            .unwrap();
+    assert_eq!(report["rewrites"].as_array().unwrap().len(), 1);
+    assert!(
+        report["verification"]
+            .as_str()
+            .unwrap()
+            .contains("guarded nested calls")
+    );
+    assert!(report["lean_version"].is_string());
+    for case in report["cases"].as_array().unwrap() {
+        assert_eq!(case["outcome"], "success");
+        assert_eq!(
+            case["baseline_gas"].as_u64().unwrap() - case["candidate_gas"].as_u64().unwrap(),
+            2
+        );
+    }
+    assert!(
+        directory
+            .path()
+            .join("guarded/scenario-0-calls/transaction-1.trace")
+            .exists()
+    );
+    fixture[0]["accounts"][&child]["code"] = "5a5f5260205ff3".into();
+    fs::write(&scenarios, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    let output = run("sensitive-child", true);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("external-call guard"));
+    assert!(
+        directory
+            .path()
+            .join("sensitive-child/failure.log")
+            .exists()
+    );
+    assert!(
+        !directory
+            .path()
+            .join("sensitive-child/candidate.hex")
+            .exists()
+    );
+    assert!(
+        !directory
+            .path()
+            .join("sensitive-child/result.json")
+            .exists()
+    );
+}

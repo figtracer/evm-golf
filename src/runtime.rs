@@ -23,6 +23,7 @@ use std::{
 use crate::proof;
 
 mod artifact;
+mod calls;
 pub mod input;
 mod layout;
 mod precompile;
@@ -130,7 +131,7 @@ pub struct Report {
 
 /// Analyze reachable instructions without resolving jump values or stack heights.
 pub fn analyze_layout(code: &[u8]) -> Result<LayoutAnalysis> {
-    layout::analyze(code)
+    layout::analyze(code, false)
 }
 
 /// Analyze all reachable paths, including both conditional edges. Unsupported
@@ -388,6 +389,7 @@ pub fn optimize_with(
         code,
         out,
         mode,
+        false,
         (filename, serialized),
         verification,
         |candidate| match inputs {
@@ -412,7 +414,7 @@ pub fn optimize_with(
 }
 
 /// Optimize against explicit accounts and constructor-initialized state. The
-/// same analysis and proof gates apply; account fixtures do not widen opcodes.
+/// fixed-layout mode also guards calls against the explicit account fixtures.
 pub fn optimize_scenarios(
     code: &[u8],
     scenarios: &[scenario::Scenario],
@@ -433,10 +435,12 @@ pub fn optimize_scenarios(
         scenarios.iter().all(|s| !s.transactions.is_empty()),
         "every scenario must contain at least one transaction"
     );
+    let guard_calls = matches!(mode, RuntimeMode::PreserveLayout);
     optimize_checked(
         code,
         out,
         mode,
+        guard_calls,
         ("scenarios.json", serde_json::to_string(scenarios)?),
         "Lean: local gas-erased stack rewrites only. Rust: conservative CFG and relocation checks. revm: supplied account-fixture transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof.",
         |candidate| {
@@ -444,7 +448,13 @@ pub fn optimize_scenarios(
                 .iter()
                 .enumerate()
                 .map(|(i, scenario)| {
-                    scenario::replay(code, candidate, scenario, ReplayPolicy::SuccessfulEcrecover)
+                    let trace_dir = out.join(format!("scenario-{i}-calls"));
+                    let policy = if guard_calls {
+                        ReplayPolicy::GuardedCalls(&trace_dir)
+                    } else {
+                        ReplayPolicy::SuccessfulEcrecover
+                    };
+                    scenario::replay(code, candidate, scenario, policy)
                         .with_context(|| format!("differential scenario {i}"))
                 })
                 .collect::<Result<Vec<_>>>()
@@ -459,16 +469,20 @@ fn optimize_checked(
     code: &[u8],
     out: &Path,
     mode: RuntimeMode,
+    guard_calls: bool,
     input_file: (&str, String),
     verification: &'static str,
     replay: impl FnOnce(&[u8]) -> Result<Vec<CaseResult>>,
 ) -> Result<Report> {
     let (candidate, rewrites) = match mode {
         RuntimeMode::Compact => transform(&analyze(code)?)?,
-        RuntimeMode::PreserveLayout => layout::transform(&layout::analyze(code)?)?,
+        RuntimeMode::PreserveLayout => layout::transform(&layout::analyze(code, guard_calls)?)?,
     };
     let verification = match mode {
         RuntimeMode::Compact => verification,
+        RuntimeMode::PreserveLayout if guard_calls => {
+            "Lean: exact artifact reconstruction, unchanged offsets and local bounded/contextual stack equivalence. revm: supplied account-fixture transactions, guarded nested calls and ordered storage/log effects including reverted effects. No full-EVM correspondence, whole-contract, all-input, all-gas, deployment, or code-identity equivalence proof."
+        }
         RuntimeMode::PreserveLayout => {
             "Lean: exact artifact reconstruction, unchanged byte offsets, instruction boundaries, jump destinations, local stack profiles and gas-erased fragment equivalence under complete prefixes/suffixes in the bounded 1024-word model. Rust: conservative reachability; no global stack-height proof. revm: supplied transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof."
         }
@@ -486,7 +500,7 @@ fn optimize_checked(
             analyze(&candidate)?;
         }
         RuntimeMode::PreserveLayout => {
-            layout::analyze(&candidate)?;
+            layout::analyze(&candidate, guard_calls)?;
         }
     }
     let lean_version = if rewrites.is_empty() && matches!(mode, RuntimeMode::Compact) {
@@ -819,9 +833,10 @@ struct AccountState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReplayPolicy {
+enum ReplayPolicy<'a> {
     Transactions,
     SuccessfulEcrecover,
+    GuardedCalls(&'a Path),
 }
 
 #[derive(Debug)]
@@ -895,6 +910,7 @@ fn execute_transaction(
         1,
         contract,
         ReplayPolicy::SuccessfulEcrecover,
+        None,
     )
 }
 
@@ -904,20 +920,27 @@ fn execute_env(
     block: BlockEnv,
     chain_id: u64,
     target: Address,
-    policy: ReplayPolicy,
+    policy: ReplayPolicy<'_>,
+    calls: Option<&mut calls::Calls<'_>>,
 ) -> Result<Execution> {
     // Each transaction resets warmth/transient state; the database owns durable
     // state. Reverted executions still commit the sender nonce via revm.
     let mut precompiles = EcrecoverTrace::new(policy);
-    let mut evm = Context::mainnet()
+    let context = Context::mainnet()
         .modify_cfg_chained(|cfg| {
             cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN);
             cfg.chain_id = chain_id;
         })
         .with_block(block)
-        .with_db(&mut *db)
-        .build_mainnet_with_inspector(&mut precompiles);
-    let result = evm.inspect_tx_commit(tx)?;
+        .with_db(&mut *db);
+    let result = match calls {
+        Some(calls) => context
+            .build_mainnet_with_inspector((&mut precompiles, calls))
+            .inspect_tx_commit(tx)?,
+        None => context
+            .build_mainnet_with_inspector(&mut precompiles)
+            .inspect_tx_commit(tx)?,
+    };
     let state = db
         .cache
         .accounts
@@ -1130,7 +1153,7 @@ mod tests {
                 let (candidate, rewrites) = match mode {
                     RuntimeMode::Compact => transform(&analyze(&original).unwrap()).unwrap(),
                     RuntimeMode::PreserveLayout => {
-                        layout::transform(&layout::analyze(&original).unwrap()).unwrap()
+                        layout::transform(&layout::analyze(&original, false).unwrap()).unwrap()
                     }
                 };
                 assert!(!rewrites.is_empty());
@@ -1160,7 +1183,7 @@ mod tests {
                 let candidate = match mode {
                     RuntimeMode::Compact => transform(&analyze(&original).unwrap()).unwrap().0,
                     RuntimeMode::PreserveLayout => {
-                        layout::transform(&layout::analyze(&original).unwrap())
+                        layout::transform(&layout::analyze(&original, false).unwrap())
                             .unwrap()
                             .0
                     }
@@ -1172,16 +1195,16 @@ mod tests {
             // Jump over the halt to a GAS instruction: this must still reject.
             let jumped = [0x60, 4, 0x56, op, 0x5b, 0x5a];
             assert!(analyze(&jumped).is_err());
-            assert!(layout::analyze(&jumped).is_err());
+            assert!(layout::analyze(&jumped, false).is_err());
             // PUSH data does not terminate the path to unsupported GAS.
             let embedded = [0x60, op, 0x50, 0x5a];
             assert!(analyze(&embedded).is_err());
-            assert!(layout::analyze(&embedded).is_err());
+            assert!(layout::analyze(&embedded, false).is_err());
         }
         for op in [0x1e, 0x4b, 0xe6, 0xe7, 0xe8, 0x39, 0xf1, 0xff] {
             assert!(OpCode::info_by_op(op).is_some());
             assert!(analyze(&[op, 0]).is_err());
-            assert!(layout::analyze(&[op, 0]).is_err());
+            assert!(layout::analyze(&[op, 0], false).is_err());
         }
     }
 

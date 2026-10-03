@@ -22,7 +22,7 @@ pub struct LayoutAnalysis {
     reachable: BTreeSet<usize>,
 }
 
-pub(super) fn analyze(code: &[u8]) -> Result<LayoutAnalysis> {
+pub(super) fn analyze(code: &[u8], guard_calls: bool) -> Result<LayoutAnalysis> {
     ensure!(
         code.len() <= MAX_RUNTIME_BYTES,
         "runtime exceeds EIP-170 size limit"
@@ -59,8 +59,13 @@ pub(super) fn analyze(code: &[u8]) -> Result<LayoutAnalysis> {
             continue;
         }
         // PC and CODESIZE are stable because no instruction or byte is moved.
-        // GAS is admitted only in the inseparable literal-1 ECRECOVER pattern.
+        // Explicit fixtures additionally guard ordinary calls during replay.
+        // Otherwise GAS is limited to the literal-1 ECRECOVER pattern.
         let supported = match op {
+            0x5a if guard_calls => instructions
+                .get(i + 1)
+                .is_some_and(|next| matches!(next.bytes[0], 0xf1 | 0xfa)),
+            0x3b | 0xf1 | 0xfa if guard_calls => true,
             0x5a | 0xfa => is_direct_ecrecover(&instructions, i),
             _ => allowed(op) || matches!(op, 0x38 | 0x58),
         };
@@ -226,7 +231,7 @@ mod tests {
                     code.extend_from_slice(&value.to_be_bytes::<32>()[32 - usize::from(width)..]);
                 }
                 code.extend(bytes("025f5260205ff3"));
-                let (candidate, rewrites) = transform(&analyze(&code).unwrap()).unwrap();
+                let (candidate, rewrites) = transform(&analyze(&code, false).unwrap()).unwrap();
                 assert_eq!(candidate.len(), code.len());
                 assert_eq!(rewrites.len(), 1);
                 for calldata in [
@@ -256,7 +261,7 @@ mod tests {
             format!("7f{}", "ff".repeat(32)),
         ] {
             let code = bytes(&format!("5f35{literal}025f5260205ff3"));
-            let (candidate, changes) = transform(&analyze(&code).unwrap()).unwrap();
+            let (candidate, changes) = transform(&analyze(&code, false).unwrap()).unwrap();
             assert_eq!(candidate, code);
             assert!(changes.is_empty());
         }
@@ -265,7 +270,7 @@ mod tests {
         for height in [0, 1, 1023, 1024] {
             let mut code = vec![0x5f; height];
             code.extend(bytes("60020200"));
-            let (candidate, _) = transform(&analyze(&code).unwrap()).unwrap();
+            let (candidate, _) = transform(&analyze(&code, false).unwrap()).unwrap();
             let left = execute(&code, &case("")).unwrap().result;
             let right = execute(&candidate, &case("")).unwrap().result;
             assert_eq!(left.is_halt(), right.is_halt());
@@ -286,7 +291,7 @@ mod tests {
             call.extend([1, 0x5a, 0xfa, 0x00]);
             let mut code = bytes("600360020250"); // Independent local multiply.
             code.extend(&call);
-            let (candidate, rewrites) = transform(&analyze(&code).unwrap()).unwrap();
+            let (candidate, rewrites) = transform(&analyze(&code, false).unwrap()).unwrap();
             assert_eq!(rewrites.len(), 1);
             assert_eq!(&candidate[6..], call);
         }
@@ -297,14 +302,14 @@ mod tests {
         for callee in [0u8, 2, 10, 255] {
             let mut code = bytes("60208060805f60");
             code.extend([callee, 0x5a, 0xfa, 0x00]);
-            assert!(analyze(&code).is_err());
+            assert!(analyze(&code, false).is_err());
         }
         // Even an address-1 alias with nonzero high bits is outside the rule.
         let mut alias = bytes("60208060805f74"); // PUSH21.
         alias.push(1);
         alias.extend(std::iter::repeat_n(0, 19));
         alias.extend([1, 0x5a, 0xfa, 0x00]);
-        assert!(analyze(&alias).is_err());
+        assert!(analyze(&alias, false).is_err());
         for code in [
             "60015a805afa00",   // GAS duplicated, not immediately consumed.
             "60015a5000",       // GAS discarded rather than used by the call.
@@ -321,7 +326,7 @@ mod tests {
             "6260015a5afa00",   // Literal bytes inside PUSH3 cannot spoof callee.
             "6260015afa00",     // Embedded GAS cannot exempt a real STATICCALL.
         ] {
-            assert!(analyze(&bytes(code)).is_err(), "accepted {code}");
+            assert!(analyze(&bytes(code), false).is_err(), "accepted {code}");
         }
     }
 
@@ -330,7 +335,7 @@ mod tests {
         // Only PC 3 is a valid branch entry. PCs 11, 12 and 13 are literal data,
         // GAS and STATICCALL respectively, so jumps to them halt before a call.
         let code = bytes("5f35565b60208060805f60015afa00");
-        assert!(analyze(&code).is_ok());
+        assert!(analyze(&code, false).is_ok());
         let valid = format!("{}03", "00".repeat(31));
         assert!(execute(&code, &case(&valid)).unwrap().result.is_success());
         for pc in [11u8, 12, 13] {
@@ -344,7 +349,7 @@ mod tests {
         // The jump target is calldata-derived; the value 3 survives below it.
         let code = bytes("60035f35565b6002025f5260205ff3");
         assert!(super::super::analyze(&code).is_err());
-        let analysis = analyze(&code).unwrap();
+        let analysis = analyze(&code, false).unwrap();
         let (candidate, changes) = transform(&analysis).unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(analysis.jump_destinations, 1);
@@ -363,29 +368,36 @@ mod tests {
     fn reachability_preserves_sentinels_and_checks_both_conditional_edges() {
         // Sensitive bytes inside PUSH data and after STOP are preserved verbatim.
         let code = bytes("605b50605850605a50600260010200385a396101");
-        let (candidate, changes) = transform(&analyze(&code).unwrap()).unwrap();
+        let (candidate, changes) = transform(&analyze(&code, false).unwrap()).unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(&candidate[..10], &code[..10]);
         assert_eq!(&candidate[14..], &code[14..]);
-        assert_eq!(analyze(&code).unwrap().jump_destinations, 0);
-        assert!(analyze(&bytes("5850385000")).is_ok()); // PC and CODESIZE.
+        assert_eq!(analyze(&code, false).unwrap().jump_destinations, 0);
+        assert!(analyze(&bytes("5850385000"), false).is_ok()); // PC and CODESIZE.
         for op in [
             0x39, 0x3b, 0x3c, 0x3f, 0x5a, 0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa, 0xff,
         ] {
             // A dynamic JUMPI conservatively reaches both its target and fallthrough.
-            assert!(analyze(&[0x5f, 0x35, 0x5f, 0x35, 0x57, op, 0x00, 0x5b, 0x00]).is_err());
-            assert!(analyze(&[0x5f, 0x35, 0x56, 0x00, 0x5b, op]).is_err());
+            assert!(analyze(&[0x5f, 0x35, 0x5f, 0x35, 0x57, op, 0x00, 0x5b, 0x00], false).is_err());
+            assert!(analyze(&[0x5f, 0x35, 0x56, 0x00, 0x5b, op], false).is_err());
         }
-        assert!(analyze(&bytes("6101")).is_err());
-        assert!(analyze(&bytes("ef00")).is_err());
-        assert!(analyze(&vec![0; MAX_RUNTIME_BYTES + 1]).is_err());
-        assert!(analyze(&[]).is_ok());
+        assert!(analyze(&bytes("6101"), false).is_err());
+        assert!(analyze(&bytes("ef00"), false).is_err());
+        assert!(analyze(&vec![0; MAX_RUNTIME_BYTES + 1], false).is_err());
+        assert!(analyze(&[], false).is_ok());
         // A real JUMPDEST splits the fragment and must prevent matching.
         let code = bytes("600260025b0200");
-        assert!(transform(&analyze(&code).unwrap()).unwrap().1.is_empty());
+        assert!(
+            transform(&analyze(&code, false).unwrap())
+                .unwrap()
+                .1
+                .is_empty()
+        );
         // A jump cycle visits each decoded PC at most once.
         assert_eq!(
-            analyze(&bytes("5b5f3556")).unwrap().reachable_instructions,
+            analyze(&bytes("5b5f3556"), false)
+                .unwrap()
+                .reachable_instructions,
             4
         );
     }

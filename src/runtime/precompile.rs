@@ -31,7 +31,7 @@ pub(super) struct EcrecoverTrace {
 }
 
 impl EcrecoverTrace {
-    pub(super) fn new(policy: ReplayPolicy) -> Self {
+    pub(super) fn new(policy: ReplayPolicy<'_>) -> Self {
         Self {
             enabled: policy == ReplayPolicy::SuccessfulEcrecover,
             calls: Vec::new(),
