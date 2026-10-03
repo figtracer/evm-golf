@@ -4,8 +4,9 @@ The runtime optimizer works directly on deployed Cancun bytecode. It can shrink
 complete contracts within a conservative subset: resolved jumps and internal
 returns, storage, memory, logs, returns, and reverts. `--preserve-layout` also
 supports dynamic jumps, PC, and CODESIZE by keeping every byte offset unchanged.
-Both optimizer modes reject reachable calls, creation, selfdestruct, code-content
-introspection, and gas introspection. The separate `check-runtime` command can
+Both modes admit restricted ECRECOVER precompile calls described below. Other
+reachable calls, creation, selfdestruct, code-content introspection, and gas
+introspection remain unsupported. The separate `check-runtime` command can
 execute these operations against supplied account fixtures; it does not optimize
 or formally prove the proposed candidate.
 
@@ -89,8 +90,8 @@ cargo run --locked -- optimize-runtime --bytecode runs/runtime.hex \
 
 Choose exactly one input format. Fixtures use the same optimization, Lean proof,
 and replay gates; they do not permit additional opcodes. Contracts with reachable
-external calls remain unsupported by the optimizer, even though `check-runtime`
-can replay them. Scenario runs save `scenarios.json` and order report cases by
+external calls other than the restricted ECRECOVER pattern remain unsupported,
+even though `check-runtime` can replay them. Scenario runs save `scenarios.json` and order report cases by
 scenario, then transaction.
 
 Use a new output directory. Successful runs write `candidate.hex` and
@@ -142,6 +143,27 @@ with DUP1/ADD. It does not rewrite across control-flow or side-effect boundaries
 Proven jump-label PUSHs are protected and relocated after shortening, preserving
 their immediate widths. The emitted runtime is decoded and analyzed again.
 
+## Signature precompile calls
+
+The optimizer admits `GAS; STATICCALL` only when the callee is provably the exact
+word `1` (ECRECOVER) on every analyzed path. GAS must be consumed immediately;
+it cannot be stored, copied or used by arithmetic. Compact mode follows PUSH
+provenance through existing stack operations. Fixed-layout mode requires the
+literal sequence `PUSH1..32 1; GAS; STATICCALL`. Neither mode rewrites the call.
+Other callees, call types, and gas-forwarding patterns are rejected.
+
+Optimization replay requires every observed ECRECOVER call to succeed on both
+sides, including calls whose result is discarded or whose parent later reverts.
+It compares ordered effective inputs (the first 128 zero-padded bytes), input
+length/region, output region, and returned bytes. An invalid signature is a
+successful call with empty returndata; it remains supported. Forwarded gas may
+differ, but underfunded calls reject the run even if outer results match.
+
+This is a concrete replay guard, not an all-gas proof: savings can move a call
+across ECRECOVER's 3,000-gas threshold. Supplied cases cannot establish that all
+other executions remain above that threshold. The general `check-runtime`
+command retains ordinary failed-subcall behavior without this optimizer guard.
+
 ## Preserve byte offsets
 
 Use `--preserve-layout` with `analyze-runtime` or `optimize-runtime`. This mode
@@ -158,7 +180,12 @@ independently embedded original and candidate byte arrays. The certificate check
 that sorted, nonoverlapping replacements reconstruct the candidate, that every
 other byte is unchanged, and that instruction boundaries, JUMPDEST positions,
 length, and local stack profiles agree. Replacements inside PUSH data are rejected.
-The model is [lean/Layout.lean](../lean/Layout.lean).
+The artifact model is [lean/Layout.lean](../lean/Layout.lean). Each site's
+certificate also executes its exact fragments under
+[lean/Stack.lean](../lean/Stack.lean), which enforces the 1,024-word bound at every
+instruction boundary. It proves equal successful results for incoming heights
+1–1,023, underflow on an empty stack, and overflow at height 1,024. These local
+properties do not establish the heights reached by the surrounding program.
 
 This structural certificate requires Lean even when no rewrite applies. Its closed
 checks use `decide +kernel`, and runtime certificates permit only Lean's standard
@@ -233,9 +260,10 @@ certificate. Reports remain local and are not expression leaderboard entries.
 
 Lean checks that each pair of **exact local byte fragments** produces the same
 successful stack result, over arbitrary tails with the required stack prefix.
-Two failing executions cannot satisfy the certificate. The model excludes gas
+Two failing executions cannot satisfy the certificate. The base model excludes gas
 and stack limits; compact-mode Rust analysis separately checks stack heights.
-Layout mode instead checks equal local stack requirements and peak growth. These are local proofs,
+Layout mode adds operational local underflow/overflow proofs with the 1,024-word
+bound, alongside equal local stack requirements and peak growth. These are local proofs,
 not a Lean proof of the CFG, relocation implementation, or full EVM execution.
 
 For every supplied transaction, revm compares success/revert status, return or

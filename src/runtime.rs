@@ -5,7 +5,7 @@
 
 use anyhow::{Context as _, Result, ensure};
 use revm::{
-    Context, ExecuteCommitEvm, MainBuilder, MainContext,
+    Context, InspectCommitEvm, MainBuilder, MainContext,
     bytecode::{Bytecode, opcode::OpCode},
     context::{BlockEnv, TxEnv, result::ExecutionResult},
     database::InMemoryDB,
@@ -25,8 +25,11 @@ use crate::proof;
 mod artifact;
 pub mod input;
 mod layout;
+mod precompile;
 pub mod scenario;
 pub use layout::LayoutAnalysis;
+
+use precompile::EcrecoverTrace;
 
 #[derive(Debug, Clone, Copy)]
 pub enum RuntimeMode {
@@ -166,7 +169,12 @@ pub fn analyze(code: &[u8]) -> Result<Analysis> {
         let instruction = &instructions[i];
         let op = instruction.bytes[0];
         ensure!(
-            allowed(op),
+            allowed(op)
+                || (op == 0x5a
+                    && instructions
+                        .get(i + 1)
+                        .is_some_and(|next| next.bytes[0] == 0xfa))
+                || (op == 0xfa && i > 0 && instructions[i - 1].bytes[0] == 0x5a),
             "unsupported or code/gas-sensitive opcode {} (0x{op:02x}) at PC {pc}",
             OpCode::name_by_op(op)
         );
@@ -216,6 +224,22 @@ pub fn analyze(code: &[u8]) -> Result<Analysis> {
                     data_uses.extend([a, b]);
                     stack.push(UNKNOWN);
                 }
+            }
+            0xfa => {
+                // GAS is consumed immediately. Neither instruction can be a jump
+                // entry, so its value cannot escape into other computation.
+                let source = stack[height - 2];
+                ensure!(
+                    source != UNKNOWN
+                        && push_value(&instructions[index[&usize::from(source)]].bytes)
+                            == Some(U256::from(1)),
+                    "STATICCALL at PC {pc} must have proven ECRECOVER address 1"
+                );
+                // The callee and all memory arguments are data, including any
+                // PUSH origin also used elsewhere as a relocatable jump label.
+                data_uses.extend(stack.drain(height - 6..height - 1));
+                stack.pop(); // Adjacent GAS result.
+                stack.push(UNKNOWN);
             }
             0x56 | 0x57 => {
                 let source = stack.pop().unwrap();
@@ -415,7 +439,7 @@ pub fn optimize_scenarios(
                 .iter()
                 .enumerate()
                 .map(|(i, scenario)| {
-                    scenario::replay(code, candidate, scenario)
+                    scenario::replay(code, candidate, scenario, ReplayPolicy::SuccessfulEcrecover)
                         .with_context(|| format!("differential scenario {i}"))
                 })
                 .collect::<Result<Vec<_>>>()
@@ -441,7 +465,7 @@ fn optimize_checked(
     let verification = match mode {
         RuntimeMode::Compact => verification,
         RuntimeMode::PreserveLayout => {
-            "Lean: exact artifact reconstruction, unchanged byte offsets, instruction boundaries, jump destinations, local stack profiles and gas-erased fragment equivalence. Rust: conservative reachability; no global stack-height proof. revm: supplied transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof."
+            "Lean: exact artifact reconstruction, unchanged byte offsets, instruction boundaries, jump destinations, local stack profiles and gas-erased fragment equivalence including local underflow/overflow at the 1024-word bound. Rust: conservative reachability; no global stack-height proof. revm: supplied transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof."
         }
     };
     fs::create_dir(out)?;
@@ -729,10 +753,18 @@ fn compare_sequence(
         .collect()
 }
 
-fn compare_results(
-    (left, left_state): (ExecutionResult, BTreeMap<Address, AccountState>),
-    (right, right_state): (ExecutionResult, BTreeMap<Address, AccountState>),
-) -> Result<CaseResult> {
+fn compare_results(left: Execution, right: Execution) -> Result<CaseResult> {
+    left.precompiles.compare(&right.precompiles)?;
+    let Execution {
+        result: left,
+        state: left_state,
+        ..
+    } = left;
+    let Execution {
+        result: right,
+        state: right_state,
+        ..
+    } = right;
     let same_result = match (&left, &right) {
         (
             ExecutionResult::Success {
@@ -781,7 +813,20 @@ struct AccountState {
     storage: BTreeMap<U256, U256>,
 }
 
-fn execute(code: &[u8], case: &Case) -> Result<(ExecutionResult, BTreeMap<Address, AccountState>)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayPolicy {
+    Transactions,
+    SuccessfulEcrecover,
+}
+
+#[derive(Debug)]
+struct Execution {
+    result: ExecutionResult,
+    state: BTreeMap<Address, AccountState>,
+    precompiles: EcrecoverTrace,
+}
+
+fn execute(code: &[u8], case: &Case) -> Result<Execution> {
     let mut db = initial_db(code, &case.storage)?;
     execute_transaction(&mut db, &case.calldata, case.gas_limit, &case.value)
 }
@@ -821,7 +866,7 @@ fn execute_transaction(
     calldata: &str,
     gas_limit: u64,
     value: &str,
-) -> Result<(ExecutionResult, BTreeMap<Address, AccountState>)> {
+) -> Result<Execution> {
     let contract = Address::repeat_byte(0x22);
     let caller = Address::repeat_byte(0x11);
     let nonce = db.load_account(caller)?.info.nonce;
@@ -838,7 +883,14 @@ fn execute_transaction(
         })
         .data(Bytes::from(from_hex(calldata)?))
         .build()?;
-    execute_env(db, tx, BlockEnv::default(), 1, contract)
+    execute_env(
+        db,
+        tx,
+        BlockEnv::default(),
+        1,
+        contract,
+        ReplayPolicy::SuccessfulEcrecover,
+    )
 }
 
 fn execute_env(
@@ -847,9 +899,11 @@ fn execute_env(
     block: BlockEnv,
     chain_id: u64,
     target: Address,
-) -> Result<(ExecutionResult, BTreeMap<Address, AccountState>)> {
+    policy: ReplayPolicy,
+) -> Result<Execution> {
     // Each transaction resets warmth/transient state; the database owns durable
     // state. Reverted executions still commit the sender nonce via revm.
+    let mut precompiles = EcrecoverTrace::new(policy);
     let mut evm = Context::mainnet()
         .modify_cfg_chained(|cfg| {
             cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN);
@@ -857,8 +911,8 @@ fn execute_env(
         })
         .with_block(block)
         .with_db(&mut *db)
-        .build_mainnet();
-    let result = evm.transact_commit(tx)?;
+        .build_mainnet_with_inspector(&mut precompiles);
+    let result = evm.inspect_tx_commit(tx)?;
     let state = db
         .cache
         .accounts
@@ -887,7 +941,11 @@ fn execute_env(
             ))
         })
         .collect();
-    Ok((result, state))
+    Ok(Execution {
+        result,
+        state,
+        precompiles,
+    })
 }
 
 #[cfg(test)]
@@ -905,6 +963,35 @@ mod tests {
             value: String::new(),
             storage: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn compact_ecrecover_requires_constant_callee_on_every_path() {
+        for code in [
+            "5f5f5f5f60015afa5000",   // direct literal
+            "60015f5f5f5f845afa5000", // retained PUSH through DUP5
+        ] {
+            let original = bytes(code);
+            let (candidate, _) = transform(&analyze(&original).unwrap()).unwrap();
+            analyze(&candidate).unwrap();
+            compare(&original, &candidate, &case("")).unwrap();
+        }
+        for code in [
+            "5a50",                                         // escaped gas value
+            "5f5f5f5f60015a8050fa5000",                     // gas copied before consumption
+            "5f5f5f5f600260fffffa5000",                     // another callee and constant gas
+            "5f5f5f5f5f35600e5760016011565b5f355b5afa5000", // unknown callee at join
+            "5f5f5f5f5f35600e5760016011565b60025b5afa5000", // literal 1 or 2 at join
+        ] {
+            assert!(analyze(&bytes(code)).is_err(), "{code}");
+        }
+        let shared_label = bytes("5f5b60015f5f5f5f845afa5056");
+        assert!(
+            analyze(&shared_label)
+                .unwrap_err()
+                .to_string()
+                .contains("both a jump label and data")
+        );
     }
 
     #[test]
@@ -935,19 +1022,29 @@ mod tests {
         let contract = Address::repeat_byte(0x22);
         let caller = Address::repeat_byte(0x11);
         let mut db = initial_db(&code, &initial).unwrap();
-        let (first, before) =
-            execute_transaction(&mut db, &format!("{:064x}", 1), 200_000, "7").unwrap();
+        let Execution {
+            result: first,
+            state: before,
+            ..
+        } = execute_transaction(&mut db, &format!("{:064x}", 1), 200_000, "7").unwrap();
         assert!(first.is_success());
         assert_eq!(before[&contract].balance, U256::from(7));
         assert_eq!(before[&contract].storage[&U256::ZERO], U256::from(1));
-        let (revert, after) = execute_transaction(&mut db, "", 200_000, "3").unwrap();
+        let Execution {
+            result: revert,
+            state: after,
+            ..
+        } = execute_transaction(&mut db, "", 200_000, "3").unwrap();
         assert!(matches!(revert, ExecutionResult::Revert { .. }));
         assert!(revert.logs().is_empty());
         assert_eq!(after[&contract], before[&contract]);
         assert_eq!(after[&caller].balance, U256::MAX - U256::from(7));
         assert_eq!(after[&caller].nonce, 2);
-        let (third, state) =
-            execute_transaction(&mut db, &format!("{:064x}", 2), 200_000, "").unwrap();
+        let Execution {
+            result: third,
+            state,
+            ..
+        } = execute_transaction(&mut db, &format!("{:064x}", 2), 200_000, "").unwrap();
         assert!(third.is_success());
         assert_eq!(state[&contract].storage[&U256::ZERO], U256::from(2));
         assert_eq!(state[&contract].storage[&U256::from(9)], U256::from(11));
@@ -968,9 +1065,11 @@ mod tests {
         .unwrap();
         let mut gas = Vec::new();
         for _ in 0..2 {
-            let (output, _) = execute_transaction(&mut transient, "", 200_000, "").unwrap();
+            let Execution { result: output, .. } =
+                execute_transaction(&mut transient, "", 200_000, "").unwrap();
             assert_eq!(output.output().unwrap().as_ref(), &[0; 32]);
-            let (output, _) = execute_transaction(&mut cold, "", 200_000, "").unwrap();
+            let Execution { result: output, .. } =
+                execute_transaction(&mut cold, "", 200_000, "").unwrap();
             assert_eq!(U256::from_be_slice(output.output().unwrap()), U256::from(7));
             gas.push(output.tx_gas_used());
         }
@@ -983,7 +1082,8 @@ mod tests {
         let initial = BTreeMap::from([("9".into(), "11".into())]);
         let mut db = initial_db(&code, &initial).unwrap();
         execute_transaction(&mut db, &format!("{:064x}", 7), 200_000, "").unwrap();
-        let (_, cleared) = execute_transaction(&mut db, "", 200_000, "").unwrap();
+        let Execution { state: cleared, .. } =
+            execute_transaction(&mut db, "", 200_000, "").unwrap();
         assert_eq!(
             cleared[&Address::repeat_byte(0x22)].storage,
             BTreeMap::from([(U256::from(9), U256::from(11))])
@@ -1087,7 +1187,7 @@ mod tests {
         assert!(!changes.is_empty());
         assert_eq!(analyze(&candidate).unwrap().relocated_labels, 4);
         compare(&code, &candidate, &case("")).unwrap();
-        let (result, _) = execute(&candidate, &case("")).unwrap();
+        let Execution { result, .. } = execute(&candidate, &case("")).unwrap();
         assert_eq!(
             U256::from_be_slice(result.output().unwrap()),
             U256::from(10)
@@ -1244,7 +1344,9 @@ mod tests {
         assert!(compare(&bytes("00"), &bytes("5f5f5500"), &initial).is_err());
         // A write rolled back by REVERT leaves the initial nonzero slot intact.
         compare(&bytes("5f5ffd"), &bytes("5f5f555f5ffd"), &initial).unwrap_err(); // extra gas is rejected.
-        let (_, reverted) = execute(&bytes("5f5f555f5ffd"), &initial).unwrap();
+        let Execution {
+            state: reverted, ..
+        } = execute(&bytes("5f5f555f5ffd"), &initial).unwrap();
         assert_eq!(
             reverted[&Address::repeat_byte(0x22)].storage[&U256::ZERO],
             U256::from(7)
@@ -1259,8 +1361,8 @@ mod tests {
         let (optimized, _) = transform(&analyze(&original).unwrap()).unwrap();
         low.gas_limit = 23_310;
         assert!(compare(&original, &optimized, &low).is_err());
-        assert!(execute(&original, &low).unwrap().0.is_halt());
-        assert!(execute(&optimized, &low).unwrap().0.is_success());
+        assert!(execute(&original, &low).unwrap().result.is_halt());
+        assert!(execute(&optimized, &low).unwrap().result.is_success());
         assert!(compare(&bytes("60015f5500"), &bytes("60025f5500"), &case("")).is_err());
         assert!(
             compare(
@@ -1381,7 +1483,7 @@ mod tests {
                 let mut input = case(&hex::encode(data));
                 input.storage.insert("0".into(), "7".into());
                 compare(&code, &candidate, &input).unwrap();
-                let (result, state) = execute(&candidate, &input).unwrap();
+                let Execution { result, state, .. } = execute(&candidate, &input).unwrap();
                 assert_eq!(result.output().unwrap().as_ref(), data.repeat(words));
                 assert_eq!(
                     state[&Address::repeat_byte(0x22)].storage[&U256::ZERO],

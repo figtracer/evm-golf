@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 
 use super::{MAX_RUNTIME_BYTES, Rewrite, certificates, from_hex};
 
+const STACK_MODEL: &str = include_str!("../../lean/Stack.lean");
 const LAYOUT_MODEL: &str = include_str!("../../lean/Layout.lean");
 // A full EIP-170 image exceeded 65K recursive elaboration depth and the default
 // heartbeat budget. Kernel reduction at these limits checked 24,576 bytes; the
@@ -27,9 +28,10 @@ pub(super) fn certificate(
         "layout artifacts require one-word fragment prefixes"
     );
     let (mut source, mut names) = certificates(rewrites)?;
+    writeln!(source, "\n{STACK_MODEL}\n{LAYOUT_MODEL}").unwrap();
     writeln!(
         source,
-        "\n{LAYOUT_MODEL}\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\nnamespace GolfArtifact"
+        "\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\nnamespace GolfArtifact"
     ).unwrap();
     // Embed both actual images independently; never define candidate by applying
     // the proposed patches, which would conceal errors in the Rust emitter.
@@ -38,6 +40,7 @@ pub(super) fn certificate(
     source.push_str("def sites : List GolfLayout.Site := [\n");
     let mut unique: HashMap<_, _> = HashMap::default();
     let mut proofs = Vec::new();
+    let mut bounded = String::new();
     for (i, rewrite) in rewrites.iter().enumerate() {
         let before = from_hex(&rewrite.before)?;
         let after = from_hex(&rewrite.after)?;
@@ -58,18 +61,42 @@ pub(super) fn certificate(
                 rewrite.required_stack,
             ))
             .or_insert(next);
+        if index == next {
+            let name = format!("runtime_bounded_{index}");
+            writeln!(
+                bounded,
+                "theorem {name} : GolfBounded.FragmentEquivalent {before:?} {after:?} := by"
+            )
+            .unwrap();
+            writeln!(
+                bounded,
+                "  apply GolfBounded.of_unbounded (before := {before:?}) (after := {after:?}) ?_ ?_ runtime_rewrite_{index}"
+            )
+            .unwrap();
+            for bytes in [&before, &after] {
+                ensure!(
+                    bytes.len() >= 2,
+                    "layout fragment must contain PUSH and binary opcode"
+                );
+                writeln!(bounded, "  · exact GolfBounded.push_binary {:?} {} (by decide +kernel) (by decide +kernel)", &bytes[1..bytes.len()-1], bytes[bytes.len()-1]).unwrap();
+            }
+            writeln!(bounded, "#print axioms {name}\n").unwrap();
+            names.push(name);
+        }
         proofs.push(index);
     }
     // Check and cache each closed fact directly in Lean's kernel. Repeated
     // elaborator reduction with `rfl` exhausted the same 60-second budget on
     // dense EIP-170 artifacts. This is not native evaluation or a new axiom.
+    source.push_str("]\nend GolfArtifact\n\n");
+    source.push_str(&bounded);
     source.push_str(
-        "]\nend GolfArtifact\n\ntheorem layout_artifact :\n  GolfLayout.LayoutArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.sites := by\n  refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩\n  exact ",
+        "theorem layout_artifact :\n  GolfLayout.LayoutArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.sites := by\n  refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩\n  exact ",
     );
     for index in &proofs {
         write!(
             source,
-            "(GolfLayout.CertifiedSites.cons runtime_rewrite_{index} "
+            "(GolfLayout.CertifiedSites.cons runtime_rewrite_{index} runtime_bounded_{index} "
         )
         .unwrap();
     }
@@ -111,7 +138,7 @@ mod tests {
             },
         ];
         let check = |name: &str, original: &[u8], candidate: &[u8], rewrites: &[Rewrite]| {
-            let (source, names) = certificate(original, candidate, rewrites).unwrap();
+            let (source, names) = certificate(original, candidate, rewrites)?;
             let path = dir.path().join(format!("{name}.lean"));
             fs::write(&path, source).unwrap();
             proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational)
@@ -235,35 +262,88 @@ mod tests {
             },
         ];
         assert!(check("Reordered", &original, &candidate, &reordered).is_err());
-        // Both fragments are total identities with profile (1, 0, 1), and the
-        // patch reconstructs the candidate, but instruction boundaries differ.
-        let different_layout = Rewrite {
-            original_pc: 0,
-            before: "630000000102".into(),
-            after: "600001600001".into(),
-            required_stack: 1,
-        };
-        let (source, names) = certificates(std::slice::from_ref(&different_layout)).unwrap();
-        let path = dir.path().join("BoundaryFragments.lean");
-        fs::write(&path, source).unwrap();
-        proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).unwrap();
-        assert!(
-            check(
+        // Prove every other acceptance condition before rejecting a layout or
+        // profile mismatch. These fixtures need direct bounded proofs because
+        // they intentionally lie outside the production PUSH+binary templates.
+        let direct_behavior = "by\n      constructor\n      · intro stack x y\n        cases stack with\n        | nil => simp [GolfBounded.run, Golf.run, Golf.immediate]\n        | cons a tail => simp [GolfBounded.run, Golf.run, Golf.immediate] <;> (repeat' split) <;> simp_all <;> omega\n      · intro x y\n        simp [Golf.run, Golf.immediate]";
+        for (name, before, after, mismatch) in [
+            (
                 "Boundaries",
-                &from_hex("63000000010200").unwrap(),
-                &from_hex("60000160000100").unwrap(),
-                &[different_layout],
-            )
-            .is_err()
-        );
-        // A model-proved identity cannot use two failed stack profiles.
-        let unsupported_profile = Rewrite {
-            original_pc: 0,
-            before: "19".into(),
-            after: "19".into(),
-            required_stack: 1,
-        };
-        assert!(check("Profile", &[0x19, 0], &[0x19, 0], &[unsupported_profile]).is_err());
+                "630000000102",
+                "600001600001",
+                "GolfLayout.scan GolfArtifact.original ≠ GolfLayout.scan GolfArtifact.candidate ∧ GolfArtifact.sites.all (fun site => GolfLayout.profile site.before == some (1, 0, 1) && GolfLayout.profile site.after == some (1, 0, 1)) = true",
+            ),
+            (
+                "Profile",
+                "5f17",
+                "5f17",
+                "GolfLayout.scan GolfArtifact.original = GolfLayout.scan GolfArtifact.candidate ∧ GolfArtifact.sites.all (fun site => GolfLayout.profile site.before == some (1, 0, 1) && GolfLayout.profile site.after == some (1, 0, 1)) ≠ true",
+            ),
+        ] {
+            let rewrite = Rewrite {
+                original_pc: 0,
+                before: before.into(),
+                after: after.into(),
+                required_stack: 1,
+            };
+            let mut original = from_hex(before).unwrap();
+            let mut candidate = from_hex(after).unwrap();
+            original.push(0);
+            candidate.push(0);
+            let (source, names) = certificate(&original, &candidate, &[rewrite]).unwrap();
+            let mut checked_source = String::new();
+            for line in source.lines() {
+                if line.starts_with("  · exact GolfBounded.push_binary") {
+                    checked_source.push_str("  · exact ");
+                    checked_source.push_str(direct_behavior);
+                    checked_source.push('\n');
+                } else {
+                    checked_source.push_str(line);
+                    checked_source.push('\n');
+                }
+            }
+            let (declarations, _) = checked_source
+                .split_once("theorem layout_artifact :")
+                .unwrap();
+            let positive = format!("{declarations}
+ theorem isolated_failure :
+  GolfArtifact.original.all (fun byte => byte < 256) = true ∧
+  GolfArtifact.candidate.all (fun byte => byte < 256) = true ∧
+  GolfLayout.applySites GolfArtifact.original GolfArtifact.sites = some GolfArtifact.candidate ∧
+  GolfArtifact.original.length = GolfArtifact.candidate.length ∧
+  GolfLayout.aligned GolfArtifact.sites ((GolfLayout.scan GolfArtifact.original).map (fun item => item.1) ++ [GolfArtifact.original.length]) = true ∧
+  ({mismatch}) ∧ GolfLayout.CertifiedSites GolfArtifact.sites := by
+  refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩
+  exact GolfLayout.CertifiedSites.cons runtime_rewrite_0 runtime_bounded_0 GolfLayout.CertifiedSites.nil
+#print axioms isolated_failure
+");
+            let path = dir.path().join(format!("{name}Prerequisites.lean"));
+            fs::write(&path, positive).unwrap();
+            let mut positive_names = names.clone();
+            *positive_names.last_mut().unwrap() = "isolated_failure".into();
+            proof::verify_named(&path, &positive_names, proof::AxiomPolicy::Foundational)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{error:#}\n{}",
+                        fs::read_to_string(path.with_extension("log")).unwrap_or_default()
+                    )
+                });
+            let path = dir.path().join(format!("{name}.lean"));
+            fs::write(&path, checked_source).unwrap();
+            assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
+        }
+        // The new guarantee must depend on enforcing the actual 1,024-word bound.
+        let (source, names) = certificate(&original, &candidate, &rewrites).unwrap();
+        let path = dir.path().join("WrongStackLimit.lean");
+        fs::write(
+            &path,
+            source.replace(
+                "if stack.length > 1024 then none",
+                "if stack.length > 1025 then none",
+            ),
+        )
+        .unwrap();
+        assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
         // Local theorems must be attached to their own concrete sites.
         let (source, names) = certificate(&original, &candidate, &rewrites).unwrap();
         let path = dir.path().join("WrongTheorem.lean");

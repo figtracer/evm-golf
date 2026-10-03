@@ -8,11 +8,12 @@
 | `src/evm.rs` | Bytecode generation, revm execution, gas checks |
 | `src/proof.rs` | Lean source generation and pinned-toolchain verification |
 | `src/runtime.rs` | Runtime CFG, local rewriting, relocation, and differential execution |
-| `src/runtime/` | Fixed-layout certificates, layout analysis, bounded inputs, account fixtures |
+| `src/runtime/` | Fixed-layout certificates, layout analysis, bounded inputs, account fixtures, precompile replay guards |
 | `src/contest.rs` | Fixed puzzles, submissions, ranking |
 | `src/campaign.rs` | Batch attempts, failure evidence, optimizer comparisons |
 | `src/main.rs` | CLI arguments and output |
 | `lean/Model.lean` | The limited bytecode semantics used by the proofs |
+| `lean/Stack.lean` | Operational instruction-boundary stack limits for local fragments |
 | `lean/Layout.lean` | Exact fixed-layout artifact reconstruction and local proof binding |
 | `tests/` | Execution, CLI, proof, and campaign regression tests |
 | `challenges.json` | Puzzle IDs, descriptions, and reference expressions |

@@ -49,13 +49,17 @@ pub(super) fn analyze(code: &[u8]) -> Result<LayoutAnalysis> {
         if pc == code.len() || !reachable.insert(pc) {
             continue;
         }
-        let instruction =
-            &instructions[*index.get(&pc).context("control flow enters PUSH data")?];
+        let i = *index.get(&pc).context("control flow enters PUSH data")?;
+        let instruction = &instructions[i];
         let op = instruction.bytes[0];
         // PC and CODESIZE are stable because no instruction or byte is moved.
-        // Code contents, GAS and external execution are still sensitive.
+        // GAS is admitted only in the inseparable literal-1 ECRECOVER pattern.
+        let supported = match op {
+            0x5a | 0xfa => is_direct_ecrecover(&instructions, i),
+            _ => allowed(op) || matches!(op, 0x38 | 0x58),
+        };
         ensure!(
-            allowed(op) || matches!(op, 0x38 | 0x58),
+            supported,
             "unsupported or code/gas-sensitive opcode {} (0x{op:02x}) at PC {pc}",
             OpCode::name_by_op(op)
         );
@@ -82,6 +86,26 @@ pub(super) fn analyze(code: &[u8]) -> Result<LayoutAnalysis> {
         instructions,
         reachable,
     })
+}
+
+// The decoded sequence contains no JUMPDEST, so any execution reaching its
+// GAS or STATICCALL must first execute the literal callee PUSH. GAS is consumed
+// immediately as the call's gas argument and cannot escape into contract data.
+// This establishes the callee and gas-use restriction, not all-gas equivalence:
+// an ECRECOVER call can still change outcome across its 3,000-gas threshold.
+fn is_direct_ecrecover(instructions: &[Instruction], i: usize) -> bool {
+    let start = match instructions[i].bytes[0] {
+        0x5a => i.checked_sub(1),
+        0xfa => i.checked_sub(2),
+        _ => None,
+    };
+    start
+        .and_then(|start| instructions.get(start..start + 3))
+        .is_some_and(|ops| {
+            push_value(&ops[0].bytes) == Some(U256::from(1))
+                && ops[1].bytes[0] == 0x5a
+                && ops[2].bytes[0] == 0xfa
+        })
 }
 
 pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewrite>)> {
@@ -225,13 +249,76 @@ mod tests {
             let mut code = vec![0x5f; height];
             code.extend(bytes("60020200"));
             let (candidate, _) = transform(&analyze(&code).unwrap()).unwrap();
-            let (left, _) = execute(&code, &case("")).unwrap();
-            let (right, _) = execute(&candidate, &case("")).unwrap();
+            let left = execute(&code, &case("")).unwrap().result;
+            let right = execute(&candidate, &case("")).unwrap().result;
             assert_eq!(left.is_halt(), right.is_halt());
             assert_eq!(left.is_halt(), matches!(height, 0 | 1024));
             if left.is_halt() {
                 assert_eq!(left, right);
             }
+        }
+    }
+
+    #[test]
+    fn direct_ecrecover_keeps_call_fragment_and_accepts_literal_widths() {
+        for width in [1u8, 2, 32] {
+            // Solady's output-size/output-offset/input-size/input-offset setup.
+            let mut call = bytes("60208060805f");
+            call.push(0x5f + width);
+            call.extend(std::iter::repeat_n(0, usize::from(width) - 1));
+            call.extend([1, 0x5a, 0xfa, 0x00]);
+            let mut code = bytes("600360020250"); // Independent local multiply.
+            code.extend(&call);
+            let (candidate, rewrites) = transform(&analyze(&code).unwrap()).unwrap();
+            assert_eq!(rewrites.len(), 1);
+            assert_eq!(&candidate[6..], call);
+        }
+    }
+
+    #[test]
+    fn precompile_restriction_rejects_other_targets_and_gas_uses() {
+        for callee in [0u8, 2, 10, 255] {
+            let mut code = bytes("60208060805f60");
+            code.extend([callee, 0x5a, 0xfa, 0x00]);
+            assert!(analyze(&code).is_err());
+        }
+        // Even an address-1 alias with nonzero high bits is outside the rule.
+        let mut alias = bytes("60208060805f74"); // PUSH21.
+        alias.push(1);
+        alias.extend(std::iter::repeat_n(0, 19));
+        alias.extend([1, 0x5a, 0xfa, 0x00]);
+        assert!(analyze(&alias).is_err());
+        for code in [
+            "60015a805afa00",   // GAS duplicated, not immediately consumed.
+            "60015a5000",       // GAS discarded rather than used by the call.
+            "60015a5f5500",     // GAS stored.
+            "60015a5f5200",     // GAS written to memory.
+            "60015a60010100",   // GAS used in arithmetic.
+            "60015a5600",       // GAS used as a jump destination.
+            "60015afa5a00",     // A valid pair cannot exempt another GAS.
+            "60015afa6001fa00", // Nor another STATICCALL without GAS.
+            "60015af100",       // CALL remains unsupported.
+            "60015bfafa00",     // A JUMPDEST cannot replace the GAS instruction.
+            "60015b5afa00",     // Entry between literal callee and GAS.
+            "60015a5bfa00",     // Entry between GAS and STATICCALL.
+            "6260015a5afa00",   // Literal bytes inside PUSH3 cannot spoof callee.
+            "6260015afa00",     // Embedded GAS cannot exempt a real STATICCALL.
+        ] {
+            assert!(analyze(&bytes(code)).is_err(), "accepted {code}");
+        }
+    }
+
+    #[test]
+    fn dynamic_branches_cannot_enter_ecrecover_sequence() {
+        // Only PC 3 is a valid branch entry. PCs 11, 12 and 13 are literal data,
+        // GAS and STATICCALL respectively, so jumps to them halt before a call.
+        let code = bytes("5f35565b60208060805f60015afa00");
+        assert!(analyze(&code).is_ok());
+        let valid = format!("{}03", "00".repeat(31));
+        assert!(execute(&code, &case(&valid)).unwrap().result.is_success());
+        for pc in [11u8, 12, 13] {
+            let input = format!("{}{pc:02x}", "00".repeat(31));
+            assert!(execute(&code, &case(&input)).unwrap().result.is_halt());
         }
     }
 
@@ -248,8 +335,8 @@ mod tests {
         compare(&code, &candidate, &case(&valid)).unwrap();
         for target in [0u8, 1, 6, 255] {
             let input = format!("{}{target:02x}", "00".repeat(31));
-            let (left, _) = execute(&code, &case(&input)).unwrap();
-            let (right, _) = execute(&candidate, &case(&input)).unwrap();
+            let left = execute(&code, &case(&input)).unwrap().result;
+            let right = execute(&candidate, &case(&input)).unwrap().result;
             assert!(left.is_halt());
             assert_eq!(left, right);
         }

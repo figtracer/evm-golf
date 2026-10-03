@@ -97,7 +97,7 @@ exceptions, and general contract equivalence. The separate
 [runtime optimizer](runtime.md) preserves surrounding instructions while checking
 local fragments and supplied execution cases. Fixed-layout mode additionally proves
 exact reconstruction of the complete emitted artifact, its layout, and each site's
-stack profile, with local proofs tied to the exact replaced bytes. Compact-mode
+stack profile and bounded local stack behavior, with proofs tied to the exact replaced bytes. Compact-mode
 relocation remains Rust-checked. Neither certificate proves full runtime execution.
 Solidity checked arithmetic may revert where these expressions wrap. A valid expression rewrite alone does not justify changing an
 arbitrary Solidity contract.

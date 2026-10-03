@@ -22,7 +22,7 @@ use std::{
 };
 
 use super::{
-    CaseResult, Transaction, compare_results, execute_env, from_hex,
+    CaseResult, ReplayPolicy, Transaction, compare_results, execute_env, from_hex,
     input::{self, unique_map},
 };
 
@@ -104,7 +104,8 @@ pub fn check(
         .iter()
         .enumerate()
         .map(|(i, scenario)| {
-            replay(original, candidate, scenario).with_context(|| format!("scenario {i}"))
+            replay(original, candidate, scenario, ReplayPolicy::Transactions)
+                .with_context(|| format!("scenario {i}"))
         })
         .collect::<Result<Vec<_>>>();
     let cases = match checked {
@@ -134,6 +135,7 @@ pub(super) fn replay(
     original: &[u8],
     candidate: &[u8],
     scenario: &Scenario,
+    policy: ReplayPolicy,
 ) -> Result<Vec<CaseResult>> {
     ensure!(
         !scenario.transactions.is_empty(),
@@ -275,8 +277,15 @@ pub(super) fn replay(
                     .data(Bytes::from(from_hex(&transaction.calldata)?))
                     .build()?;
                 compare_results(
-                    execute_env(&mut left, tx.clone(), block.clone(), chain_id, target)?,
-                    execute_env(&mut right, tx, block.clone(), chain_id, target)?,
+                    execute_env(
+                        &mut left,
+                        tx.clone(),
+                        block.clone(),
+                        chain_id,
+                        target,
+                        policy,
+                    )?,
+                    execute_env(&mut right, tx, block.clone(), chain_id, target, policy)?,
                 )
             })()
             .with_context(|| format!("transaction {i}"))
@@ -346,12 +355,20 @@ mod tests {
             .unwrap();
             let mut baseline = from_hex("600050").unwrap();
             baseline.extend_from_slice(&call);
-            assert_eq!(replay(&baseline, &call, &scenario).unwrap().len(), 1);
+            assert_eq!(
+                replay(&baseline, &call, &scenario, ReplayPolicy::Transactions)
+                    .unwrap()
+                    .len(),
+                1
+            );
             // Same output but missing the callee's write must be rejected.
             let pure = from_hex("60015f5260205ff3").unwrap();
             assert!(
-                format!("{:#}", replay(&call, &pure, &scenario).unwrap_err())
-                    .contains("observable execution mismatch")
+                format!(
+                    "{:#}",
+                    replay(&call, &pure, &scenario, ReplayPolicy::Transactions).unwrap_err()
+                )
+                .contains("observable execution mismatch")
             );
         }
     }
@@ -362,17 +379,17 @@ mod tests {
         // Copy an initializer from the code tail, create a child, then STOP.
         let original = from_hex("6009600d5f3960095f5ff0500060005f5360015ff3").unwrap();
         let candidate = from_hex("6009600d5f3960095f5ff0500060015f5360015ff3").unwrap();
-        replay(&original, &original, &scenario).unwrap();
+        replay(&original, &original, &scenario, ReplayPolicy::Transactions).unwrap();
         assert!(
             format!(
                 "{:#}",
-                replay(&original, &candidate, &scenario).unwrap_err()
+                replay(&original, &candidate, &scenario, ReplayPolicy::Transactions).unwrap_err()
             )
             .contains("observable execution mismatch")
         );
         let original = from_hex("600050385f5260205ff3").unwrap();
         let candidate = from_hex("385f5260205ff3").unwrap();
-        assert!(replay(&original, &candidate, &scenario).is_err());
+        assert!(replay(&original, &candidate, &scenario, ReplayPolicy::Transactions).is_err());
     }
 
     #[test]
@@ -381,7 +398,7 @@ mod tests {
         scenario.environment.number = Some(2);
         let original = from_hex("6001405f5260205ff3").unwrap();
         let zero = from_hex("5f5f5260205ff3").unwrap();
-        replay(&original, &zero, &scenario).unwrap();
+        replay(&original, &zero, &scenario, ReplayPolicy::Transactions).unwrap();
         scenario
             .environment
             .block_hashes
@@ -391,7 +408,7 @@ mod tests {
             .block_hashes
             .insert("0x1".into(), B256::ZERO.to_string());
         assert!(
-            replay(&original, &zero, &scenario)
+            replay(&original, &zero, &scenario, ReplayPolicy::Transactions)
                 .unwrap_err()
                 .to_string()
                 .contains("duplicate numeric block hash")
@@ -400,7 +417,7 @@ mod tests {
         scenario.accounts.get_mut(&scenario.target).unwrap().storage =
             BTreeMap::from([("0".into(), "1".into()), ("0x0".into(), "2".into())]);
         assert!(
-            replay(&original, &zero, &scenario)
+            replay(&original, &zero, &scenario, ReplayPolicy::Transactions)
                 .unwrap_err()
                 .to_string()
                 .contains("duplicate numeric storage")
@@ -418,7 +435,7 @@ mod tests {
             .accounts
             .insert(format!("0x{}", "AB".repeat(20)), Account::default());
         assert!(
-            replay(&original, &zero, &scenario)
+            replay(&original, &zero, &scenario, ReplayPolicy::Transactions)
                 .unwrap_err()
                 .to_string()
                 .contains("duplicate normalized account")
@@ -491,7 +508,18 @@ mod tests {
             .gas_price(0)
             .build()
             .unwrap();
-        execute_env(db, tx, BlockEnv::default(), 1, target).unwrap()
+        {
+            let execution = execute_env(
+                db,
+                tx,
+                BlockEnv::default(),
+                1,
+                target,
+                ReplayPolicy::Transactions,
+            )
+            .unwrap();
+            (execution.result, execution.state)
+        }
     }
 
     #[test]
@@ -602,7 +630,7 @@ mod tests {
         scenario.accounts.get_mut(&scenario.caller).unwrap().balance = U256::MAX.to_string();
         scenario.accounts.get_mut(&scenario.target).unwrap().balance = "1".into();
         assert!(
-            replay(&[0], &[0], &scenario)
+            replay(&[0], &[0], &scenario, ReplayPolicy::Transactions)
                 .unwrap_err()
                 .to_string()
                 .contains("total fixture balance")
@@ -610,14 +638,14 @@ mod tests {
         let mut scenario = fixture();
         scenario.accounts.get_mut(&scenario.target).unwrap().code = "00".into();
         assert!(
-            replay(&[0], &[0], &scenario)
+            replay(&[0], &[0], &scenario, ReplayPolicy::Transactions)
                 .unwrap_err()
                 .to_string()
                 .contains("target fixture code")
         );
         let mut scenario = fixture();
         scenario.accounts.get_mut(&scenario.caller).unwrap().code = "00".into();
-        assert!(replay(&[0], &[0], &scenario).is_err()); // EIP-3607, no validation bypass.
+        assert!(replay(&[0], &[0], &scenario, ReplayPolicy::Transactions).is_err()); // EIP-3607, no validation bypass.
     }
     #[test]
     fn external_code_and_forwarded_gas_observations_are_not_masked() {
@@ -641,7 +669,8 @@ mod tests {
             assert!(
                 format!(
                     "{:#}",
-                    replay(&original, &candidate, &scenario).unwrap_err()
+                    replay(&original, &candidate, &scenario, ReplayPolicy::Transactions)
+                        .unwrap_err()
                 )
                 .contains("observable execution mismatch")
             );

@@ -443,3 +443,69 @@ fn cli_optimizes_with_account_fixtures_without_changing_proof_gates() {
     assert!(!run("sensitive", &["--preserve-layout"]).status.success());
     assert!(!dir.path().join("sensitive").exists());
 }
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn cli_precompile_gate_applies_to_every_optimizer_input_format() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("runtime.hex");
+    // A real MUL rewrite before an empty-input ECRECOVER call. Empty input is
+    // an invalid signature, which succeeds with empty returndata when funded.
+    fs::write(&input, "6002600202505f5f5f5f60015afa5000").unwrap();
+    for layout in [false, true] {
+        for format in ["cases", "sequences", "scenarios"] {
+            for (name, gas) in [("funded", 200_000), ("underfunded", 24_000)] {
+                let transaction = serde_json::json!({"calldata":"", "gas_limit":gas});
+                let data = match format {
+                    "cases" => serde_json::json!([transaction]),
+                    "sequences" => serde_json::json!([{"transactions":[transaction]}]),
+                    _ => serde_json::json!([{
+                        "target":"0x2222222222222222222222222222222222222222",
+                        "caller":"0x1111111111111111111111111111111111111111",
+                        "accounts":{
+                            "0x2222222222222222222222222222222222222222":{},
+                            "0x1111111111111111111111111111111111111111":{"balance":"1000000"}
+                        },
+                        "transactions":[transaction]
+                    }]),
+                };
+                let cases = dir.path().join(format!("{format}.json"));
+                fs::write(&cases, serde_json::to_vec(&data).unwrap()).unwrap();
+                let out = dir.path().join(format!("{format}-{layout}-{name}"));
+                let mut command = Command::new(env!("CARGO_BIN_EXE_evm-golf"));
+                command
+                    .args(["optimize-runtime", "--bytecode"])
+                    .arg(&input)
+                    .arg(format!("--{format}"))
+                    .arg(&cases)
+                    .arg("--out")
+                    .arg(&out);
+                if layout {
+                    command.arg("--preserve-layout");
+                }
+                let output = command.output().unwrap();
+                if name == "funded" {
+                    assert!(
+                        output.status.success(),
+                        "{}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    let report: Value =
+                        serde_json::from_slice(&fs::read(out.join("result.json")).unwrap())
+                            .unwrap();
+                    assert!(!report["rewrites"].as_array().unwrap().is_empty());
+                    assert_eq!(report["cases"][0]["outcome"], "success");
+                } else {
+                    assert!(!output.status.success());
+                    assert!(
+                        fs::read_to_string(out.join("failure.log"))
+                            .unwrap()
+                            .contains("successful ECRECOVER")
+                    );
+                    assert!(!out.join("candidate.hex").exists());
+                    assert!(!out.join("result.json").exists());
+                }
+            }
+        }
+    }
+}

@@ -13,8 +13,9 @@
 EVM Golf optimizes expressions and supported contract runtimes, checks local
 rewrites with Lean, and measures bytecode with revm. Expression equality is proved
 once and reused to certify expression bytecode. Fixed-layout runtime certificates
-also bind each proved rewrite to the complete emitted bytecode. Account fixtures
-let runtime optimization replay constructor-initialized state.
+also bind each proved rewrite to the emitted bytecode and check local stack-limit
+behavior. Account fixtures replay constructor-initialized state; restricted
+ECRECOVER calls support signature-verifying runtimes.
 
 - **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
 - **Verify** — Check expression equivalence and emitted bytecode against a Lean model.
