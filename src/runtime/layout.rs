@@ -3,6 +3,7 @@
 use anyhow::{Context as _, Result, ensure};
 use revm::{
     bytecode::opcode::OpCode,
+    interpreter::STACK_LIMIT,
     primitives::{U256, hex},
 };
 use serde::Serialize;
@@ -183,24 +184,53 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
         }
         if push_value(&a.bytes).is_some_and(|value| value.is_zero())
             && b.bytes == [0x80]
-            && [a.pc, b.pc]
+            && analysis.reachable.contains(&a.pc)
+            && !analysis
+                .copies
                 .iter()
-                .all(|pc| analysis.reachable.contains(pc))
-            && !analysis.copies.iter().any(|copy| {
-                copy.len != 0 && a.pc < copy.source + copy.len && copy.source < b.pc + b.bytes.len()
-            })
+                .any(|copy| copy.len != 0 && a.pc < copy.source + copy.len && copy.source < b.pc)
         {
-            let source_pc = a.pc;
-            let before: Vec<_> = a.bytes.iter().chain(&b.bytes).copied().collect();
-            let after: Vec<_> = a.bytes.iter().copied().chain([0x5f]).collect();
-            instructions[i + 1].bytes[0] = 0x5f;
-            rewrites.push(Rewrite {
-                original_pc: source_pc,
-                before: hex::encode(before),
-                after: hex::encode(after),
-                required_stack: 0,
-            });
-            continue;
+            // Every following PUSH0 or DUP1 preserves the known zero at the top.
+            // At most 1024 produced words can succeed on an initially empty stack.
+            let end = instructions[i + 1..]
+                .iter()
+                .take(STACK_LIMIT - 1)
+                .take_while(|op| {
+                    matches!(op.bytes.as_slice(), [0x5f] | [0x80])
+                        && analysis.reachable.contains(&op.pc)
+                        && !analysis.copies.iter().any(|copy| {
+                            copy.len != 0
+                                && op.pc < copy.source + copy.len
+                                && copy.source < op.pc + op.bytes.len()
+                        })
+                })
+                .enumerate()
+                .filter_map(|(offset, op)| (op.bytes == [0x80]).then_some(i + offset + 2))
+                .last()
+                .unwrap_or(i + 1);
+            if end > i + 1 {
+                let source_pc = a.pc;
+                let before: Vec<_> = instructions[i..end]
+                    .iter()
+                    .flat_map(|op| op.bytes.iter().copied())
+                    .collect();
+                let after: Vec<_> = a
+                    .bytes
+                    .iter()
+                    .copied()
+                    .chain(std::iter::repeat_n(0x5f, end - i - 1))
+                    .collect();
+                for op in &mut instructions[i + 1..end] {
+                    op.bytes[0] = 0x5f;
+                }
+                rewrites.push(Rewrite {
+                    original_pc: source_pc,
+                    before: hex::encode(before),
+                    after: hex::encode(after),
+                    required_stack: 0,
+                });
+                continue;
+            }
         }
         // Fold two constants without removing either PUSH: the transient peak
         // must remain two words even when the result could use a single PUSH.
@@ -430,6 +460,50 @@ mod tests {
     }
 
     #[test]
+    fn zero_chains_preserve_overflow_and_protected_suffixes() {
+        for height in [0, 1021, 1022, 1024] {
+            let mut original = vec![0x5f; height];
+            original.extend(bytes("6000808000"));
+            let (candidate, rewrites) = transform(&analyze(&original, false).unwrap()).unwrap();
+            assert_eq!(rewrites.len(), 1);
+            assert_eq!(rewrites[0].before, "60008080");
+            assert_eq!(rewrites[0].after, "60005f5f");
+            let left = execute(&original, &case("")).unwrap().result;
+            let right = execute(&candidate, &case("")).unwrap().result;
+            assert_eq!(left.is_halt(), height >= 1022);
+            assert_eq!(left.is_halt(), right.is_halt());
+            if left.is_halt() {
+                assert_eq!(left, right);
+            }
+        }
+        for (original, expected) in [
+            // A copied later DUP is preserved while the preceding safe pair improves.
+            ("6000808050600160035f3900", "60005f8050600160035f3900"),
+            // An entry point ends the fragment; the next DUP has an unknown input.
+            ("6000805b8000", "60005f5b8000"),
+        ] {
+            let original = bytes(original);
+            let (candidate, rewrites) = transform(&analyze(&original, true).unwrap()).unwrap();
+            assert_eq!(candidate, bytes(expected));
+            assert_eq!(rewrites.len(), 1);
+            validate_catalog(&original, &candidate, &rewrites).unwrap();
+        }
+        // The admitted fragment itself must have a successful empty-stack input.
+        // Leave the following overflowing DUP outside the maximum useful chain.
+        let mut original = vec![0x5f];
+        original.extend(std::iter::repeat_n(0x80, 1024));
+        original.push(0);
+        let (candidate, rewrites) = transform(&analyze(&original, false).unwrap()).unwrap();
+        assert_eq!(rewrites.len(), 1);
+        assert_eq!(bytes(&rewrites[0].before).len(), 1024);
+        assert_eq!(candidate[1024], 0x80);
+        assert_eq!(
+            execute(&original, &case("")).unwrap().result,
+            execute(&candidate, &case("")).unwrap().result
+        );
+    }
+
+    #[test]
     fn zero_dup_preserves_stack_limits_and_immutable_catalogs() {
         let original = bytes("6000805f5260205260405ff3");
         let (candidate, rewrites) = transform(&analyze(&original, false).unwrap()).unwrap();
@@ -487,8 +561,9 @@ mod tests {
         for (before, after) in [
             ("60008060011600", "60005f60011600"),
             ("6000800200", "60005f0200"),
-            ("6000808000", "60005f8000"),
-            ("5f808000", "5f5f8000"),
+            ("6000808000", "60005f5f00"),
+            ("5f808000", "5f5f5f00"),
+            ("6000805f8000", "60005f5f5f00"),
             ("5f8060011600", "5f5f60011600"),
             ("5f800200", "5f5f0200"),
         ] {

@@ -88,6 +88,45 @@ def LiteralEquivalent (before after : List Nat) : Prop :=
     ∃ output, Golf.run (before.length + 1) before stack x y = some output ∧
       Golf.run (after.length + 1) after stack x y = some output
 
+structure GrowthLiteralEquivalent (before after : List Nat) (growth : Nat) : Prop where
+  positive : 0 < growth
+  fits : growth ≤ 1024
+  beforeProfile : profile before = some (0, (growth : Int), growth)
+  afterProfile : profile after = some (0, (growth : Int), growth)
+  equal : ∀ stack x y,
+    GolfBounded.run (before.length + 1) before stack x y =
+      GolfBounded.run (after.length + 1) after stack x y
+  success : ∀ stack x y, stack.length + growth ≤ 1024 →
+    ∃ output, GolfBounded.run (before.length + 1) before stack x y = some output ∧
+      GolfBounded.run (after.length + 1) after stack x y = some output
+  overflow : ∀ stack x y, 1024 < stack.length + growth →
+    GolfBounded.run (before.length + 1) before stack x y = none ∧
+      GolfBounded.run (after.length + 1) after stack x y = none
+
+-- Shared exact shape gate: no caller-provided growth and no generic profile admission.
+def zeroChainBytes (code : List Nat) : List Nat :=
+  code.drop 1 |>.take (code.head! - 95)
+
+def zeroChainTail (code : List Nat) : List Nat :=
+  code.drop ((zeroChainBytes code).length + 1)
+
+def zeroChainShape (site : Site) : Bool :=
+  let bytes := zeroChainBytes site.before
+  let ops := zeroChainTail site.before
+  decide (bytes.length ≤ 32) &&
+    (decide (∀ b ∈ bytes, b < 256) &&
+      (decide (site.before = (95 + bytes.length) :: (bytes ++ ops)) &&
+        (decide (site.after = (95 + bytes.length) :: (bytes ++ ops.map (fun _ => 95))) &&
+          (decide (BitVec.ofNat 256 (Golf.immediate bytes) = 0) &&
+            (decide (∀ op ∈ ops, op = 95 ∨ op = 128) &&
+              (decide (ops.length ≤ 1023) && decide (128 ∈ ops)))))))
+
+def zeroChainProfile (site : Site) : Bool :=
+  let growth := (zeroChainTail site.before).length + 1
+  zeroChainShape site &&
+    (profile site.before == some (0, (growth : Int), growth) &&
+      profile site.after == some (0, (growth : Int), growth))
+
 inductive CertifiedSites : List Site → Prop where
   | nil : CertifiedSites []
   | cons {site : Site} {sites : List Site} :
@@ -98,6 +137,11 @@ inductive CertifiedSites : List Site → Prop where
   | literalCons {site : Site} {sites : List Site} :
       site.requiredStack = 0 → LiteralEquivalent site.before site.after →
       GolfBounded.LiteralEquivalent site.before site.after →
+      GolfComposition.ContextEquivalent site.before site.after → CertifiedSites sites →
+        CertifiedSites (site :: sites)
+  | chainCons {site : Site} {sites : List Site} {growth : Nat} :
+      site.requiredStack = 0 → LiteralEquivalent site.before site.after →
+      GrowthLiteralEquivalent site.before site.after growth →
       GolfComposition.ContextEquivalent site.before site.after → CertifiedSites sites →
         CertifiedSites (site :: sites)
 
@@ -113,7 +157,7 @@ structure LayoutArtifact (original candidate : List Nat) (sites : List Site) : P
       profile site.before == some (1, 0, 1) && profile site.after == some (1, 0, 1)
     else site.requiredStack == 0 &&
       ((profile site.before == some (0, 1, 2) && profile site.after == some (0, 1, 2)) ||
-        (profile site.before == some (0, 2, 2) && profile site.after == some (0, 2, 2)))) = true
+        (profile site.before == some (0, 2, 2) && profile site.after == some (0, 2, 2)) || zeroChainProfile site)) = true
   localProofs : CertifiedSites sites
 
 -- These certificates describe literal byte reads, not memory execution, gas,

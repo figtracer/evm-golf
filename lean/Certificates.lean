@@ -191,10 +191,24 @@ theorem checkZeroDup_sound (site : GolfLayout.Site) (checked : checkZeroDup site
   rw [beforeCode, afterCode]
   exact GolfLiterals.certify_zero_pair _ width zero
 
+def checkZeroChain (site : GolfLayout.Site) : Bool := GolfLayout.zeroChainShape site
+
+theorem checkZeroChain_sound (site : GolfLayout.Site) (checked : checkZeroChain site = true) :
+    GolfZeroChain.Certificate site.before site.after ((GolfLayout.zeroChainTail site.before).length + 1) := by
+  simp only [checkZeroChain, GolfLayout.zeroChainShape, Bool.and_eq_true, decide_eq_true_eq] at checked
+  rcases checked with ⟨width, _ranges, before, after, zero, allowed, useful, _saving⟩
+  have result := GolfZeroChain.certify (GolfLayout.zeroChainBytes site.before)
+    (GolfLayout.zeroChainTail site.before) width zero allowed useful
+  have before' : site.before = GolfZeroChain.code (GolfLayout.zeroChainBytes site.before)
+    (GolfLayout.zeroChainTail site.before) := before
+  have after' : site.after = GolfZeroChain.code (GolfLayout.zeroChainBytes site.before)
+    (GolfZeroChain.replace (GolfLayout.zeroChainTail site.before)) := after
+  simpa only [← before', ← after'] using result
+
 -- Stack metadata chooses the certificate proposition, not merely a profile.
 def checkSite (site : GolfLayout.Site) : Bool :=
   if site.requiredStack = 1 then checkLocal site
-  else if site.requiredStack = 0 then checkLiteral site || checkZeroDup site else false
+  else if site.requiredStack = 0 then (checkLiteral site || checkZeroDup site) || checkZeroChain site else false
 
 -- Structurally recursive Bool traversal; each occurrence checks its exact bytes.
 def checkSites (sites : List GolfLayout.Site) : Bool := sites.all checkSite
@@ -214,13 +228,17 @@ theorem checkSites_sound (sites : List GolfLayout.Site) (checked : checkSites si
         localProof.contextual (ih checked.2)
     · split at localCheck
       · rename_i required
-        have localProof : GolfLiterals.LocalCertificate site.before site.after := by
-          simp only [Bool.or_eq_true] at localCheck
-          rcases localCheck with literal | zeroDup
-          · exact checkLiteral_sound site literal
-          · exact checkZeroDup_sound site zeroDup
-        exact GolfLayout.CertifiedSites.literalCons required localProof.unbounded localProof.bounded
-          localProof.contextual (ih checked.2)
+        simp only [Bool.or_eq_true] at localCheck
+        rcases localCheck with (literal | zeroDup) | chain
+        · have localProof := checkLiteral_sound site literal
+          exact GolfLayout.CertifiedSites.literalCons required localProof.unbounded localProof.bounded
+            localProof.contextual (ih checked.2)
+        · have localProof := checkZeroDup_sound site zeroDup
+          exact GolfLayout.CertifiedSites.literalCons required localProof.unbounded localProof.bounded
+            localProof.contextual (ih checked.2)
+        · have localProof := checkZeroChain_sound site chain
+          exact GolfLayout.CertifiedSites.chainCons required localProof.unbounded localProof.bounded
+            localProof.contextual (ih checked.2)
       · cases localCheck
 
 end GolfReflected

@@ -18,7 +18,7 @@ behavior in complete instruction contexts within the Lean model. Account fixture
 replay constructor-initialized state and support guarded external calls in
 fixed-layout mode, including constant own-code reads with certified byte preservation.
 Rewrites include power-of-two multiplication, constant AND/SHL folds, and
-zero duplication after PUSH0–PUSH32 without moving instructions. Agents select trusted
+known-zero duplication chains after PUSH0–PUSH32 without moving instructions. Agents select trusted
 runtime rewrite sites with
 [hash-bound plans](docs/runtime.md#select-rewrite-sites). An opt-in
 [region checker](docs/regions.md) also certifies a supported compiler prefix

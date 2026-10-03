@@ -7,6 +7,7 @@ use super::{MAX_RUNTIME_BYTES, Rewrite, certificates, from_hex, layout};
 
 const FRAGMENT_MODEL: &str = include_str!("../../lean/Fragment.lean");
 const LITERAL_MODEL: &str = include_str!("../../lean/Literals.lean");
+const ZERO_CHAIN_MODEL: &str = include_str!("../../lean/ZeroChains.lean");
 const LOCAL_CERTIFICATES: &str = include_str!("../../lean/Certificates.lean");
 const STACK_MODEL: &str = include_str!("../../lean/Stack.lean");
 const COMPOSITION_MODEL: &str = include_str!("../../lean/Composition.lean");
@@ -36,7 +37,7 @@ pub(super) fn certificate(
     let (mut source, _) = certificates(&[])?;
     writeln!(
         source,
-        "\n{FRAGMENT_MODEL}\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_MODEL}\n{LITERAL_MODEL}"
+        "\n{FRAGMENT_MODEL}\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_MODEL}\n{LITERAL_MODEL}\n{ZERO_CHAIN_MODEL}"
     )
     .unwrap();
     writeln!(
@@ -493,6 +494,26 @@ theorem literal_rejection_controls :
             original.extend(before);
             candidate.extend(after);
         }
+        for before in [
+            vec![95, 128, 128],
+            std::iter::once(95)
+                .chain(std::iter::repeat_n(128, 1023))
+                .collect(),
+            vec![96, 0, 128, 95, 128],
+        ] {
+            let after: Vec<_> = before
+                .iter()
+                .map(|op| if *op == 128 { 95 } else { *op })
+                .collect();
+            rewrites.push(Rewrite {
+                original_pc: original.len(),
+                before: hex::encode(&before),
+                after: hex::encode(&after),
+                required_stack: 0,
+            });
+            original.extend(before);
+            candidate.extend(after);
+        }
         original.push(0);
         candidate.push(0);
         let (mut source, mut names) = certificate(&original, &candidate, &rewrites, &[]).unwrap();
@@ -515,7 +536,11 @@ theorem zero_dup_controls :
   GolfReflected.checkSite ⟨0,[95,0,128],[95,0,95],0⟩ = false ∧
   GolfReflected.checkSite ⟨0,[96,0,128],[96,1,95],0⟩ = false ∧
   GolfReflected.checkSite ⟨0,[97,0,0,128],[96,0,95],0⟩ = false ∧
-  GolfReflected.checkSite ⟨0,[96,0,128],[96,0,95],1⟩ = false := by decide +kernel
+  GolfReflected.checkSite ⟨0,[96,0,128],[96,0,95],1⟩ = false ∧
+  GolfReflected.checkSite ⟨0,[96,0,128,128],[96,0,95,128],0⟩ = false ∧
+  GolfReflected.checkSite ⟨0,95 :: List.replicate 1024 128,
+    List.replicate 1025 95,0⟩ = false ∧
+  GolfLayout.zeroChainProfile ⟨0,[96,0,128,128],[96,0,95,95],0⟩ = true := by decide +kernel
 #print axioms zero_dup_controls
 "#,
         );

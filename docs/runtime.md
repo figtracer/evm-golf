@@ -47,6 +47,9 @@ cargo run --locked -- optimize-runtime --bytecode runs/runtime.hex \
   --out runs/selected-1
 ```
 
+Regenerate plans with the current `runtime-opportunities` after upgrading: rewrite
+fragments can grow or merge, changing which PCs are offered.
+
 Plans require `--preserve-layout` and `--scenarios`. The tool checks the baseline
 hash, rejects duplicate/unknown PCs and regenerates replacements itself. A plan
 cannot supply candidate bytes or Lean source. Empty selection preserves the
@@ -267,9 +270,11 @@ so PC, CODESIZE, and computed jump offsets remain stable.
 The rules replace multiplication by zero or one with AND zero or ADD zero, and
 multiplication by any other 256-bit power of two with SHL by its exponent. They
 retain the original PUSH width, including padded constants, and save two opcode
-gas before refunds. A zero-valued `PUSH0`–`PUSH32` followed by `DUP1` retains its
-PUSH and replaces `DUP1` with `PUSH0`, saving one opcode gas with the same two-slot
-stack peak. Two-literal AND/SHL folds
+gas before refunds. A zero-valued `PUSH0`–`PUSH32` followed by a chain of `DUP1`
+and `PUSH0` retains its initial PUSH and replaces each `DUP1` with `PUSH0`, saving
+one opcode gas per duplication. Each fragment preserves its exact stack growth,
+peak and overflow behavior; it ends before an entry point or protected code read.
+Fragments produce at most 1,024 words so they have a successful empty-stack input. Two-literal AND/SHL folds
 keep both PUSH widths and replace
 the operation with POP, storing the result in the first literal when it fits.
 These save one opcode gas while preserving the temporary two-word stack peak.
