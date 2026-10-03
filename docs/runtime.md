@@ -264,8 +264,9 @@ rejects the run without an accepted candidate. No trace is silently truncated.
 Use `--preserve-layout` with `analyze-runtime` or `optimize-runtime`. This mode
 follows fallthrough and conservatively considers every decoded JUMPDEST reachable
 from any jump. It does not resolve jump values or prove global stack heights.
-It preserves instruction boundaries, all JUMPDEST positions, and total length,
-so PC, CODESIZE, and computed jump offsets remain stable.
+It preserves all JUMPDEST positions and total length. Instruction boundaries
+remain unchanged outside exact certified mask windows; those windows contain no
+interior jump destination or PC observation. Computed jump offsets remain stable.
 
 The rules replace multiplication by zero or one with AND zero or ADD zero, and
 multiplication by any other 256-bit power of two with SHL by its exponent. They
@@ -283,9 +284,10 @@ exact site list with a [proved checker](../lean/Certificates.lean),
 reusing symbolic fragment proofs. The full certificate contains independently
 embedded original and candidate byte arrays. The certificate checks
 that sorted, nonoverlapping replacements reconstruct the candidate, that every
-other byte is unchanged, and that instruction boundaries, JUMPDEST positions,
-length, and local stack profiles agree. Replacements inside PUSH data are rejected.
-The artifact model is [lean/Layout.lean](../lean/Layout.lean). Each site's
+other byte is unchanged, and that exterior instruction boundaries, JUMPDEST
+positions, length, and local stack profiles agree. Replacements inside PUSH data
+are rejected.
+The original artifact model is [lean/Layout.lean](../lean/Layout.lean). Each site's
 certificate also executes its exact fragments under
 [lean/Stack.lean](../lean/Stack.lean), which enforces the 1,024-word bound at every
 instruction boundary. Multiplication rewrites prove equal successful results at
@@ -293,6 +295,16 @@ incoming heights 1–1,023, underflow on an empty stack, and overflow at height 
 Literal folds use a separate proposition: success at heights 0–1,022 and overflow
 from 1,023 upward. The emitted required-stack metadata selects the corresponding
 proof; matching stack profiles alone cannot certify a rewrite. These local properties do not establish the heights reached by the surrounding program.
+
+The exact mask window in [lean/MaskWindow.lean](../lean/MaskWindow.lean) replaces
+repeated 224-bit mask construction with a shifted literal, saving nine opcode
+gas while retaining both outputs and the untouched stack tail. Its separate
+[window certificate](../lean/WindowArtifact.lean) permits only this byte pattern
+to change interior boundaries. It checks both endpoints, exterior decoding,
+all jump destinations and protected code reads. Success requires an incoming
+height of 1–1,021; empty stacks and heights from 1,022 fail in both fragments.
+Old-only artifacts continue using the original layout certificate.
+
 [lean/Composition.lean](../lean/Composition.lean) additionally proves that each
 replacement preserves the result under any completely decoded prefix and suffix
 in the bounded model, including preservation of successful execution. The proof

@@ -17,9 +17,9 @@ check rewrite sites together, bind them to emitted bytes, and prove stack-limit
 behavior in complete instruction contexts within the Lean model. Account fixtures
 replay constructor-initialized state and support guarded external calls in
 fixed-layout mode, including constant own-code reads with certified byte preservation.
-Rewrites include power-of-two multiplication, constant AND/SHL folds, and
-known-zero duplication chains after PUSH0–PUSH32 without moving instructions. Agents select trusted
-runtime rewrite sites with
+Rewrites include power-of-two multiplication, constant folds, known-zero
+duplication chains, and a certified mask window with unchanged jump destinations
+and surrounding offsets. Agents select trusted runtime rewrite sites with
 [hash-bound plans](docs/runtime.md#select-rewrite-sites). An opt-in
 [region checker](docs/regions.md) also certifies a supported compiler prefix
 against pinned upstream EVM semantics.

@@ -9,6 +9,11 @@ const FRAGMENT_MODEL: &str = include_str!("../../lean/Fragment.lean");
 const LITERAL_MODEL: &str = include_str!("../../lean/Literals.lean");
 const ZERO_CHAIN_MODEL: &str = include_str!("../../lean/ZeroChains.lean");
 const LOCAL_CERTIFICATES: &str = include_str!("../../lean/Certificates.lean");
+const MASK_MODEL: &str = include_str!("../../lean/MaskWindow.lean");
+const WINDOW_MODEL: &str = include_str!("../../lean/WindowArtifact.lean");
+const WINDOW_CHECKER: &str = include_str!("../../lean/WindowChecker.lean");
+const WINDOW_STRUCTURE: &str = include_str!("../../lean/WindowStructure.lean");
+const WINDOW_PROOF: &str = include_str!("../../lean/WindowArtifactProof.lean.in");
 const STACK_MODEL: &str = include_str!("../../lean/Stack.lean");
 const COMPOSITION_MODEL: &str = include_str!("../../lean/Composition.lean");
 const LAYOUT_MODEL: &str = include_str!("../../lean/Layout.lean");
@@ -42,8 +47,17 @@ pub(super) fn certificate(
     .unwrap();
     writeln!(
         source,
-        "\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\n{LOCAL_CERTIFICATES}\nnamespace GolfArtifact"
+        "\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\n{LOCAL_CERTIFICATES}"
     ).unwrap();
+    let windows = rewrites.iter().any(layout::is_mask);
+    if windows {
+        writeln!(
+            source,
+            "{MASK_MODEL}\n{WINDOW_MODEL}\n{WINDOW_CHECKER}\n{WINDOW_STRUCTURE}"
+        )
+        .unwrap();
+    }
+    source.push_str("\nnamespace GolfArtifact\n");
     // Embed both actual images independently; never define candidate by applying
     // the proposed patches, which would conceal errors in the Rust emitter.
     writeln!(source, "def original : List Nat := {original:?}").unwrap();
@@ -63,8 +77,38 @@ pub(super) fn certificate(
     }
     // These are kernel reductions, not native evaluation. The aggregate theorem
     // depends transitively on every site's unbounded, bounded and context proof.
+    source.push_str("]\nend GolfArtifact\n");
+    if windows {
+        source.push_str("namespace GolfArtifact\nopen GolfLayout GolfWindowArtifact\ndef copies : List GolfLayout.CodeCopy := [\n");
+        for (i, copy) in copies.iter().enumerate() {
+            writeln!(
+                source,
+                "  ⟨{}, {}, {}, {}, {}⟩{}",
+                copy.pc,
+                copy.prefix_start,
+                copy.source,
+                copy.len,
+                copy.destination,
+                if i + 1 == copies.len() { "" } else { "," }
+            )
+            .unwrap();
+        }
+        source.push_str("]\n");
+        let mut masks = Vec::new();
+        for site in rewrites.iter().filter(|site| layout::is_mask(site)) {
+            let before = from_hex(&site.before)?;
+            let after = from_hex(&site.after)?;
+            masks.push(format!(
+                "⟨{}, {before:?}, {after:?}, {}⟩",
+                site.original_pc, site.required_stack
+            ));
+        }
+        source.push_str(&WINDOW_PROOF.replace("$MASK_SITES", &format!("[{}]", masks.join(","))));
+        source.push_str("\nend GolfArtifact\n#print axioms GolfArtifact.window_artifact\n");
+        return Ok((source, vec!["GolfArtifact.window_artifact".into()]));
+    }
     source.push_str(
-        "]\nend GolfArtifact\n\ntheorem layout_artifact :\n  GolfLayout.LayoutArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.sites := by\n  refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩\n  exact GolfReflected.checkSites_sound GolfArtifact.sites (by decide +kernel)\n#print axioms layout_artifact\n",
+        "\ntheorem layout_artifact :\n  GolfLayout.LayoutArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.sites := by\n  refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩\n  exact GolfReflected.checkSites_sound GolfArtifact.sites (by decide +kernel)\n#print axioms layout_artifact\n",
     );
     let mut names = vec!["layout_artifact".into()];
     if !copies.is_empty() {
@@ -97,6 +141,44 @@ mod tests {
     use revm::primitives::{U256, hex};
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    #[ignore = "requires Lean 4.34.0"]
+    fn binds_mixed_mask_artifacts_and_rejects_unlisted_changes() {
+        let dir = tempdir().unwrap();
+        let before = "6001600160e01b03166001600160e01b0319";
+        let after = "6001600160e01b03166400ffffffff60e01b";
+        let original = from_hex(&format!("6007{before}60020200")).unwrap();
+        let candidate = from_hex(&format!("6007{after}60011b00")).unwrap();
+        let sites = [
+            Rewrite {
+                original_pc: 2,
+                before: before.into(),
+                after: after.into(),
+                required_stack: 1,
+            },
+            Rewrite {
+                original_pc: 20,
+                before: "600202".into(),
+                after: "60011b".into(),
+                required_stack: 1,
+            },
+        ];
+        let verify = |name: &str, candidate: &[u8]| {
+            let (source, names) = certificate(&original, candidate, &sites, &[]).unwrap();
+            assert_eq!(names, ["GolfArtifact.window_artifact"]);
+            let path = dir.path().join(format!("{name}.lean"));
+            fs::write(&path, source).unwrap();
+            proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational)
+        };
+        verify("Mixed", &candidate).unwrap();
+        let mut outside = candidate.clone();
+        outside[1] = 8;
+        assert!(verify("UnlistedByte", &outside).is_err());
+        let mut wrong_mask = candidate;
+        wrong_mask[16] = 0xfe;
+        assert!(verify("WrongMask", &wrong_mask).is_err());
+    }
 
     #[test]
     #[ignore = "requires Lean 4.34.0"]

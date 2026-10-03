@@ -1,0 +1,24 @@
+theorem maskSites_eq : maskSites sites = $MASK_SITES := by decide +kernel
+theorem window_artifact : WindowArtifact original candidate sites copies where
+ originalBytes := by decide +kernel
+ candidateBytes := by decide +kernel
+ reconstructed := by decide +kernel
+ sameLength := by decide +kernel
+ sourceBoundaries := by decide +kernel
+ targetBoundaries := by decide +kernel
+ exteriorEqual := by
+   rw [← exteriorFactored_eq, ← exteriorFactored_eq]
+   simp only [exteriorFactored,maskSites_eq]
+   decide +kernel
+ jumpTargetsEqual := by decide +kernel
+ sourceInterior := by
+   rw [← noInteriorFactored_eq]
+   simp only [noInteriorFactored,maskSites_eq]
+   decide +kernel
+ targetInterior := by
+   rw [← noInteriorFactored_eq]
+   simp only [noInteriorFactored,maskSites_eq]
+   decide +kernel
+ certificates := checkSites_sound _ (by decide +kernel)
+ copiesValid := ⟨by decide +kernel,by decide +kernel,by decide +kernel⟩
+ copiesProtected := by decide +kernel

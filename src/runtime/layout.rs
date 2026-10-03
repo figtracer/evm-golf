@@ -169,6 +169,50 @@ fn is_direct_ecrecover(instructions: &[Instruction], i: usize) -> bool {
 }
 
 pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewrite>)> {
+    let (mut candidate, mut rewrites) = transform_aligned(analysis)?;
+    let before = hex::decode("6001600160e01b03166001600160e01b0319")?;
+    let after = hex::decode("6001600160e01b03166400ffffffff60e01b")?;
+    let original: Vec<_> = analysis
+        .instructions
+        .iter()
+        .flat_map(|op| op.bytes.iter().copied())
+        .collect();
+    for op in &analysis.instructions {
+        let start = op.pc;
+        let end = start + before.len();
+        if original.get(start..end) != Some(before.as_slice())
+            || !analysis.reachable.contains(&start)
+            || rewrites.iter().any(|site| {
+                start < site.original_pc + site.before.len() / 2 && site.original_pc < end
+            })
+            || analysis.copies.iter().any(|copy| {
+                (copy.len != 0 && start < copy.source + copy.len && copy.source < end)
+                    || (start < copy.pc + 1 && copy.prefix_start < end)
+            })
+        {
+            continue;
+        }
+        candidate[start..end].copy_from_slice(&after);
+        rewrites.push(Rewrite {
+            original_pc: start,
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: 1,
+        });
+    }
+    rewrites.sort_by_key(|site| site.original_pc);
+    validate_catalog(&original, &candidate, &rewrites)?;
+    validate_window_layout(analysis, &candidate, &rewrites)?;
+    Ok((candidate, rewrites))
+}
+
+pub(super) fn is_mask(site: &Rewrite) -> bool {
+    site.required_stack == 1
+        && site.before == "6001600160e01b03166001600160e01b0319"
+        && site.after == "6001600160e01b03166400ffffffff60e01b"
+}
+
+fn transform_aligned(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewrite>)> {
     let mut instructions = analysis.instructions.clone();
     let mut rewrites = Vec::new();
     for i in 0..instructions.len().saturating_sub(1) {
@@ -367,7 +411,7 @@ pub(super) fn transform_selected(
         }
     }
     ensure!(selected.is_empty(), "unknown rewrite PCs: {selected:?}");
-    validate_layout(analysis, &candidate)?;
+    validate_window_layout(analysis, &candidate, &rewrites)?;
     Ok((candidate, rewrites))
 }
 
@@ -405,6 +449,66 @@ fn validate_catalog(original: &[u8], candidate: &[u8], rewrites: &[Rewrite]) -> 
     ensure!(
         reconstructed == candidate,
         "catalog does not reconstruct full candidate"
+    );
+    Ok(())
+}
+
+fn validate_window_layout(
+    analysis: &LayoutAnalysis,
+    candidate: &[u8],
+    rewrites: &[Rewrite],
+) -> Result<()> {
+    let masks: Vec<_> = rewrites.iter().filter(|site| is_mask(site)).collect();
+    if masks.is_empty() {
+        return validate_layout(analysis, candidate);
+    }
+    ensure!(
+        candidate.len() == analysis.runtime_bytes,
+        "window rewrite changes bytecode length"
+    );
+    let decoded = decode(candidate);
+    for site in &masks {
+        let end = site.original_pc + site.before.len() / 2;
+        for ops in [&analysis.instructions, &decoded] {
+            ensure!(
+                ops.iter().any(|op| op.pc == site.original_pc)
+                    && (end == candidate.len() || ops.iter().any(|op| op.pc == end)),
+                "window rewrite endpoint is not an instruction boundary"
+            );
+            ensure!(
+                !ops.iter()
+                    .any(|op| op.pc > site.original_pc && op.pc < end && op.bytes[0] == 0x5b),
+                "window rewrite has an interior jump destination"
+            );
+        }
+        ensure!(
+            !analysis.copies.iter().any(|copy| (copy.len != 0
+                && site.original_pc < copy.source + copy.len
+                && copy.source < end)
+                || (site.original_pc < copy.pc + 1 && copy.prefix_start < end)),
+            "window rewrite intersects a protected code read"
+        );
+    }
+    let exterior = |ops: &[Instruction]| {
+        ops.iter()
+            .filter(|op| {
+                !masks.iter().any(|site| {
+                    site.original_pc <= op.pc && op.pc < site.original_pc + site.before.len() / 2
+                })
+            })
+            .map(|op| (op.pc, op.bytes.len(), op.bytes[0] == 0x5b))
+            .collect::<Vec<_>>()
+    };
+    let targets = |ops: &[Instruction]| {
+        ops.iter()
+            .filter(|op| op.bytes[0] == 0x5b)
+            .map(|op| op.pc)
+            .collect::<Vec<_>>()
+    };
+    ensure!(
+        exterior(&analysis.instructions) == exterior(&decoded)
+            && targets(&analysis.instructions) == targets(&decoded),
+        "window rewrite changes exterior boundaries or jump destinations"
     );
     Ok(())
 }
@@ -457,6 +561,56 @@ mod tests {
             value: String::new(),
             storage: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn mask_windows_preserve_catalog_selection_and_protected_bytes() {
+        let mask = "6001600160e01b03166001600160e01b0319";
+        let replacement = "6001600160e01b03166400ffffffff60e01b";
+        let original = bytes(&format!("6007{mask}{mask}00"));
+        let analysis = analyze(&original, false).unwrap();
+        let (candidate, sites) = transform(&analysis).unwrap();
+        assert_eq!(
+            candidate,
+            bytes(&format!("6007{replacement}{replacement}00"))
+        );
+        assert_eq!(
+            sites
+                .iter()
+                .map(|site| site.original_pc)
+                .collect::<Vec<_>>(),
+            [2, 20]
+        );
+        assert!(sites.iter().all(is_mask));
+        assert_eq!(stack_signature(&bytes(mask)).unwrap(), (1, 1, 3));
+        assert_eq!(stack_signature(&bytes(replacement)).unwrap(), (1, 1, 3));
+        assert_eq!(transform_selected(&analysis, &[]).unwrap().0, original);
+        assert_eq!(
+            transform_selected(&analysis, &[20]).unwrap().0,
+            bytes(&format!("6007{mask}{replacement}00"))
+        );
+        assert!(transform_selected(&analysis, &[3]).is_err());
+        // Literal mask bytes inside PUSH data are not an instruction window.
+        let embedded = bytes(&format!("7f{mask}{}00", "00".repeat(14)));
+        assert!(
+            transform(&analyze(&embedded, false).unwrap())
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        // A real code read observes this window, so it must remain untouched.
+        let copied = bytes(&format!("6007{mask}6012600260003900"));
+        assert_eq!(
+            transform(&analyze(&copied, true).unwrap()).unwrap().0,
+            copied
+        );
+        let empty_copy = bytes(&format!("6007{mask}6000600260003900"));
+        let (candidate, sites) = transform(&analyze(&empty_copy, true).unwrap()).unwrap();
+        assert_eq!(sites.len(), 1);
+        assert_eq!(
+            candidate,
+            bytes(&format!("6007{replacement}6000600260003900"))
+        );
     }
 
     #[test]
