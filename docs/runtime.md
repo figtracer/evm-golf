@@ -267,8 +267,9 @@ so PC, CODESIZE, and computed jump offsets remain stable.
 The rules replace multiplication by zero or one with AND zero or ADD zero, and
 multiplication by any other 256-bit power of two with SHL by its exponent. They
 retain the original PUSH width, including padded constants, and save two opcode
-gas before refunds. The exact `PUSH1 0; DUP1` pair becomes `PUSH1 0; PUSH0`,
-saving one opcode gas with the same two-slot stack peak. Two-literal AND/SHL folds
+gas before refunds. A zero-valued `PUSH0`–`PUSH32` followed by `DUP1` retains its
+PUSH and replaces `DUP1` with `PUSH0`, saving one opcode gas with the same two-slot
+stack peak. Two-literal AND/SHL folds
 keep both PUSH widths and replace
 the operation with POP, storing the result in the first literal when it fits.
 These save one opcode gas while preserving the temporary two-word stack peak.

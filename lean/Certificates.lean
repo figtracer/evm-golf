@@ -176,15 +176,20 @@ theorem checkLiteral_sound (site : GolfLayout.Site) (checked : checkLiteral site
   exact GolfLiterals.certify _ _ _ _ _ firstWidth secondWidth
     (by omega) (by omega) operation value
 
--- Only the exact zero/DUP1 pair is admitted, not arbitrary stack rewrites.
+-- Extract a proposed immediate, then reconstruct both exact complete programs.
 def checkZeroDup (site : GolfLayout.Site) : Bool :=
-  decide (site.before = [96, 0, 128]) && decide (site.after = [96, 0, 95])
+  let bytes := immediatePart site.before
+  decide (bytes.length ≤ 32) &&
+    (decide (site.before = GolfLiterals.zero_pair bytes 128) &&
+      (decide (site.after = GolfLiterals.zero_pair bytes 95) &&
+        decide (GolfLiterals.word bytes = 0)))
 
 theorem checkZeroDup_sound (site : GolfLayout.Site) (checked : checkZeroDup site = true) :
     GolfLiterals.LocalCertificate site.before site.after := by
   simp only [checkZeroDup, Bool.and_eq_true, decide_eq_true_eq] at checked
-  rw [checked.1, checked.2]
-  exact GolfLiterals.certify_zero_dup
+  rcases checked with ⟨width, beforeCode, afterCode, zero⟩
+  rw [beforeCode, afterCode]
+  exact GolfLiterals.certify_zero_pair _ width zero
 
 -- Stack metadata chooses the certificate proposition, not merely a profile.
 def checkSite (site : GolfLayout.Site) : Bool :=

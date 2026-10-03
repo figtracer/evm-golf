@@ -475,22 +475,26 @@ theorem literal_rejection_controls :
     #[ignore = "requires Lean 4.34.0"]
     fn binds_zero_dup_to_actual_artifact_and_stack_profile() {
         let dir = tempdir().unwrap();
-        let original = from_hex("60008060020200").unwrap();
-        let candidate = from_hex("60005f60011b00").unwrap();
-        let rewrites = [
-            Rewrite {
-                original_pc: 0,
-                before: "600080".into(),
-                after: "60005f".into(),
+        let mut original = Vec::new();
+        let mut candidate = Vec::new();
+        let mut rewrites = Vec::new();
+        for width in 0u8..=32 {
+            let mut before = vec![0x5f + width];
+            before.extend(std::iter::repeat_n(0, usize::from(width)));
+            before.push(0x80);
+            let mut after = before.clone();
+            *after.last_mut().unwrap() = 0x5f;
+            rewrites.push(Rewrite {
+                original_pc: original.len(),
+                before: hex::encode(&before),
+                after: hex::encode(&after),
                 required_stack: 0,
-            },
-            Rewrite {
-                original_pc: 3,
-                before: "600202".into(),
-                after: "60011b".into(),
-                required_stack: 1,
-            },
-        ];
+            });
+            original.extend(before);
+            candidate.extend(after);
+        }
+        original.push(0);
+        candidate.push(0);
         let (mut source, mut names) = certificate(&original, &candidate, &rewrites, &[]).unwrap();
         source.push_str(
             r#"
@@ -505,7 +509,12 @@ theorem zero_dup_controls :
   GolfReflected.checkSite ⟨0,[96,1,128],[96,1,95],0⟩ = false ∧
   GolfReflected.checkSite ⟨0,[96,0,129],[96,0,95],0⟩ = false ∧
   GolfReflected.checkSite ⟨0,[96,0,128],[96,0,80],0⟩ = false ∧
-  GolfReflected.checkSite ⟨0,[97,0,0,128],[97,0,0,95],0⟩ = false ∧
+  GolfReflected.checkSite ⟨0,[],[],0⟩ = false ∧
+  GolfReflected.checkSite ⟨0,[97,0,128],[97,0,95],0⟩ = false ∧
+  GolfReflected.checkSite ⟨0,[128,128],[128,95],0⟩ = false ∧
+  GolfReflected.checkSite ⟨0,[95,0,128],[95,0,95],0⟩ = false ∧
+  GolfReflected.checkSite ⟨0,[96,0,128],[96,1,95],0⟩ = false ∧
+  GolfReflected.checkSite ⟨0,[97,0,0,128],[96,0,95],0⟩ = false ∧
   GolfReflected.checkSite ⟨0,[96,0,128],[96,0,95],1⟩ = false := by decide +kernel
 #print axioms zero_dup_controls
 "#,
@@ -518,10 +527,11 @@ theorem zero_dup_controls :
         let mut bad_original = original.clone();
         let mut bad_candidate = candidate.clone();
         let mut bad_rewrites = rewrites;
-        bad_original[1] = 1;
-        bad_candidate[1] = 1;
-        bad_rewrites[0].before = "600180".into();
-        bad_rewrites[0].after = "60015f".into();
+        let byte = bad_rewrites[1].original_pc + 1;
+        bad_original[byte] = 1;
+        bad_candidate[byte] = 1;
+        bad_rewrites[1].before = "600180".into();
+        bad_rewrites[1].after = "60015f".into();
         let (source, names) =
             certificate(&bad_original, &bad_candidate, &bad_rewrites, &[]).unwrap();
         let path = dir.path().join("NonzeroDup.lean");

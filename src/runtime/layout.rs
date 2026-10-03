@@ -181,7 +181,7 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
         {
             continue;
         }
-        if a.bytes == [0x60, 0]
+        if push_value(&a.bytes).is_some_and(|value| value.is_zero())
             && b.bytes == [0x80]
             && [a.pc, b.pc]
                 .iter()
@@ -191,11 +191,13 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
             })
         {
             let source_pc = a.pc;
+            let before: Vec<_> = a.bytes.iter().chain(&b.bytes).copied().collect();
+            let after: Vec<_> = a.bytes.iter().copied().chain([0x5f]).collect();
             instructions[i + 1].bytes[0] = 0x5f;
             rewrites.push(Rewrite {
                 original_pc: source_pc,
-                before: "600080".into(),
-                after: "60005f".into(),
+                before: hex::encode(before),
+                after: hex::encode(after),
                 required_stack: 0,
             });
             continue;
@@ -440,24 +442,55 @@ mod tests {
         for code in ["600080", "60005f"] {
             assert_eq!(stack_signature(&bytes(code)).unwrap(), (0, 2, 2));
         }
-        for height in [0, 1022, 1023, 1024] {
-            let mut before = vec![0x5f; height];
-            before.extend(bytes("60008000"));
-            let mut after = vec![0x5f; height];
-            after.extend(bytes("60005f00"));
-            let left = execute(&before, &case("")).unwrap().result;
-            let right = execute(&after, &case("")).unwrap().result;
-            assert_eq!(left.is_halt(), height >= 1023);
-            assert_eq!(left.is_halt(), right.is_halt());
-            if left.is_halt() {
-                assert_eq!(left, right);
+        for width in 0u8..=32 {
+            let mut pair = vec![0x5f + width];
+            pair.extend(std::iter::repeat_n(0, usize::from(width)));
+            pair.push(0x80);
+            let mut replacement = pair.clone();
+            *replacement.last_mut().unwrap() = 0x5f;
+            let mut original = pair.clone();
+            original.extend(bytes("5f5260205260405ff3"));
+            let (candidate, rewrites) = transform(&analyze(&original, false).unwrap()).unwrap();
+            assert_eq!(rewrites.len(), 1);
+            assert_eq!(rewrites[0].before, hex::encode(&pair));
+            assert_eq!(rewrites[0].after, hex::encode(&replacement));
+            assert_eq!(stack_signature(&pair).unwrap(), (0, 2, 2));
+            assert_eq!(stack_signature(&replacement).unwrap(), (0, 2, 2));
+            let result = compare(&original, &candidate, &case("")).unwrap();
+            assert_eq!(result.baseline_gas - result.candidate_gas, 1);
+            for height in [0, 1022, 1023, 1024] {
+                let mut before = vec![0x5f; height];
+                before.extend(&pair);
+                before.push(0);
+                let mut after = vec![0x5f; height];
+                after.extend(&replacement);
+                after.push(0);
+                let left = execute(&before, &case("")).unwrap().result;
+                let right = execute(&after, &case("")).unwrap().result;
+                assert_eq!(left.is_halt(), height >= 1023);
+                assert_eq!(left.is_halt(), right.is_halt());
+                if left.is_halt() {
+                    assert_eq!(left, right);
+                }
+            }
+            if width > 0 {
+                let mut nonzero = pair;
+                nonzero[usize::from(width)] = 1;
+                nonzero.push(0);
+                let (candidate, rewrites) = transform(&analyze(&nonzero, false).unwrap()).unwrap();
+                assert_eq!(candidate, nonzero);
+                assert!(rewrites.is_empty());
             }
         }
+        assert!(analyze(&bytes("7f000080"), false).is_err());
         // Generated PUSH0 must not start a second overlapping rule in this pass.
         for (before, after) in [
             ("60008060011600", "60005f60011600"),
             ("6000800200", "60005f0200"),
             ("6000808000", "60005f8000"),
+            ("5f808000", "5f5f8000"),
+            ("5f8060011600", "5f5f60011600"),
+            ("5f800200", "5f5f0200"),
         ] {
             let original = bytes(before);
             let analysis = analyze(&original, false).unwrap();
@@ -469,7 +502,6 @@ mod tests {
         }
         for protected in [
             "60018000",
-            "6100008000",
             "60008100",
             "6260008000",
             "00600080",

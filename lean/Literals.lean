@@ -116,65 +116,95 @@ theorem certify (first second folded discard : List Nat) (op : Nat)
   · rw [beforeRun, expression]
   · rw [afterRun]; rfl
 
--- Exact zero duplication retains two free stack slots and both instruction boundaries.
+-- Zero duplication retains the complete PUSH immediate and two free stack slots.
+
+def zero_pair (bytes : List Nat) (op : Nat) : List Nat :=
+  (95 + bytes.length) :: (bytes ++ [op])
+
+theorem run_zero_pair (bytes : List Nat) (op : Nat) (width : bytes.length ≤ 32)
+    (zero : GolfLiterals.word bytes = 0) (kind : op = 128 ∨ op = 95)
+    (stack : List Golf.Word) (x y : Golf.Word) :
+    Golf.run ((zero_pair bytes op).length + 1) (zero_pair bytes op) stack x y =
+      some (0 :: 0 :: stack) := by
+  simp only [zero_pair, List.length_cons, List.length_append, List.length_nil]
+  rw [GolfLiterals.run_push bytes [op] width, zero]
+  rcases kind with rfl | rfl <;> simp [Golf.run]
+
+theorem bounded_zero_pair (bytes : List Nat) (op : Nat) (width : bytes.length ≤ 32)
+    (zero : GolfLiterals.word bytes = 0) (kind : op = 128 ∨ op = 95)
+    (stack : List Golf.Word) (x y : Golf.Word) :
+    GolfBounded.run ((zero_pair bytes op).length + 1) (zero_pair bytes op) stack x y =
+      if stack.length ≤ 1022 then some (0 :: 0 :: stack) else none := by
+  simp only [zero_pair, List.length_cons, List.length_append, List.length_nil]
+  rw [GolfLiterals.bounded_push bytes [op] width, zero]
+  rcases kind with rfl | rfl
+  all_goals
+    by_cases good : stack.length ≤ 1022
+    · have h0 : ¬1024 < stack.length := by omega
+      have h1 : ¬1024 < stack.length + 1 := by omega
+      have h2 : ¬1024 < stack.length + 1 + 1 := by omega
+      simp [GolfBounded.run, Golf.run, good, h0, h1, h2]
+    · by_cases h0 : 1024 < stack.length
+      · simp [GolfBounded.run, Golf.run, good, h0]
+      · by_cases h1 : 1024 < stack.length + 1
+        · simp [GolfBounded.run, Golf.run, good, h0, h1]
+        · have h2 : 1024 < stack.length + 1 + 1 := by omega
+          simp [GolfBounded.run, Golf.run, good, h0, h1, h2]
+
+theorem complete_zero_pair (bytes : List Nat) (op : Nat) (width : bytes.length ≤ 32)
+    (kind : op = 128 ∨ op = 95) : GolfComposition.Complete (zero_pair bytes op) 2 := by
+  apply GolfComposition.Complete.step (op := 95 + bytes.length) (immediate := bytes)
+  · split <;> omega
+  · apply GolfComposition.Complete.step (op := op) (immediate := [])
+    · rcases kind with rfl | rfl <;> decide +kernel
+    · exact GolfComposition.Complete.nil
+
+theorem certify_zero_pair (bytes : List Nat) (width : bytes.length ≤ 32)
+    (zero : GolfLiterals.word bytes = 0) :
+    GolfLiterals.LocalCertificate (zero_pair bytes 128) (zero_pair bytes 95) := by
+  have left := bounded_zero_pair bytes 128 width zero (Or.inl rfl)
+  have right := bounded_zero_pair bytes 95 width zero (Or.inr rfl)
+  have bounded : GolfBounded.LiteralEquivalent (zero_pair bytes 128) (zero_pair bytes 95) := by
+    refine ⟨?_, ?_, ?_⟩
+    · intro stack x y
+      exact (left stack x y).trans (right stack x y).symm
+    · intro stack x y height
+      refine ⟨0 :: 0 :: stack, ?_, ?_⟩
+      · rw [left]; simp [height]
+      · rw [right]; simp [height]
+    · intro stack x y height
+      rw [left, right]
+      simp [show ¬stack.length ≤ 1022 by omega]
+  refine ⟨?_, bounded, GolfComposition.context_of_equal
+    (complete_zero_pair bytes 128 width (Or.inl rfl))
+    (complete_zero_pair bytes 95 width (Or.inr rfl)) bounded.equal⟩
+  intro stack x y
+  exact ⟨0 :: 0 :: stack,
+    run_zero_pair bytes 128 width zero (Or.inl rfl) stack x y,
+    run_zero_pair bytes 95 width zero (Or.inr rfl) stack x y⟩
+
+-- The empty immediate is PUSH0; retains opcode boundaries and two stack slots.
+theorem certify_push0_dup : GolfLiterals.LocalCertificate [95, 128] [95, 95] := by
+  exact certify_zero_pair [] (by decide +kernel) rfl
+
+-- Preserve the original PUSH1-specific lemmas as instances of the general rule.
 theorem zero_dup_before (stack : List Golf.Word) (x y : Golf.Word) :
     GolfBounded.run 4 [96, 0, 128] stack x y =
       if stack.length ≤ 1022 then some (0 :: 0 :: stack) else none := by
-  by_cases good : stack.length ≤ 1022
-  · have h0 : ¬1024 < stack.length := by omega
-    have h1 : ¬1024 < stack.length + 1 := by omega
-    have h2 : ¬1024 < stack.length + 1 + 1 := by omega
-    simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1, h2]
-  · by_cases h0 : 1024 < stack.length
-    · simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0]
-    · by_cases h1 : 1024 < stack.length + 1
-      · simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1]
-      · have h2 : 1024 < stack.length + 1 + 1 := by omega
-        simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1, h2]
+  exact bounded_zero_pair [0] 128 (by decide +kernel) rfl (Or.inl rfl) stack x y
 
 theorem zero_dup_after (stack : List Golf.Word) (x y : Golf.Word) :
     GolfBounded.run 4 [96, 0, 95] stack x y =
       if stack.length ≤ 1022 then some (0 :: 0 :: stack) else none := by
-  by_cases good : stack.length ≤ 1022
-  · have h0 : ¬1024 < stack.length := by omega
-    have h1 : ¬1024 < stack.length + 1 := by omega
-    have h2 : ¬1024 < stack.length + 1 + 1 := by omega
-    simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1, h2]
-  · by_cases h0 : 1024 < stack.length
-    · simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0]
-    · by_cases h1 : 1024 < stack.length + 1
-      · simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1]
-      · have h2 : 1024 < stack.length + 1 + 1 := by omega
-        simp [GolfBounded.run, Golf.run, Golf.immediate, good, h0, h1, h2]
+  exact bounded_zero_pair [0] 95 (by decide +kernel) rfl (Or.inr rfl) stack x y
 
-theorem zero_dup_complete_before : GolfComposition.Complete [96, 0, 128] 2 := by
-  exact GolfComposition.Complete.step (op := 96) (immediate := [0]) (by decide +kernel)
-    (GolfComposition.Complete.step (op := 128) (immediate := []) (by decide +kernel)
-      GolfComposition.Complete.nil)
+theorem zero_dup_complete_before : GolfComposition.Complete [96, 0, 128] 2 :=
+  complete_zero_pair [0] 128 (by decide +kernel) (Or.inl rfl)
 
-theorem zero_dup_complete_after : GolfComposition.Complete [96, 0, 95] 2 := by
-  exact GolfComposition.Complete.step (op := 96) (immediate := [0]) (by decide +kernel)
-    (GolfComposition.Complete.step (op := 95) (immediate := []) (by decide +kernel)
-      GolfComposition.Complete.nil)
+theorem zero_dup_complete_after : GolfComposition.Complete [96, 0, 95] 2 :=
+  complete_zero_pair [0] 95 (by decide +kernel) (Or.inr rfl)
 
-theorem certify_zero_dup : GolfLiterals.LocalCertificate [96, 0, 128] [96, 0, 95] := by
-  have bounded : GolfBounded.LiteralEquivalent [96, 0, 128] [96, 0, 95] := by
-    refine ⟨?_, ?_, ?_⟩
-    · intro stack x y
-      exact (zero_dup_before stack x y).trans (zero_dup_after stack x y).symm
-    · intro stack x y height
-      refine ⟨0 :: 0 :: stack, ?_, ?_⟩
-      · simpa only [List.length_cons, List.length_nil, Nat.reduceAdd, if_pos height] using
-          zero_dup_before stack x y
-      · simpa only [List.length_cons, List.length_nil, Nat.reduceAdd, if_pos height] using
-          zero_dup_after stack x y
-    · intro stack x y height
-      simp only [List.length_cons, List.length_nil, Nat.reduceAdd]
-      rw [zero_dup_before, zero_dup_after]
-      simp [show ¬stack.length ≤ 1022 by omega]
-  refine ⟨?_, bounded, GolfComposition.context_of_equal
-    zero_dup_complete_before zero_dup_complete_after bounded.equal⟩
-  intro stack x y
-  exact ⟨0 :: 0 :: stack, rfl, rfl⟩
+theorem certify_zero_dup : LocalCertificate [96, 0, 128] [96, 0, 95] :=
+  certify_zero_pair [0] (by decide +kernel) rfl
 
 end GolfLiterals
