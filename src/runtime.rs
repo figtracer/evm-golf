@@ -9,7 +9,7 @@ use revm::{
     bytecode::{Bytecode, opcode::OpCode},
     context::{BlockEnv, TxEnv, result::ExecutionResult},
     database::InMemoryDB,
-    primitives::{Address, B256, Bytes, TxKind, U256, hardfork::SpecId, hex},
+    primitives::{Address, B256, Bytes, TxKind, U256, hardfork::SpecId, hex, keccak256},
     state::AccountInfo,
 };
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,13 @@ use precompile::EcrecoverTrace;
 pub enum RuntimeMode {
     Compact,
     PreserveLayout,
+}
+
+// The plan path always uses fixed layout and explicit account scenarios.
+#[derive(Clone, Copy)]
+enum RewriteSelection<'a> {
+    All(RuntimeMode),
+    Plan(&'a RewritePlan),
 }
 
 // EIP-170 maximum deployed runtime size. Creation bytecode is not accepted here.
@@ -112,6 +119,20 @@ pub struct Rewrite {
     pub required_stack: usize,
 }
 
+/// Declarative selection bound to the exact immutable runtime input.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RewritePlan {
+    pub original_keccak256: String,
+    pub selected_pcs: Vec<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RewriteOpportunities {
+    pub original_keccak256: String,
+    pub rewrites: Vec<Rewrite>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CaseResult {
     pub baseline_gas: u64,
@@ -133,6 +154,16 @@ pub struct Report {
 /// Analyze reachable instructions without resolving jump values or stack heights.
 pub fn analyze_layout(code: &[u8]) -> Result<LayoutAnalysis> {
     layout::analyze(code, false)
+}
+
+/// List trusted fixed-layout sites using the scenario-aware opcode guards.
+/// This catalog is not proof or replay evidence for a candidate.
+pub fn rewrite_opportunities(code: &[u8]) -> Result<RewriteOpportunities> {
+    let analysis = layout::analyze(code, true)?;
+    Ok(RewriteOpportunities {
+        original_keccak256: keccak256(code).to_string(),
+        rewrites: layout::opportunities(&analysis)?,
+    })
 }
 
 /// Analyze all reachable paths, including both conditional edges. Unsupported
@@ -389,7 +420,7 @@ pub fn optimize_with(
     optimize_checked(
         code,
         out,
-        mode,
+        RewriteSelection::All(mode),
         false,
         (filename, serialized),
         verification,
@@ -422,6 +453,26 @@ pub fn optimize_scenarios(
     out: &Path,
     mode: RuntimeMode,
 ) -> Result<Report> {
+    optimize_scenarios_selected(code, scenarios, out, RewriteSelection::All(mode))
+}
+
+/// Verify a hash-bound selection through the same proof and replay gates.
+pub fn optimize_scenarios_with_plan(
+    code: &[u8],
+    scenarios: &[scenario::Scenario],
+    out: &Path,
+    plan: &RewritePlan,
+) -> Result<Report> {
+    input::validate(plan, std::iter::empty())?;
+    optimize_scenarios_selected(code, scenarios, out, RewriteSelection::Plan(plan))
+}
+
+fn optimize_scenarios_selected(
+    code: &[u8],
+    scenarios: &[scenario::Scenario],
+    out: &Path,
+    selection: RewriteSelection<'_>,
+) -> Result<Report> {
     input::validate(
         &scenarios,
         scenarios
@@ -436,11 +487,11 @@ pub fn optimize_scenarios(
         scenarios.iter().all(|s| !s.transactions.is_empty()),
         "every scenario must contain at least one transaction"
     );
-    let guard_calls = matches!(mode, RuntimeMode::PreserveLayout);
+    let guard_calls = !matches!(selection, RewriteSelection::All(RuntimeMode::Compact));
     optimize_checked(
         code,
         out,
-        mode,
+        selection,
         guard_calls,
         ("scenarios.json", serde_json::to_string(scenarios)?),
         "Lean: local gas-erased stack rewrites only. Rust: conservative CFG and relocation checks. revm: supplied account-fixture transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof.",
@@ -469,20 +520,37 @@ pub fn optimize_scenarios(
 fn optimize_checked(
     code: &[u8],
     out: &Path,
-    mode: RuntimeMode,
+    selection: RewriteSelection<'_>,
     guard_calls: bool,
     input_file: (&str, String),
     verification: &'static str,
     replay: impl FnOnce(&[u8]) -> Result<Vec<CaseResult>>,
 ) -> Result<Report> {
-    let (candidate, rewrites, copies) = match mode {
-        RuntimeMode::Compact => {
+    let mode = match selection {
+        RewriteSelection::All(mode) => mode,
+        RewriteSelection::Plan(_) => RuntimeMode::PreserveLayout,
+    };
+    let (candidate, rewrites, copies) = match selection {
+        RewriteSelection::All(RuntimeMode::Compact) => {
             let (candidate, rewrites) = transform(&analyze(code)?)?;
             (candidate, rewrites, Vec::new())
         }
-        RuntimeMode::PreserveLayout => {
+        RewriteSelection::All(RuntimeMode::PreserveLayout) => {
             let analysis = layout::analyze(code, guard_calls)?;
             let (candidate, rewrites) = layout::transform(&analysis)?;
+            (candidate, rewrites, analysis.copies)
+        }
+        RewriteSelection::Plan(plan) => {
+            ensure!(guard_calls, "rewrite plans require account scenarios");
+            ensure!(
+                plan.original_keccak256
+                    .parse::<B256>()
+                    .context("invalid plan baseline hash")?
+                    == keccak256(code),
+                "rewrite plan baseline hash does not match runtime bytecode"
+            );
+            let analysis = layout::analyze(code, guard_calls)?;
+            let (candidate, rewrites) = layout::transform_selected(&analysis, &plan.selected_pcs)?;
             (candidate, rewrites, analysis.copies)
         }
     };
@@ -496,6 +564,12 @@ fn optimize_checked(
         }
     };
     fs::create_dir(out)?;
+    if let RewriteSelection::Plan(plan) = selection {
+        fs::write(
+            out.join("plan.json"),
+            serde_json::to_string_pretty(plan)? + "\n",
+        )?;
+    }
     fs::write(out.join("original.hex"), hex::encode(code) + "\n")?;
     fs::write(out.join(input_file.0), input_file.1)?;
     fs::write(

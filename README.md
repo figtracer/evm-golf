@@ -18,8 +18,10 @@ behavior in complete instruction contexts within the Lean model. Account fixture
 replay constructor-initialized state and support guarded external calls in
 fixed-layout mode, including constant own-code reads with certified byte preservation.
 Rewrites include power-of-two multiplication and constant AND/SHL folds without
-moving instructions. An opt-in [region checker](docs/regions.md) also certifies a
-supported compiler prefix against pinned upstream EVM semantics.
+moving instructions. Agents can select trusted runtime rewrite sites with
+[hash-bound plans](docs/runtime.md#select-rewrite-sites). An opt-in
+[region checker](docs/regions.md) also certifies a supported compiler prefix
+against pinned upstream EVM semantics.
 
 - **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
 - **Verify** — Check expression equivalence and emitted bytecode against a Lean model.

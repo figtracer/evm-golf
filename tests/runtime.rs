@@ -1,3 +1,5 @@
+use evm_golf::runtime::from_hex;
+use revm::primitives::keccak256;
 use serde_json::Value;
 use std::{fs, process::Command};
 use tempfile::tempdir;
@@ -27,6 +29,204 @@ fn cli_analyzes_hex_files_and_rejects_unsupported_control_flow() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("dynamic jump"));
+}
+
+#[test]
+fn cli_lists_trusted_sites_and_rejects_invalid_runtime_plans() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("runtime.hex");
+    let scenarios = dir.path().join("scenarios.json");
+    let plan = dir.path().join("plan.json");
+    let code = "60076002026004025f5260205ff3";
+    fs::write(&input, code).unwrap();
+    fs::write(
+        &scenarios,
+        serde_json::to_vec(&serde_json::json!([{
+            "caller": "0x1111111111111111111111111111111111111111",
+            "target": "0x2222222222222222222222222222222222222222",
+            "accounts": {},
+            "transactions": [{"calldata":"", "gas_limit":100000}]
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_evm-golf"))
+        .args(["runtime-opportunities", "--bytecode"])
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let catalog: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let hash = keccak256(from_hex(code).unwrap()).to_string();
+    assert_eq!(catalog["original_keccak256"], hash);
+    assert_eq!(catalog["rewrites"][0]["original_pc"], 2);
+    assert_eq!(catalog["rewrites"][1]["original_pc"], 5);
+    assert_eq!(catalog["rewrites"].as_array().unwrap().len(), 2);
+    let valid = serde_json::json!({"original_keccak256":hash, "selected_pcs":[2]});
+    let mut invalid_plans = Vec::new();
+    let mut wrong_hash = valid.clone();
+    wrong_hash["original_keccak256"] = format!("0x{}", "00".repeat(32)).into();
+    invalid_plans.push((wrong_hash, "baseline hash"));
+    let mut duplicate = valid.clone();
+    duplicate["selected_pcs"] = serde_json::json!([2, 2]);
+    invalid_plans.push((duplicate, "duplicate rewrite PC"));
+    let mut unknown = valid.clone();
+    unknown["selected_pcs"] = serde_json::json!([3]);
+    invalid_plans.push((unknown, "unknown rewrite PCs"));
+    let mut arbitrary_bytes = valid.clone();
+    arbitrary_bytes["candidate"] = "00".into();
+    invalid_plans.push((arbitrary_bytes, "unknown field"));
+    for (i, (invalid, expected)) in invalid_plans.into_iter().enumerate() {
+        fs::write(&plan, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        let out = dir.path().join(format!("invalid-{i}"));
+        let result = Command::new(env!("CARGO_BIN_EXE_evm-golf"))
+            .args(["optimize-runtime", "--bytecode"])
+            .arg(&input)
+            .arg("--scenarios")
+            .arg(&scenarios)
+            .arg("--preserve-layout")
+            .arg("--plan")
+            .arg(&plan)
+            .arg("--out")
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!out.exists());
+    }
+    fs::write(&plan, serde_json::to_vec(&valid).unwrap()).unwrap();
+    for (preserve, fixtures) in [
+        (false, "--scenarios"),
+        (true, "--cases"),
+        (true, "--sequences"),
+    ] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_evm-golf"));
+        command
+            .args(["optimize-runtime", "--bytecode"])
+            .arg(&input)
+            .arg(fixtures)
+            .arg(&scenarios)
+            .arg("--plan")
+            .arg(&plan)
+            .arg("--out")
+            .arg(dir.path().join("invalid-flags"));
+        if preserve {
+            command.arg("--preserve-layout");
+        }
+        assert!(!command.output().unwrap().status.success());
+        assert!(!dir.path().join("invalid-flags").exists());
+    }
+}
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn cli_verifies_selected_plans_with_the_existing_acceptance_gates() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("runtime.hex");
+    let scenarios = dir.path().join("scenarios.json");
+    let plan = dir.path().join("plan.json");
+    let code = "60076002026004025f5260205ff3";
+    fs::write(&input, code).unwrap();
+    let hash = keccak256(from_hex(code).unwrap()).to_string();
+    let mut fixture = serde_json::json!([{
+        "caller": "0x1111111111111111111111111111111111111111",
+        "target": "0x2222222222222222222222222222222222222222",
+        "accounts": {
+            "0x1111111111111111111111111111111111111111": {"balance":"1000000"},
+            "0x2222222222222222222222222222222222222222": {"nonce":1}
+        },
+        "transactions": [{"calldata":"", "gas_limit":100000}]
+    }]);
+    fs::write(&scenarios, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    let run = |name: &str, selected: Option<Vec<usize>>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_evm-golf"));
+        command
+            .args(["optimize-runtime", "--bytecode"])
+            .arg(&input)
+            .arg("--scenarios")
+            .arg(&scenarios)
+            .arg("--preserve-layout")
+            .arg("--out")
+            .arg(dir.path().join(name));
+        if let Some(pcs) = selected {
+            fs::write(
+                &plan,
+                serde_json::to_vec(&serde_json::json!({
+                    "original_keccak256":hash, "selected_pcs":pcs
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            command.arg("--plan").arg(&plan);
+        }
+        command.output().unwrap()
+    };
+    for (name, selected, count) in [
+        ("default", None, 2),
+        ("all", Some(vec![5, 2]), 2),
+        ("subset", Some(vec![2]), 1),
+        ("empty", Some(vec![]), 0),
+    ] {
+        let result = run(name, selected);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let out = dir.path().join(name);
+        let report: Value =
+            serde_json::from_slice(&fs::read(out.join("result.json")).unwrap()).unwrap();
+        assert_eq!(report["rewrites"].as_array().unwrap().len(), count);
+        assert!(report["lean_version"].is_string());
+        assert!(
+            report["verification"]
+                .as_str()
+                .unwrap()
+                .contains("No full-EVM correspondence")
+        );
+        assert!(out.join("Rewrites.log").exists());
+        assert_eq!(out.join("plan.json").exists(), name != "default");
+        if name == "empty" {
+            assert_eq!(
+                fs::read_to_string(out.join("candidate.hex"))
+                    .unwrap()
+                    .trim(),
+                code
+            );
+        }
+    }
+    for artifact in ["candidate.hex", "result.json", "Rewrites.lean"] {
+        assert_eq!(
+            fs::read(dir.path().join("default").join(artifact)).unwrap(),
+            fs::read(dir.path().join("all").join(artifact)).unwrap()
+        );
+    }
+    // Less gas makes the optimized run succeed while its baseline runs out.
+    // A local proof must not bypass the existing concrete acceptance check.
+    fixture[0]["transactions"][0]["gas_limit"] = 21030.into();
+    fs::write(&scenarios, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    assert!(!run("replay-rejected", Some(vec![2, 5])).status.success());
+    let rejected = dir.path().join("replay-rejected");
+    for artifact in [
+        "plan.json",
+        "original.hex",
+        "scenarios.json",
+        "Rewrites.log",
+        "failure.log",
+    ] {
+        assert!(rejected.join(artifact).exists(), "{artifact}");
+    }
+    assert!(!rejected.join("result.json").exists());
+    assert!(!rejected.join("candidate.hex").exists());
 }
 
 #[test]

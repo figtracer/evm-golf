@@ -25,6 +25,11 @@ enum Action {
         #[arg(long)]
         preserve_layout: bool,
     },
+    /// List trusted fixed-layout rewrite sites bound to the runtime's hash.
+    RuntimeOpportunities {
+        #[arg(long)]
+        bytecode: PathBuf,
+    },
     /// Compare arbitrary Cancun runtimes on supplied account/transaction fixtures.
     /// This is concrete replay, not a Lean or whole-contract equivalence proof.
     CheckRuntime {
@@ -68,6 +73,9 @@ enum Action {
         /// Preserve byte offsets and allow dynamic jumps, PC and CODESIZE.
         #[arg(long)]
         preserve_layout: bool,
+        /// JSON baseline hash and selected PCs from runtime-opportunities.
+        #[arg(long, requires_all = ["preserve_layout", "scenarios"])]
+        plan: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -136,6 +144,13 @@ fn main() -> Result<()> {
             };
             println!("{analysis}");
         }
+        Action::RuntimeOpportunities { bytecode } => {
+            let code = runtime::input::read_bytecode(&bytecode)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&runtime::rewrite_opportunities(&code)?)?
+            );
+        }
         Action::CheckRuntime {
             original,
             candidate,
@@ -176,6 +191,7 @@ fn main() -> Result<()> {
             sequences,
             scenarios,
             preserve_layout,
+            plan,
             out,
         } => {
             let code = runtime::input::read_bytecode(&bytecode)?;
@@ -202,7 +218,13 @@ fn main() -> Result<()> {
                 let scenarios: Vec<runtime::scenario::Scenario> = serde_json::from_str(
                     &runtime::input::read_json(&scenarios.expect("clap requires one input"))?,
                 )?;
-                runtime::optimize_scenarios(&code, &scenarios, &out, mode)?
+                if let Some(plan) = plan {
+                    let plan: runtime::RewritePlan =
+                        serde_json::from_str(&runtime::input::read_json(&plan)?)?;
+                    runtime::optimize_scenarios_with_plan(&code, &scenarios, &out, &plan)?
+                } else {
+                    runtime::optimize_scenarios(&code, &scenarios, &out, mode)?
+                }
             };
             println!(
                 "Runtime bytes: {} → {}; {} local rewrites; {} execution cases passed.\n{}\nEvidence: {}",

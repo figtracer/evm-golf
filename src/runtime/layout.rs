@@ -264,7 +264,94 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
         .iter()
         .flat_map(|op| op.bytes.iter().copied())
         .collect();
-    let decoded = decode(&candidate);
+    validate_layout(analysis, &candidate)?;
+    Ok((candidate, rewrites))
+}
+
+/// Trusted opportunities, named by original PC, for this exact analysis.
+/// Reject any cascading or overlapping rewrite rather than treating it as an
+/// independently selectable edit to the immutable input.
+pub(super) fn opportunities(analysis: &LayoutAnalysis) -> Result<Vec<Rewrite>> {
+    let (candidate, rewrites) = transform(analysis)?;
+    let original: Vec<_> = analysis
+        .instructions
+        .iter()
+        .flat_map(|op| op.bytes.iter().copied())
+        .collect();
+    validate_catalog(&original, &candidate, &rewrites)?;
+    Ok(rewrites)
+}
+
+/// Select trusted replacements only; callers never supply replacement bytes.
+/// Empty selection is the unchanged baseline. Selection order is immaterial.
+pub(super) fn transform_selected(
+    analysis: &LayoutAnalysis,
+    selected_pcs: &[usize],
+) -> Result<(Vec<u8>, Vec<Rewrite>)> {
+    let catalog = opportunities(analysis)?;
+    let mut selected = BTreeSet::new();
+    for pc in selected_pcs {
+        ensure!(selected.insert(*pc), "duplicate rewrite PC {pc}");
+    }
+    let mut candidate: Vec<_> = analysis
+        .instructions
+        .iter()
+        .flat_map(|op| op.bytes.iter().copied())
+        .collect();
+    let mut rewrites = Vec::new();
+    for rewrite in catalog {
+        if selected.remove(&rewrite.original_pc) {
+            let after = hex::decode(&rewrite.after)?;
+            candidate[rewrite.original_pc..rewrite.original_pc + after.len()]
+                .copy_from_slice(&after);
+            rewrites.push(rewrite);
+        }
+    }
+    ensure!(selected.is_empty(), "unknown rewrite PCs: {selected:?}");
+    validate_layout(analysis, &candidate)?;
+    Ok((candidate, rewrites))
+}
+
+fn validate_catalog(original: &[u8], candidate: &[u8], rewrites: &[Rewrite]) -> Result<()> {
+    let mut reconstructed = original.to_vec();
+    let mut previous_end = 0;
+    for rewrite in rewrites {
+        let before = hex::decode(&rewrite.before)?;
+        let after = hex::decode(&rewrite.after)?;
+        ensure!(
+            !before.is_empty() && before.len() == after.len(),
+            "catalog rewrite changes byte length"
+        );
+        let start = rewrite.original_pc;
+        let end = start
+            .checked_add(before.len())
+            .context("rewrite PC overflow")?;
+        ensure!(
+            start >= previous_end,
+            "overlapping or unordered catalog rewrites"
+        );
+        ensure!(
+            original.get(start..end) == Some(before.as_slice()),
+            "catalog rewrite does not match baseline at PC {start}"
+        );
+        let signature = stack_signature(&before)?;
+        ensure!(
+            signature == stack_signature(&after)?
+                && usize::try_from(signature.0)? == rewrite.required_stack,
+            "catalog rewrite changes stack requirements or peak growth"
+        );
+        reconstructed[start..end].copy_from_slice(&after);
+        previous_end = end;
+    }
+    ensure!(
+        reconstructed == candidate,
+        "catalog does not reconstruct full candidate"
+    );
+    Ok(())
+}
+
+fn validate_layout(analysis: &LayoutAnalysis, candidate: &[u8]) -> Result<()> {
+    let decoded = decode(candidate);
     ensure!(
         candidate.len() == analysis.runtime_bytes && decoded.len() == analysis.instructions.len(),
         "layout rewrite changes bytecode length or instruction count"
@@ -278,7 +365,7 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
                 && (new.bytes[0] == 0x5b) == (old.bytes[0] == 0x5b)),
         "layout rewrite changes instruction boundaries or jump destinations"
     );
-    Ok((candidate, rewrites))
+    Ok(())
 }
 
 // (required input height, final height delta, maximum height growth). These
@@ -311,6 +398,82 @@ mod tests {
             value: String::new(),
             storage: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn selected_rewrites_preserve_baseline_and_all_on_behavior() {
+        // A power multiply and a literal fold, separated by an unchanged MUL.
+        let original = bytes("600760020260030260ff601f16015f5260205ff3");
+        let analysis = analyze(&original, false).unwrap();
+        let catalog = opportunities(&analysis).unwrap();
+        let pcs: Vec<_> = catalog.iter().map(|r| r.original_pc).collect();
+        assert_eq!(pcs, [2, 8]);
+        let (all, all_rewrites) = transform(&analysis).unwrap();
+        for mask in 0..4 {
+            let selected: Vec<_> = pcs
+                .iter()
+                .enumerate()
+                .filter_map(|(i, pc)| (mask & (1 << i) != 0).then_some(*pc))
+                .collect();
+            let (candidate, rewrites) = transform_selected(&analysis, &selected).unwrap();
+            assert_eq!(rewrites.len(), selected.len());
+            compare(&original, &candidate, &case("")).unwrap();
+            validate_catalog(&original, &candidate, &rewrites).unwrap();
+            if selected.is_empty() {
+                assert_eq!(candidate, original);
+            }
+            if selected.len() == pcs.len() {
+                assert_eq!(candidate, all);
+                assert_eq!(
+                    serde_json::to_value(rewrites).unwrap(),
+                    serde_json::to_value(&all_rewrites).unwrap()
+                );
+            }
+        }
+        assert_eq!(transform_selected(&analysis, &[8, 2]).unwrap().0, all);
+        assert!(transform_selected(&analysis, &[2, 2]).is_err());
+        assert!(transform_selected(&analysis, &[0]).is_err());
+        assert!(transform_selected(&analysis, &[3]).is_err()); // PUSH data
+    }
+
+    #[test]
+    fn selection_catalog_retains_reachability_and_code_copy_guards() {
+        for (input, guarded) in [
+            ("0060020200", false),                // unreachable multiplication
+            ("600760020250600360025f3900", true), // observed rewrite bytes
+        ] {
+            let original = bytes(input);
+            let analysis = analyze(&original, guarded).unwrap();
+            assert!(opportunities(&analysis).unwrap().is_empty());
+            assert_eq!(transform_selected(&analysis, &[]).unwrap().0, original);
+            assert!(transform_selected(&analysis, &[2]).is_err());
+        }
+        // Fresh analysis must not inherit a previous input's eligible PC.
+        let changed = analyze(&bytes("600760030200"), false).unwrap();
+        assert!(transform_selected(&changed, &[2]).is_err());
+    }
+
+    #[test]
+    fn catalog_rejects_overlap_stale_fragments_and_unrecorded_changes() {
+        let original = bytes("600760020200");
+        let analysis = analyze(&original, false).unwrap();
+        let (candidate, _) = transform(&analysis).unwrap();
+        let mut catalog = opportunities(&analysis).unwrap();
+        catalog.push(Rewrite {
+            original_pc: 2,
+            before: "600202".into(),
+            after: "60011b".into(),
+            required_stack: 1,
+        });
+        assert!(validate_catalog(&original, &candidate, &catalog).is_err());
+        catalog.pop();
+        let changed = bytes("600760040200");
+        assert!(validate_catalog(&changed, &candidate, &catalog).is_err());
+        let mut wrong_output = candidate.clone();
+        wrong_output[1] = 8;
+        assert!(validate_catalog(&original, &wrong_output, &catalog).is_err());
+        catalog[0].after = "600150".into();
+        assert!(validate_catalog(&original, &candidate, &catalog).is_err());
     }
 
     #[test]

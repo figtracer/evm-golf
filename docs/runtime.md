@@ -17,6 +17,46 @@ For a separate conditional proof of a supported internal compiler prefix, see
 [internal-region certificates](regions.md). This opt-in command uses pinned
 upstream semantics and does not replace the runtime optimizer’s existing gates.
 
+## Select rewrite sites
+
+List the fixed-layout opportunities for an exact runtime:
+
+```sh
+cargo run --locked -- runtime-opportunities --bytecode runs/runtime.hex > runs/opportunities.json
+```
+
+The JSON contains `original_keccak256` and trusted `rewrites` with original PCs,
+before/after bytes and required stack heights. Listing sites does not verify a
+candidate or run transactions. It uses the account-fixture opcode policy; actual
+optimization still requires the supplied scenarios and all existing proof gates.
+
+Copy the returned hash into a plan and select PCs from that catalog:
+
+```json
+{
+  "original_keccak256": "0x<64 hex digits from the catalog>",
+  "selected_pcs": [2, 8]
+}
+```
+
+The PCs above are illustrative; use sites from your own catalog. Then run:
+
+```sh
+cargo run --locked -- optimize-runtime --bytecode runs/runtime.hex \
+  --preserve-layout --scenarios runs/scenarios.json --plan runs/plan.json \
+  --out runs/selected-1
+```
+
+Plans require `--preserve-layout` and `--scenarios`. The tool checks the baseline
+hash, rejects duplicate/unknown PCs and regenerates replacements itself. A plan
+cannot supply candidate bytes or Lean source. Empty selection preserves the
+baseline; selection order does not matter. Omitting `--plan` keeps the existing
+all-sites behavior. Each run uses a fresh output directory and saves `plan.json`
+before proof checking and replay. Accepted outputs require the same local artifact
+proofs and fixture checks as other fixed-layout runs; no whole-contract or all-input
+equivalence is established. This supports external proposal search, but does not
+launch agents, schedule a campaign or resume interrupted runs.
+
 ## Run
 
 Save runtime bytecode as hexadecimal in `runs/runtime.hex` (an optional `0x`
