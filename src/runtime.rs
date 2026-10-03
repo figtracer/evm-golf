@@ -168,6 +168,12 @@ pub fn analyze(code: &[u8]) -> Result<Analysis> {
         let &i = index.get(&pc).context("control flow enters PUSH data")?;
         let instruction = &instructions[i];
         let op = instruction.bytes[0];
+        let Some(info) = OpCode::info_by_op(op) else {
+            // revm maps absent opcode entries to OpcodeNotFound, an unconditional
+            // exceptional halt. Preserve the byte and stop this path; do not
+            // confuse known but unsupported (or fork-disabled) instructions.
+            continue;
+        };
         ensure!(
             allowed(op)
                 || (op == 0x5a
@@ -178,7 +184,6 @@ pub fn analyze(code: &[u8]) -> Result<Analysis> {
             "unsupported or code/gas-sensitive opcode {} (0x{op:02x}) at PC {pc}",
             OpCode::name_by_op(op)
         );
-        let info = OpCode::info_by_op(op).context("unknown opcode")?;
         let size = if (0x60..=0x7f).contains(&op) {
             usize::from(op - 0x5f)
         } else {
@@ -465,7 +470,7 @@ fn optimize_checked(
     let verification = match mode {
         RuntimeMode::Compact => verification,
         RuntimeMode::PreserveLayout => {
-            "Lean: exact artifact reconstruction, unchanged byte offsets, instruction boundaries, jump destinations, local stack profiles and gas-erased fragment equivalence including local underflow/overflow at the 1024-word bound. Rust: conservative reachability; no global stack-height proof. revm: supplied transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof."
+            "Lean: exact artifact reconstruction, unchanged byte offsets, instruction boundaries, jump destinations, local stack profiles and gas-erased fragment equivalence under complete prefixes/suffixes in the bounded 1024-word model. Rust: conservative reachability; no global stack-height proof. revm: supplied transactions only. No whole-contract, all-gas, deployment, or code-identity equivalence proof."
         }
     };
     fs::create_dir(out)?;
@@ -951,6 +956,7 @@ fn execute_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use revm::context::result::HaltReason;
     use tempfile::tempdir;
 
     fn bytes(text: &str) -> Vec<u8> {
@@ -1088,6 +1094,95 @@ mod tests {
             cleared[&Address::repeat_byte(0x22)].storage,
             BTreeMap::from([(U256::from(9), U256::from(11))])
         );
+    }
+
+    #[test]
+    fn unknown_opcodes_preserve_halt_reason_and_rollback_in_both_modes() {
+        let mut checked = 0;
+        for op in 0..=u8::MAX {
+            if OpCode::info_by_op(op).is_some() {
+                continue;
+            }
+            checked += 1;
+            // Rewrite a MUL, write slot zero and emit a log before the unknown
+            // instruction. Its exceptional halt rolls back all those effects.
+            let mut original = bytes("60026002025060075f555f5fa0");
+            original.extend([op, 0x5a]); // Unreachable GAS must remain byte-identical.
+            let mut input = case("");
+            input.storage.insert("0".into(), "9".into());
+            let left = execute(&original, &input).unwrap();
+            assert!(
+                matches!(
+                    left.result,
+                    ExecutionResult::Halt {
+                        reason: HaltReason::OpcodeNotFound,
+                        ..
+                    }
+                ),
+                "{op:02x}"
+            );
+            assert!(left.result.logs().is_empty());
+            assert_eq!(
+                left.state[&Address::repeat_byte(0x22)].storage[&U256::ZERO],
+                U256::from(9)
+            );
+            for mode in [RuntimeMode::Compact, RuntimeMode::PreserveLayout] {
+                let (candidate, rewrites) = match mode {
+                    RuntimeMode::Compact => transform(&analyze(&original).unwrap()).unwrap(),
+                    RuntimeMode::PreserveLayout => {
+                        layout::transform(&layout::analyze(&original).unwrap()).unwrap()
+                    }
+                };
+                assert!(!rewrites.is_empty());
+                assert!(candidate.ends_with(&[op, 0x5a]));
+                let right = execute(&candidate, &input).unwrap();
+                assert_eq!(left.result, right.result);
+                assert_eq!(left.state, right.state);
+                // Preserving a halt is not permission to accept halted fixtures.
+                assert!(compare(&original, &candidate, &input).is_err());
+            }
+        }
+        assert_eq!(checked, 102); // Revalidate classification when revm changes.
+    }
+
+    #[test]
+    fn unknown_terminals_do_not_hide_jump_targets_or_push_data() {
+        for op in 0..=u8::MAX {
+            if OpCode::info_by_op(op).is_some() {
+                continue;
+            }
+            // Either halt at the unknown byte or take a valid branch that has a
+            // genuine rewrite. The branch target remains reachable after a halt.
+            let original = vec![
+                0x5f, 0x35, 0x60, 7, 0x57, op, 0x5a, 0x5b, 0x60, 2, 0x60, 2, 0x02, 0x50, 0x00,
+            ];
+            for mode in [RuntimeMode::Compact, RuntimeMode::PreserveLayout] {
+                let candidate = match mode {
+                    RuntimeMode::Compact => transform(&analyze(&original).unwrap()).unwrap().0,
+                    RuntimeMode::PreserveLayout => {
+                        layout::transform(&layout::analyze(&original).unwrap())
+                            .unwrap()
+                            .0
+                    }
+                };
+                assert_eq!(candidate[5], op);
+                compare(&original, &candidate, &case(&format!("{:064x}", 1))).unwrap();
+                assert!(compare(&original, &candidate, &case("")).is_err());
+            }
+            // Jump over the halt to a GAS instruction: this must still reject.
+            let jumped = [0x60, 4, 0x56, op, 0x5b, 0x5a];
+            assert!(analyze(&jumped).is_err());
+            assert!(layout::analyze(&jumped).is_err());
+            // PUSH data does not terminate the path to unsupported GAS.
+            let embedded = [0x60, op, 0x50, 0x5a];
+            assert!(analyze(&embedded).is_err());
+            assert!(layout::analyze(&embedded).is_err());
+        }
+        for op in [0x1e, 0x4b, 0xe6, 0xe7, 0xe8, 0x39, 0xf1, 0xff] {
+            assert!(OpCode::info_by_op(op).is_some());
+            assert!(analyze(&[op, 0]).is_err());
+            assert!(layout::analyze(&[op, 0]).is_err());
+        }
     }
 
     #[test]

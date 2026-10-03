@@ -117,9 +117,12 @@ or sequences; those ambiguous inputs are now errors.
 ## Transformation boundary
 
 The decoder distinguishes instructions from PUSH data and preserves unreachable
-bytes, including metadata, in their original order. Reachable truncated PUSHs
-are rejected. Input size is bounded by EIP-170's 24,576-byte deployed-code limit;
-EOF input is unsupported.
+bytes, including metadata, in their original order. Undefined opcode bytes are
+retained as exceptional-halt boundaries; fallthrough stops there while independently
+reachable jump destinations are still analyzed. Reachable known but unsupported
+or fork-disabled instructions remain rejected. Halted replay cases still fail
+validation. Reachable truncated PUSHs are rejected. Input size is bounded by
+EIP-170's 24,576-byte deployed-code limit; EOF input is unsupported.
 
 Every reachable JUMP or JUMPI must resolve to a PUSH of a valid JUMPDEST offset.
 The analysis tracks the originating PUSH through DUP and SWAP, including internal
@@ -186,6 +189,13 @@ certificate also executes its exact fragments under
 instruction boundary. It proves equal successful results for incoming heights
 1–1,023, underflow on an empty stack, and overflow at height 1,024. These local
 properties do not establish the heights reached by the surrounding program.
+[lean/Composition.lean](../lean/Composition.lean) additionally proves that each
+replacement preserves the result under any completely decoded prefix and suffix
+in the bounded model, including preservation of successful execution. The proof
+runs the actual concatenated byte lists and relates sufficient instruction fuel
+to the byte-length budgets. Complete boundaries matter: a suffix must not supply
+missing PUSH data. This is contextual substitution inside the small model,
+not interpretation of all surrounding contract instructions.
 
 This structural certificate requires Lean even when no rewrite applies. Its closed
 checks use `decide +kernel`, and runtime certificates permit only Lean's standard

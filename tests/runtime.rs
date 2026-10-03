@@ -509,3 +509,57 @@ fn cli_precompile_gate_applies_to_every_optimizer_input_format() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn cli_preserves_unknown_halt_branches_without_accepting_halted_cases() {
+    let directory = tempdir().unwrap();
+    let bytecode = directory.path().join("runtime.hex");
+    let cases = directory.path().join("cases.json");
+    // The unknown byte halts before GAS on the zero-input path. Nonzero input
+    // jumps past it and exercises an actual multiplication rewrite.
+    fs::write(&bytecode, "5f356007574d5a5b60026002025000").unwrap();
+    for layout in [false, true] {
+        for input in [1, 0] {
+            fs::write(
+                &cases,
+                format!(r#"[{{"calldata":"{input:064x}","gas_limit":100000}}]"#),
+            )
+            .unwrap();
+            let out = directory.path().join(format!("{layout}-{input}"));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_evm-golf"));
+            command
+                .args(["optimize-runtime", "--bytecode"])
+                .arg(&bytecode)
+                .arg("--cases")
+                .arg(&cases)
+                .arg("--out")
+                .arg(&out);
+            if layout {
+                command.arg("--preserve-layout");
+            }
+            let result = command.output().unwrap();
+            if input == 1 {
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                let report: Value =
+                    serde_json::from_slice(&fs::read(out.join("result.json")).unwrap()).unwrap();
+                assert!(!report["rewrites"].as_array().unwrap().is_empty());
+                let candidate = fs::read_to_string(out.join("candidate.hex")).unwrap();
+                assert_eq!(&candidate[10..14], "4d5a");
+            } else {
+                assert!(!result.status.success());
+                assert!(
+                    fs::read_to_string(out.join("failure.log"))
+                        .unwrap()
+                        .contains("OpcodeNotFound")
+                );
+                assert!(!out.join("candidate.hex").exists());
+                assert!(!out.join("result.json").exists());
+            }
+        }
+    }
+}

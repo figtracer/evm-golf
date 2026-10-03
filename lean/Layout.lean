@@ -81,7 +81,8 @@ inductive CertifiedSites : List Site → Prop where
   | nil : CertifiedSites []
   | cons {site : Site} {sites : List Site} :
       FragmentEquivalent site.before site.after →
-      GolfBounded.FragmentEquivalent site.before site.after → CertifiedSites sites →
+      GolfBounded.FragmentEquivalent site.before site.after →
+      GolfComposition.ContextEquivalent site.before site.after → CertifiedSites sites →
         CertifiedSites (site :: sites)
 
 structure LayoutArtifact (original candidate : List Nat) (sites : List Site) : Prop where

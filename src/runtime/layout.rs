@@ -52,6 +52,12 @@ pub(super) fn analyze(code: &[u8]) -> Result<LayoutAnalysis> {
         let i = *index.get(&pc).context("control flow enters PUSH data")?;
         let instruction = &instructions[i];
         let op = instruction.bytes[0];
+        if OpCode::info_by_op(op).is_none() {
+            // Unknown bytes halt unconditionally in revm. Keep their exact
+            // value, stop fallthrough, and still visit independently queued
+            // JUMPDESTs after them. This never strips or interprets metadata.
+            continue;
+        }
         // PC and CODESIZE are stable because no instruction or byte is moved.
         // GAS is admitted only in the inseparable literal-1 ECRECOVER pattern.
         let supported = match op {

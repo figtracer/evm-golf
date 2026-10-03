@@ -4,9 +4,10 @@ use anyhow::{Result, ensure};
 use revm::primitives::HashMap;
 use std::fmt::Write as _;
 
-use super::{MAX_RUNTIME_BYTES, Rewrite, certificates, from_hex};
+use super::{MAX_RUNTIME_BYTES, Rewrite, certificates, decode, from_hex};
 
 const STACK_MODEL: &str = include_str!("../../lean/Stack.lean");
+const COMPOSITION_MODEL: &str = include_str!("../../lean/Composition.lean");
 const LAYOUT_MODEL: &str = include_str!("../../lean/Layout.lean");
 // A full EIP-170 image exceeded 65K recursive elaboration depth and the default
 // heartbeat budget. Kernel reduction at these limits checked 24,576 bytes; the
@@ -28,7 +29,11 @@ pub(super) fn certificate(
         "layout artifacts require one-word fragment prefixes"
     );
     let (mut source, mut names) = certificates(rewrites)?;
-    writeln!(source, "\n{STACK_MODEL}\n{LAYOUT_MODEL}").unwrap();
+    writeln!(
+        source,
+        "\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_MODEL}"
+    )
+    .unwrap();
     writeln!(
         source,
         "\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\nnamespace GolfArtifact"
@@ -82,6 +87,29 @@ pub(super) fn certificate(
             }
             writeln!(bounded, "#print axioms {name}\n").unwrap();
             names.push(name);
+            let name = format!("runtime_context_{index}");
+            writeln!(
+                bounded,
+                "theorem {name} : GolfComposition.ContextEquivalent {before:?} {after:?} := by"
+            )
+            .unwrap();
+            writeln!(bounded, "  apply GolfComposition.context_of_fragment (before := {before:?}) (after := {after:?}) (beforeCount := {}) (afterCount := {}) ?_ ?_ runtime_bounded_{index}", decode(&before).len(), decode(&after).len()).unwrap();
+            // Rust proposes the decoding; Lean independently checks each exact
+            // immediate width and reconstructs the complete byte-list witness.
+            for bytes in [&before, &after] {
+                let instructions = decode(bytes);
+                bounded.push_str("  · exact ");
+                for instruction in &instructions {
+                    write!(bounded, "(GolfComposition.Complete.step (op := {}) (immediate := {:?}) (by decide +kernel) ", instruction.bytes[0], &instruction.bytes[1..]).unwrap();
+                }
+                bounded.push_str("GolfComposition.Complete.nil");
+                for _ in instructions {
+                    bounded.push(')');
+                }
+                bounded.push('\n');
+            }
+            writeln!(bounded, "#print axioms {name}\n").unwrap();
+            names.push(name);
         }
         proofs.push(index);
     }
@@ -96,7 +124,7 @@ pub(super) fn certificate(
     for index in &proofs {
         write!(
             source,
-            "(GolfLayout.CertifiedSites.cons runtime_rewrite_{index} runtime_bounded_{index} "
+            "(GolfLayout.CertifiedSites.cons runtime_rewrite_{index} runtime_bounded_{index} runtime_context_{index} "
         )
         .unwrap();
     }
@@ -314,7 +342,7 @@ mod tests {
   GolfLayout.aligned GolfArtifact.sites ((GolfLayout.scan GolfArtifact.original).map (fun item => item.1) ++ [GolfArtifact.original.length]) = true ∧
   ({mismatch}) ∧ GolfLayout.CertifiedSites GolfArtifact.sites := by
   refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩
-  exact GolfLayout.CertifiedSites.cons runtime_rewrite_0 runtime_bounded_0 GolfLayout.CertifiedSites.nil
+  exact GolfLayout.CertifiedSites.cons runtime_rewrite_0 runtime_bounded_0 runtime_context_0 GolfLayout.CertifiedSites.nil
 #print axioms isolated_failure
 ");
             let path = dir.path().join(format!("{name}Prerequisites.lean"));
@@ -352,6 +380,85 @@ mod tests {
             source.replace(
                 "CertifiedSites.cons runtime_rewrite_1",
                 "CertifiedSites.cons runtime_rewrite_0",
+            ),
+        )
+        .unwrap();
+        assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
+    }
+    #[test]
+    #[ignore = "requires Lean 4.34.0"]
+    fn contextual_replacement_preserves_success_and_checks_its_boundaries() {
+        let dir = tempdir().unwrap();
+        let before = from_hex("600202").unwrap();
+        let after = from_hex("60011b").unwrap();
+        let rewrite = Rewrite {
+            original_pc: 0,
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: 1,
+        };
+        let (mut source, mut names) = certificate(&before, &after, &[rewrite]).unwrap();
+        source.push_str(r#"theorem context_nonvacuous (x y : Golf.Word) :
+  GolfBounded.run 9 [95,53,96,1,27,96,3,1] [] x y = some [3 + 2*x] := by
+  exact GolfComposition.context_success (front := [95,53]) (suffix := [96,3,1])
+    runtime_context_0 ((GolfComposition.Complete.step (op := 95) (immediate := []) (by decide +kernel) (GolfComposition.Complete.step (op := 53) (immediate := []) (by decide +kernel) GolfComposition.Complete.nil))) ((GolfComposition.Complete.step (op := 96) (immediate := [3]) (by decide +kernel) (GolfComposition.Complete.step (op := 1) (immediate := []) (by decide +kernel) GolfComposition.Complete.nil))) [] x y [3 + 2*x]
+    (by simp [GolfBounded.run, Golf.run, Golf.immediate])
+#print axioms context_nonvacuous
+-- A changed shift immediate is a semantic error even when all boundaries match.
+theorem changed_byte_matters :
+    GolfBounded.run 9 [95,53,96,2,2,96,3,1] [] 1 0 ≠
+      GolfBounded.run 9 [95,53,96,2,27,96,3,1] [] 1 0 := by decide +kernel
+
+-- The front byte is a truncated PUSH1. Appending the local fragments changes
+-- decoding and cannot be treated as executing the fragments at their starts.
+theorem incomplete_boundary_matters :
+    GolfBounded.run 5 ([96] ++ [96,2,2]) [0,1] 0 0 ≠
+      GolfBounded.run 5 ([96] ++ [96,1,27]) [0,1] 0 0 := by decide +kernel
+
+-- Termination itself needs one unit of fuel in the existing executor.
+theorem inadequate_fuel_matters :
+    GolfBounded.run 2 [95] [] 0 0 ≠ GolfBounded.run 1 [95] [] 0 0 := by decide +kernel
+
+-- Erasing a mathematically neutral multiply would remove a real PUSH overflow.
+theorem overflow_matters :
+    GolfBounded.run 4 [96,1,2] (List.replicate 1024 0) 0 0 ≠
+      GolfBounded.run 1 [] (List.replicate 1024 0) 0 0 := by decide +kernel
+
+#print axioms changed_byte_matters
+#print axioms incomplete_boundary_matters
+#print axioms inadequate_fuel_matters
+#print axioms overflow_matters
+"#);
+        let controls = [
+            "changed_byte_matters",
+            "incomplete_boundary_matters",
+            "inadequate_fuel_matters",
+            "overflow_matters",
+        ];
+        names.push("context_nonvacuous".into());
+        names.extend(controls.map(str::to_owned));
+        let path = dir.path().join("Context.lean");
+        fs::write(&path, &source).unwrap();
+        proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).unwrap();
+        // Each concrete counterexample is checked before asking Lean to reject
+        // the corresponding false equality; failures cannot stand in for proofs.
+        for name in controls {
+            let start = source.find(&format!("theorem {name}")).unwrap();
+            let end = start + source[start..].find(":= by decide +kernel").unwrap();
+            let mut false_claim = source.clone();
+            false_claim.replace_range(start..end, &source[start..end].replace('≠', "="));
+            let path = dir.path().join(format!("{name}.lean"));
+            fs::write(&path, false_claim).unwrap();
+            assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
+        }
+        // Equality of two failed executions must never replace a successful
+        // context witness. Mutate the actual bounded executor's termination.
+        let path = dir.path().join("AlwaysFailing.lean");
+        fs::write(
+            &path,
+            source.replace(
+                STACK_MODEL,
+                &STACK_MODEL.replace("    | [] => some stack", "    | [] => none"),
             ),
         )
         .unwrap();

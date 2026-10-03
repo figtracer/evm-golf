@@ -14,6 +14,7 @@
 | `src/main.rs` | CLI arguments and output |
 | `lean/Model.lean` | The limited bytecode semantics used by the proofs |
 | `lean/Stack.lean` | Operational instruction-boundary stack limits for local fragments |
+| `lean/Composition.lean` | Decoded boundaries, fuel and contextual substitution in the bounded model |
 | `lean/Layout.lean` | Exact fixed-layout artifact reconstruction and local proof binding |
 | `tests/` | Execution, CLI, proof, and campaign regression tests |
 | `challenges.json` | Puzzle IDs, descriptions, and reference expressions |
