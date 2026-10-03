@@ -20,6 +20,9 @@ use crate::{
     expr::{self, Expr, RULES},
 };
 
+mod upstream;
+pub(crate) use upstream::verify_region;
+
 const MODEL: &str = include_str!("../lean/Model.lean");
 const LEAN_VERSION: &str = "4.34.0";
 // Generated proofs have uniform binders/tactics, so unused names are expected.
@@ -203,10 +206,14 @@ pub(crate) fn verify_named(
 }
 
 fn run_attempt(lean: &Path, path: &Path, log_path: &Path, deadline: Instant) -> Result<()> {
-    let log = File::create(log_path)?;
     let mut command = Command::new(lean);
+    command.arg(path.canonicalize()?);
+    run_command(&mut command, log_path, deadline)
+}
+
+fn run_command(command: &mut Command, log_path: &Path, deadline: Instant) -> Result<()> {
+    let log = File::create(log_path)?;
     command
-        .arg(path.canonicalize()?)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     // SAT subprocesses inherit this group, so timeout cleanup includes them on Unix.

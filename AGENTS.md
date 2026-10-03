@@ -46,7 +46,9 @@ dynamic jumps without moving byte offsets and binds local proofs to the complete
 output artifact in Lean. Use `--scenarios` for explicit deployed-account state.
 `check-runtime` instead compares arbitrary proposed runtimes using account fixtures and has no Lean proof gate.
 Neither establishes whole-contract equivalence or produces expression leaderboard
-entries. Keep runtime input corpora and generated results local too.
+entries. `certify-runtime-region` separately checks a supported internal prefix
+against pinned upstream semantics; read docs/regions.md for its explicit premises
+and excluded jump/suffix behavior. Keep runtime input corpora and generated results local too.
 
 ## Batch experiments
 

@@ -13,6 +13,10 @@ The separate `check-runtime` command can
 execute these operations against supplied account fixtures; it does not optimize
 or formally prove the proposed candidate.
 
+For a separate conditional proof of a supported internal compiler prefix, see
+[internal-region certificates](regions.md). This opt-in command uses pinned
+upstream semantics and does not replace the runtime optimizer’s existing gates.
+
 ## Run
 
 Save runtime bytecode as hexadecimal in `runs/runtime.hex` (an optional `0x`

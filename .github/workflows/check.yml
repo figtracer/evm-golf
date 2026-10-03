@@ -36,3 +36,7 @@ jobs:
           bash scripts/setup-lean.sh
       - name: Check Rust and Lean proofs
         run: bash scripts/check.sh
+      - name: Install pinned upstream semantics
+        run: bash scripts/setup-upstream.sh
+      - name: Check upstream region certificate
+        run: bash scripts/check-upstream.sh

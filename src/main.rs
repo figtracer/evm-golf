@@ -37,6 +37,18 @@ enum Action {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Certify a supported internal region with pinned upstream EVM semantics.
+    /// Ends before JUMP; does not prove whole-contract equivalence.
+    CertifyRuntimeRegion {
+        #[arg(long)]
+        original: PathBuf,
+        #[arg(long)]
+        candidate: PathBuf,
+        #[arg(long)]
+        entry_pc: usize,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Optimize runtime bytecode with local Lean proofs and supplied execution cases.
     OptimizeRuntime {
         #[arg(long)]
@@ -138,6 +150,23 @@ fn main() -> Result<()> {
             runtime::scenario::check(&original, &candidate, &scenarios, &out)?;
             println!(
                 "Supplied scenarios passed concrete replay. No whole-contract equivalence proof.\nEvidence: {}",
+                out.display()
+            );
+        }
+        Action::CertifyRuntimeRegion {
+            original,
+            candidate,
+            entry_pc,
+            out,
+        } => {
+            let original = runtime::input::read_bytecode(&original)?;
+            let candidate = runtime::input::read_bytecode(&candidate)?;
+            prepare_parent(&out)?;
+            let report = runtime::region::certify(&original, &candidate, entry_pc, &out)?;
+            println!(
+                "Region {}..{} certified under stated stack, gas and state conditions. Stops before JUMP; no whole-contract equivalence proof.\nEvidence: {}",
+                report.entry_pc,
+                report.exit_pc,
                 out.display()
             );
         }

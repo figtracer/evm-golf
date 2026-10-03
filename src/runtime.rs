@@ -27,6 +27,7 @@ mod calls;
 pub mod input;
 mod layout;
 mod precompile;
+pub mod region;
 pub mod scenario;
 pub use layout::LayoutAnalysis;
 

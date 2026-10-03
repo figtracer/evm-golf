@@ -1,0 +1,13 @@
+import $image_module
+set_option Elab.async false
+set_option maxRecDepth 131072
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream
+namespace $namespace
+
+theorem originalSite : MulPowerAt originalCode (UInt256.ofNat $entry_pc) .PUSH1 1 5 :=
+  ⟨by decide +kernel, by decide +kernel⟩
+theorem candidateSite : ShiftPowerAt candidateCode (UInt256.ofNat $entry_pc) .PUSH1 1 5 :=
+  ⟨by decide +kernel, by decide +kernel⟩
+$decoded_facts
+end $namespace

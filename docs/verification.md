@@ -18,7 +18,7 @@ Reuse is local to siblings; there is no general stack scheduling.
 
 ## Lean proofs
 
-Each accepted candidate has three universally quantified theorems:
+Each accepted expression candidate has three universally quantified theorems:
 
 1. Original and candidate expressions agree for all input words `x` and `y`.
 2. Baseline bytecode computes the original expression.
@@ -81,7 +81,8 @@ bytecode and proof evidence. Results are kept outside the source repository.
 | --- | ---: |
 | Input expression | 4,096 bytes / 128 nodes |
 | E-graph search | 10,000 nodes / 30 iterations / 2 seconds |
-| Lean proof attempts | 60 seconds per proof file, after toolchain version lookup |
+| Expression/local-runtime Lean proof attempts | 60 seconds per proof file, after toolchain version lookup |
+| Upstream region proofs | 45 seconds per freshly compiled module |
 | Campaign input | 64 proposals / 1 MiB |
 | Runtime input file / compact fixture JSON | 1 MiB |
 | Runtime replay batch | 256 transactions / 30 million gas per transaction / 300 million total gas per program |
@@ -102,6 +103,11 @@ with proofs tied to the exact replaced bytes. Compact-mode
 relocation remains Rust-checked. Neither certificate proves full runtime execution.
 Solidity checked arithmetic may revert where these expressions wrap. A valid expression rewrite alone does not justify changing an
 arbitrary Solidity contract.
+
+The opt-in [internal-region checker](regions.md) uses a separate pinned upstream
+interpreter and proves reductions to related boundary states under explicit gas,
+stack and deployed-code conditions. It stops before JUMP and does not establish
+entry reachability, suffix outcomes or correspondence with revm.
 
 The CLI is a local developer tool, not a sandbox for public code execution.
 Submissions contain expression strings, not arbitrary Lean programs or bytecode.

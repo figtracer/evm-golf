@@ -7,11 +7,13 @@
 | `src/expr.rs` | Grammar, wrapping evaluation, rewrite rules, cost-guided search |
 | `src/evm.rs` | Bytecode generation, revm execution, gas checks |
 | `src/proof.rs` | Lean source generation and pinned-toolchain verification |
+| `src/proof/upstream.rs` | Separate pinned upstream region proof runner |
 | `src/runtime.rs` | Runtime CFG, local rewriting, relocation, and differential execution |
 | `src/runtime/` | Fixed-layout certificates, layout analysis, bounded inputs, account fixtures, bounded call/effect and precompile replay guards |
 | `src/contest.rs` | Fixed puzzles, submissions, ranking |
 | `src/campaign.rs` | Batch attempts, failure evidence, optimizer comparisons |
 | `src/main.rs` | CLI arguments and output |
+| `lean/upstream/` | Generic upstream interpreter region lemmas and trusted generation templates |
 | `lean/Model.lean` | The limited bytecode semantics used by the proofs |
 | `lean/Fragment.lean` | Reusable exact power-of-two fragment execution proofs |
 | `lean/Literals.lean` | Two-literal AND/SHL folds with preserved transient stack peaks |
@@ -55,6 +57,13 @@ sites, replacements inside PUSH data, and mismatched local proofs.
 
 Do not treat a normal `cargo test` run as validation of the Lean path. Those
 integration tests are explicitly ignored until requested with `--ignored`.
+
+The optional [upstream region checker](../regions.md) needs its separate setup.
+The standard check script covers its input validation and shared process handling;
+it does not install or run the upstream semantics toolchain. After that setup,
+`bash scripts/check-upstream.sh` exercises the actual CLI and kernel with a
+valid region and rejects an incorrect candidate. CI runs this separate check
+as well. Validate representative full contract images when changing generation.
 
 ## Compatibility
 

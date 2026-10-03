@@ -27,6 +27,9 @@ been validated by this project.
 To use an existing installation, set `LEAN` to a Lean 4.34.0 executable. The
 checker first uses `LEAN`, then the checkout-local binary, then `lean` on PATH.
 
+The optional [internal-region checker](regions.md) has its own pinned Lean 4.22
+setup. It does not replace this toolchain or the expression verifier.
+
 ## First optimization
 
 Run commands from the repository root:

@@ -1,0 +1,21 @@
+import Bytes
+import Regions
+set_option Elab.async false
+set_option maxRecDepth 131072
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream
+namespace $namespace
+
+def original : List Nat := $original_list
+def candidate : List Nat := $candidate_list
+def originalCode : ByteArray := GolfArtifactBytes.encode original
+def candidateCode : ByteArray := GolfArtifactBytes.encode candidate
+
+theorem originalRange : ∀ x ∈ original, x < 256 := GolfArtifactBytes.range_of_all original (by decide)
+theorem candidateRange : ∀ x ∈ candidate, x < 256 := GolfArtifactBytes.range_of_all candidate (by decide)
+theorem originalRoundtrip : GolfArtifactBytes.bytes originalCode = original :=
+  GolfArtifactBytes.bytes_encode original originalRange
+theorem candidateRoundtrip : GolfArtifactBytes.bytes candidateCode = candidate :=
+  GolfArtifactBytes.bytes_encode candidate candidateRange
+
+end $namespace
