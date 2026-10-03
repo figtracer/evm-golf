@@ -42,6 +42,12 @@ pub(crate) const NORMALIZATION: &str = r#"namespace GolfProof
   congr 1
   apply BitVec.eq_of_toNat_eq
   simp
+ theorem shift_power (x : BitVec w) (n : Nat) :
+     x <<< n = x * BitVec.ofNat w (2 ^ n) := by
+   rw [BitVec.shiftLeft_eq_mul_twoPow]
+   congr 1
+   apply BitVec.eq_of_toNat_eq
+   simp
 end GolfProof
 "#;
 

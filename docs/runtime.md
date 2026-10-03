@@ -175,11 +175,13 @@ from any jump. It does not resolve jump values or prove global stack heights.
 It preserves instruction boundaries, all JUMPDEST positions, and total length,
 so PC, CODESIZE, and computed jump offsets remain stable.
 
-The initial rules replace multiplication by zero, one, or two with AND zero,
-ADD zero, or SHL one, retaining the original PUSH width. Each has the same input
+The rules replace multiplication by zero or one with AND zero or ADD zero, and
+multiplication by any other 256-bit power of two with SHL by its exponent. They
+retain the original PUSH width, including padded constants. Each has the same input
 stack requirement, peak growth, and final height, and saves two opcode gas before
-refunds. Lean checks each exact fragment and a certificate containing the complete,
-independently embedded original and candidate byte arrays. The certificate checks
+refunds. Lean validates the exact site list with a [proved checker](../lean/Certificates.lean),
+reusing symbolic fragment proofs. The full certificate contains independently
+embedded original and candidate byte arrays. The certificate checks
 that sorted, nonoverlapping replacements reconstruct the candidate, that every
 other byte is unchanged, and that instruction boundaries, JUMPDEST positions,
 length, and local stack profiles agree. Replacements inside PUSH data are rejected.
@@ -199,7 +201,9 @@ not interpretation of all surrounding contract instructions.
 
 This structural certificate requires Lean even when no rewrite applies. Its closed
 checks use `decide +kernel`, and runtime certificates permit only Lean's standard
-foundational axioms. Expression-specific native proof dependencies are rejected.
+foundational axioms. The final artifact's axiom report covers the shared checker
+and its local proofs transitively. Expression-specific native proof dependencies
+are rejected.
 The existing 60-second proof budget still applies: any timeout is rejected, even within the byte-size
 limit. Kernel checking avoids repeated elaborator work on dense artifacts; no
 universal completion-time guarantee follows. It does not prove reachability,

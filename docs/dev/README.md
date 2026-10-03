@@ -13,8 +13,10 @@
 | `src/campaign.rs` | Batch attempts, failure evidence, optimizer comparisons |
 | `src/main.rs` | CLI arguments and output |
 | `lean/Model.lean` | The limited bytecode semantics used by the proofs |
+| `lean/Fragment.lean` | Reusable exact power-of-two fragment execution proofs |
 | `lean/Stack.lean` | Operational instruction-boundary stack limits for local fragments |
 | `lean/Composition.lean` | Decoded boundaries, fuel and contextual substitution in the bounded model |
+| `lean/Certificates.lean` | Soundness of the shared exact-site checker |
 | `lean/Layout.lean` | Exact fixed-layout artifact reconstruction and local proof binding |
 | `tests/` | Execution, CLI, proof, and campaign regression tests |
 | `challenges.json` | Puzzle IDs, descriptions, and reference expressions |

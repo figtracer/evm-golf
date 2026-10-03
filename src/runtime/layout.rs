@@ -133,8 +133,9 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
             (0, 0x16) // x * 0 = x & 0.
         } else if value == U256::from(1) {
             (0, 0x01) // x * 1 = x + 0.
-        } else if value == U256::from(2) {
-            (1, 0x1b) // x * 2 = x << 1, including wrapping overflow.
+        } else if value.count_ones() == 1 {
+            // A nonzero U256 power has exponent 0..255, fitting every PUSH width.
+            (value.trailing_zeros() as u8, 0x1b) // Includes wrapping overflow.
         } else {
             continue;
         };
@@ -216,15 +217,13 @@ mod tests {
     #[test]
     fn rewrites_keep_widths_stack_limits_and_word_boundaries() {
         for width in [0, 1, 2, 32] {
-            for value in 0..=2u8 {
-                if width == 0 && value != 0 {
-                    continue;
-                }
+            let values = std::iter::once(U256::ZERO)
+                .chain((0..usize::from(width) * 8).map(|shift| U256::from(1) << shift));
+            for value in values {
                 let mut code = bytes("5f35");
                 code.push(0x5f + width);
                 if width > 0 {
-                    code.extend(std::iter::repeat_n(0, usize::from(width) - 1));
-                    code.push(value);
+                    code.extend_from_slice(&value.to_be_bytes::<32>()[32 - usize::from(width)..]);
                 }
                 code.extend(bytes("025f5260205ff3"));
                 let (candidate, rewrites) = transform(&analyze(&code).unwrap()).unwrap();
@@ -248,6 +247,18 @@ mod tests {
                     (1, 0, 1)
                 );
             }
+        }
+        // Values adjacent to powers must not be mistaken for shift rewrites.
+        for literal in [
+            "601f".into(),
+            "6021".into(),
+            "60ff".into(),
+            format!("7f{}", "ff".repeat(32)),
+        ] {
+            let code = bytes(&format!("5f35{literal}025f5260205ff3"));
+            let (candidate, changes) = transform(&analyze(&code).unwrap()).unwrap();
+            assert_eq!(candidate, code);
+            assert!(changes.is_empty());
         }
         // Preserve exceptional stack behavior too, although such cases cannot
         // pass the optimizer's success/revert-only differential validation.

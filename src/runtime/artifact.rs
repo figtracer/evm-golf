@@ -1,11 +1,12 @@
 //! Bind local layout certificates to the complete emitted byte arrays.
 
 use anyhow::{Result, ensure};
-use revm::primitives::HashMap;
 use std::fmt::Write as _;
 
-use super::{MAX_RUNTIME_BYTES, Rewrite, certificates, decode, from_hex};
+use super::{MAX_RUNTIME_BYTES, Rewrite, certificates, from_hex};
 
+const FRAGMENT_MODEL: &str = include_str!("../../lean/Fragment.lean");
+const LOCAL_CERTIFICATES: &str = include_str!("../../lean/Certificates.lean");
 const STACK_MODEL: &str = include_str!("../../lean/Stack.lean");
 const COMPOSITION_MODEL: &str = include_str!("../../lean/Composition.lean");
 const LAYOUT_MODEL: &str = include_str!("../../lean/Layout.lean");
@@ -28,24 +29,23 @@ pub(super) fn certificate(
         rewrites.iter().all(|rewrite| rewrite.required_stack == 1),
         "layout artifacts require one-word fragment prefixes"
     );
-    let (mut source, mut names) = certificates(rewrites)?;
+    // Local soundness is proved once; the kernel checks every actual site below.
+    // Compact-mode certificates still emit their individual fragment theorems.
+    let (mut source, _) = certificates(&[])?;
     writeln!(
         source,
-        "\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_MODEL}"
+        "\n{FRAGMENT_MODEL}\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_MODEL}"
     )
     .unwrap();
     writeln!(
         source,
-        "\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\nnamespace GolfArtifact"
+        "\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\n{LOCAL_CERTIFICATES}\nnamespace GolfArtifact"
     ).unwrap();
     // Embed both actual images independently; never define candidate by applying
     // the proposed patches, which would conceal errors in the Rust emitter.
     writeln!(source, "def original : List Nat := {original:?}").unwrap();
     writeln!(source, "def candidate : List Nat := {candidate:?}").unwrap();
     source.push_str("def sites : List GolfLayout.Site := [\n");
-    let mut unique: HashMap<_, _> = HashMap::default();
-    let mut proofs = Vec::new();
-    let mut bounded = String::new();
     for (i, rewrite) in rewrites.iter().enumerate() {
         let before = from_hex(&rewrite.before)?;
         let after = from_hex(&rewrite.after)?;
@@ -56,92 +56,20 @@ pub(super) fn certificate(
             if i + 1 == rewrites.len() { "" } else { "," }
         )
         .unwrap();
-        // Match certificates()'s first-seen deduplication order while retaining
-        // every concrete site in the final theorem.
-        let next = unique.len();
-        let index = *unique
-            .entry((
-                rewrite.before.as_str(),
-                rewrite.after.as_str(),
-                rewrite.required_stack,
-            ))
-            .or_insert(next);
-        if index == next {
-            let name = format!("runtime_bounded_{index}");
-            writeln!(
-                bounded,
-                "theorem {name} : GolfBounded.FragmentEquivalent {before:?} {after:?} := by"
-            )
-            .unwrap();
-            writeln!(
-                bounded,
-                "  apply GolfBounded.of_unbounded (before := {before:?}) (after := {after:?}) ?_ ?_ runtime_rewrite_{index}"
-            )
-            .unwrap();
-            for bytes in [&before, &after] {
-                ensure!(
-                    bytes.len() >= 2,
-                    "layout fragment must contain PUSH and binary opcode"
-                );
-                writeln!(bounded, "  · exact GolfBounded.push_binary {:?} {} (by decide +kernel) (by decide +kernel)", &bytes[1..bytes.len()-1], bytes[bytes.len()-1]).unwrap();
-            }
-            writeln!(bounded, "#print axioms {name}\n").unwrap();
-            names.push(name);
-            let name = format!("runtime_context_{index}");
-            writeln!(
-                bounded,
-                "theorem {name} : GolfComposition.ContextEquivalent {before:?} {after:?} := by"
-            )
-            .unwrap();
-            writeln!(bounded, "  apply GolfComposition.context_of_fragment (before := {before:?}) (after := {after:?}) (beforeCount := {}) (afterCount := {}) ?_ ?_ runtime_bounded_{index}", decode(&before).len(), decode(&after).len()).unwrap();
-            // Rust proposes the decoding; Lean independently checks each exact
-            // immediate width and reconstructs the complete byte-list witness.
-            for bytes in [&before, &after] {
-                let instructions = decode(bytes);
-                bounded.push_str("  · exact ");
-                for instruction in &instructions {
-                    write!(bounded, "(GolfComposition.Complete.step (op := {}) (immediate := {:?}) (by decide +kernel) ", instruction.bytes[0], &instruction.bytes[1..]).unwrap();
-                }
-                bounded.push_str("GolfComposition.Complete.nil");
-                for _ in instructions {
-                    bounded.push(')');
-                }
-                bounded.push('\n');
-            }
-            writeln!(bounded, "#print axioms {name}\n").unwrap();
-            names.push(name);
-        }
-        proofs.push(index);
     }
-    // Check and cache each closed fact directly in Lean's kernel. Repeated
-    // elaborator reduction with `rfl` exhausted the same 60-second budget on
-    // dense EIP-170 artifacts. This is not native evaluation or a new axiom.
-    source.push_str("]\nend GolfArtifact\n\n");
-    source.push_str(&bounded);
+    // These are kernel reductions, not native evaluation. The aggregate theorem
+    // depends transitively on every site's unbounded, bounded and context proof.
     source.push_str(
-        "theorem layout_artifact :\n  GolfLayout.LayoutArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.sites := by\n  refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩\n  exact ",
+        "]\nend GolfArtifact\n\ntheorem layout_artifact :\n  GolfLayout.LayoutArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.sites := by\n  refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩\n  exact GolfReflected.checkSites_sound GolfArtifact.sites (by decide +kernel)\n#print axioms layout_artifact\n",
     );
-    for index in &proofs {
-        write!(
-            source,
-            "(GolfLayout.CertifiedSites.cons runtime_rewrite_{index} runtime_bounded_{index} runtime_context_{index} "
-        )
-        .unwrap();
-    }
-    source.push_str("GolfLayout.CertifiedSites.nil");
-    for _ in proofs {
-        source.push(')');
-    }
-    source.push_str("\n#print axioms layout_artifact\n");
-    names.push("layout_artifact".into());
-    Ok((source, names))
+    Ok((source, vec!["layout_artifact".into()]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proof;
-    use revm::primitives::hex;
+    use crate::{proof, runtime::decode};
+    use revm::primitives::{U256, hex};
     use std::fs;
     use tempfile::tempdir;
 
@@ -177,24 +105,35 @@ mod tests {
         let mut family_original = vec![0x5f];
         let mut family_candidate = vec![0x5f];
         let mut family_sites = Vec::new();
-        for width in 0..=32 {
-            for value in 0..=2 {
-                if width == 0 && value != 0 {
-                    continue;
-                }
+        for width in 0u8..=32 {
+            let mut values = vec![U256::ZERO];
+            if width > 0 {
+                values.extend([U256::from(1), U256::from(2)]);
+                // Every power at its minimum PUSH width, plus padded tiny values.
+                values.extend(
+                    ((usize::from(width) - 1) * 8..usize::from(width) * 8)
+                        .map(|shift| U256::from(1) << shift),
+                );
+                values.sort_unstable();
+                values.dedup();
+            }
+            for value in values {
                 let mut before = vec![0x5f + width];
                 let mut after = before.clone();
                 if width > 0 {
-                    before.extend(std::iter::repeat_n(0, usize::from(width) - 1));
-                    after.extend(std::iter::repeat_n(0, usize::from(width) - 1));
-                    before.push(value);
-                    after.push(u8::from(value == 2));
+                    before.extend_from_slice(&value.to_be_bytes::<32>()[32 - usize::from(width)..]);
+                    after.extend(std::iter::repeat_n(0, usize::from(width)));
+                    if value > U256::from(1) {
+                        *after.last_mut().unwrap() = value.trailing_zeros() as u8;
+                    }
                 }
                 before.push(0x02);
-                after.push(match value {
-                    0 => 0x16,
-                    1 => 0x01,
-                    _ => 0x1b,
+                after.push(if value.is_zero() {
+                    0x16
+                } else if value == U256::from(1) {
+                    0x01
+                } else {
+                    0x1b
                 });
                 family_sites.push(Rewrite {
                     original_pc: family_original.len(),
@@ -318,18 +257,41 @@ mod tests {
             let mut candidate = from_hex(after).unwrap();
             original.push(0);
             candidate.push(0);
-            let (source, names) = certificate(&original, &candidate, &[rewrite]).unwrap();
-            let mut checked_source = String::new();
-            for line in source.lines() {
-                if line.starts_with("  · exact GolfBounded.push_binary") {
-                    checked_source.push_str("  · exact ");
-                    checked_source.push_str(direct_behavior);
-                    checked_source.push('\n');
-                } else {
-                    checked_source.push_str(line);
-                    checked_source.push('\n');
+            // These deliberately unusual fragments need independent local
+            // proofs so the test isolates the global boundary/profile gate.
+            let (unbounded, _) = certificates(std::slice::from_ref(&rewrite)).unwrap();
+            let (source, _) = certificate(&original, &candidate, &[rewrite]).unwrap();
+            let leaf = &unbounded[unbounded.find("theorem runtime_rewrite_0").unwrap()..];
+            let before_bytes = from_hex(before).unwrap();
+            let after_bytes = from_hex(after).unwrap();
+            let mut local = format!(
+                "{leaf}\ntheorem runtime_bounded_0 : GolfBounded.FragmentEquivalent {before_bytes:?} {after_bytes:?} := by\n  exact GolfBounded.of_unbounded ({direct_behavior}) ({direct_behavior}) runtime_rewrite_0\n#print axioms runtime_bounded_0\n"
+            );
+            local.push_str(&format!("theorem runtime_context_0 : GolfComposition.ContextEquivalent {before_bytes:?} {after_bytes:?} := by\n  apply GolfComposition.context_of_fragment (beforeCount := {}) (afterCount := {}) ?_ ?_ runtime_bounded_0\n", decode(&before_bytes).len(), decode(&after_bytes).len()));
+            for bytes in [&before_bytes, &after_bytes] {
+                let instructions = decode(bytes);
+                local.push_str("  · exact ");
+                for instruction in &instructions {
+                    write!(local, "(GolfComposition.Complete.step (op := {}) (immediate := {:?}) (by decide +kernel) ", instruction.bytes[0], &instruction.bytes[1..]).unwrap();
                 }
+                local.push_str("GolfComposition.Complete.nil");
+                for _ in instructions {
+                    local.push(')');
+                }
+                local.push('\n');
             }
+            local.push_str("#print axioms runtime_context_0\n");
+            let checked_source = source
+                .replace("theorem layout_artifact :", &format!("{local}\ntheorem layout_artifact :"))
+                .replace("GolfReflected.checkSites_sound GolfArtifact.sites (by decide +kernel)", "GolfLayout.CertifiedSites.cons runtime_rewrite_0 runtime_bounded_0 runtime_context_0 GolfLayout.CertifiedSites.nil");
+            let names = [
+                "runtime_rewrite_0",
+                "runtime_bounded_0",
+                "runtime_context_0",
+                "layout_artifact",
+            ]
+            .map(str::to_owned)
+            .to_vec();
             let (declarations, _) = checked_source
                 .split_once("theorem layout_artifact :")
                 .unwrap();
@@ -378,12 +340,41 @@ mod tests {
         fs::write(
             &path,
             source.replace(
-                "CertifiedSites.cons runtime_rewrite_1",
-                "CertifiedSites.cons runtime_rewrite_0",
+                "GolfReflected.checkSites_sound GolfArtifact.sites",
+                "GolfReflected.checkSites_sound [⟨2, [96,2,2], [96,1,27]⟩, ⟨2, [96,2,2], [96,1,27]⟩]",
             ),
         )
         .unwrap();
         assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
+        // A correct aggregate type must not hide an untrusted local proof.
+        let path = dir.path().join("UntrustedLocal.lean");
+        fs::write(&path, source
+            .replace("theorem layout_artifact :", "axiom unsupported_local (sites : List GolfLayout.Site) : GolfReflected.checkSites sites = true → GolfLayout.CertifiedSites sites\ntheorem layout_artifact :")
+            .replace("GolfReflected.checkSites_sound GolfArtifact.sites", "unsupported_local GolfArtifact.sites"))
+            .unwrap();
+        let error =
+            proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).unwrap_err();
+        assert!(format!("{error:#}").contains("unexpected axiom dependency: unsupported_local"));
+        let path = dir.path().join("MissingAggregateReport.lean");
+        fs::write(&path, source.replace("#print axioms layout_artifact", "")).unwrap();
+        assert!(proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err());
+        // Wrong shift immediates retain layout, but must fail semantic checking.
+        for exponent in [8usize, 128, 255] {
+            let mut before = vec![0x7f];
+            before.extend_from_slice(&(U256::from(1) << exponent).to_be_bytes::<32>());
+            before.push(0x02);
+            let mut after = vec![0; 34];
+            after[0] = 0x7f;
+            after[32] = (exponent - 1) as u8;
+            after[33] = 0x1b;
+            let wrong = Rewrite {
+                original_pc: 0,
+                before: hex::encode(&before),
+                after: hex::encode(&after),
+                required_stack: 1,
+            };
+            assert!(check(&format!("WrongPower{exponent}"), &before, &after, &[wrong]).is_err());
+        }
     }
     #[test]
     #[ignore = "requires Lean 4.34.0"]
@@ -401,7 +392,7 @@ mod tests {
         source.push_str(r#"theorem context_nonvacuous (x y : Golf.Word) :
   GolfBounded.run 9 [95,53,96,1,27,96,3,1] [] x y = some [3 + 2*x] := by
   exact GolfComposition.context_success (front := [95,53]) (suffix := [96,3,1])
-    runtime_context_0 ((GolfComposition.Complete.step (op := 95) (immediate := []) (by decide +kernel) (GolfComposition.Complete.step (op := 53) (immediate := []) (by decide +kernel) GolfComposition.Complete.nil))) ((GolfComposition.Complete.step (op := 96) (immediate := [3]) (by decide +kernel) (GolfComposition.Complete.step (op := 1) (immediate := []) (by decide +kernel) GolfComposition.Complete.nil))) [] x y [3 + 2*x]
+    (GolfReflected.checkLocal_sound ⟨0, [96,2,2], [96,1,27]⟩ (by decide +kernel)).contextual ((GolfComposition.Complete.step (op := 95) (immediate := []) (by decide +kernel) (GolfComposition.Complete.step (op := 53) (immediate := []) (by decide +kernel) GolfComposition.Complete.nil))) ((GolfComposition.Complete.step (op := 96) (immediate := [3]) (by decide +kernel) (GolfComposition.Complete.step (op := 1) (immediate := []) (by decide +kernel) GolfComposition.Complete.nil))) [] x y [3 + 2*x]
     (by simp [GolfBounded.run, Golf.run, Golf.immediate])
 #print axioms context_nonvacuous
 -- A changed shift immediate is a semantic error even when all boundaries match.

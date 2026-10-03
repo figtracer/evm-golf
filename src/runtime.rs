@@ -706,7 +706,7 @@ fn replacement(ops: &[&Instruction]) -> Option<(usize, Vec<u8>, usize)> {
 
 fn certificates(rewrites: &[Rewrite]) -> Result<(String, Vec<String>)> {
     let mut source = format!(
-        "{}\n{}\nset_option maxRecDepth 4096\nset_option linter.unusedVariables false\nset_option pp.fullNames true\n",
+        "{}\n{}\nset_option maxRecDepth 4096\nset_option linter.unusedVariables false\nset_option linter.unusedSimpArgs false\nset_option pp.fullNames true\n",
         include_str!("../lean/Model.lean"),
         proof::NORMALIZATION,
     );
@@ -725,7 +725,7 @@ fn certificates(rewrites: &[Rewrite]) -> Result<(String, Vec<String>)> {
         } else {
             "a :: tail"
         };
-        source.push_str(&format!("theorem {name} (a x y : Golf.Word) (tail : List Golf.Word) :\n  ∃ output, Golf.run {} {:?} ({stack}) x y = some output ∧\n    Golf.run {} {:?} ({stack}) x y = some output := by\n  refine ⟨_, rfl, ?_⟩\n  first | rfl | simp [Golf.run, Golf.immediate, GolfProof.shift_one, BitVec.mul_two, BitVec.two_mul]\n#print axioms {name}\n\n", before.len()+1, before, after.len()+1, after));
+        source.push_str(&format!("theorem {name} (a x y : Golf.Word) (tail : List Golf.Word) :\n  ∃ output, Golf.run {} {:?} ({stack}) x y = some output ∧\n    Golf.run {} {:?} ({stack}) x y = some output := by\n  refine ⟨_, rfl, ?_⟩\n  simp [Golf.run, Golf.immediate, GolfProof.shift_one, GolfProof.shift_power, BitVec.mul_two, BitVec.two_mul, BitVec.mul_comm]\n#print axioms {name}\n\n", before.len()+1, before, after.len()+1, after));
         names.push(name);
     }
     Ok((source, names))
