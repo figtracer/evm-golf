@@ -23,40 +23,10 @@ def binaryPost (s : EVM.State) (value : UInt256) (tail : List UInt256) (cost : N
 
 @[simp] theorem cost_mul (s : EVM.State) : C' s .MUL = 5 := by rfl
 
-theorem X_mul (s : EVM.State) (a b : UInt256) (tail : List UInt256) (fuel : Nat)
-    (jumps : Array UInt256)
-    (decoded : decode s.executionEnv.code s.pc = some (.MUL, none))
-    (stack : s.stack = b :: a :: tail)
-    (gas : 5 ≤ s.gasAvailable.toNat)
-    (height : tail.length < 1024) :
-    X (fuel + 2) jumps s = X (fuel + 1) jumps (binaryPost s (UInt256.mul b a) tail 5) := by
-  conv_lhs => unfold X
-  simp only [decoded]
-  simp [mem_mul, cost_mul, Operation.isCreate, δ, α, EVM.step,
-    EVM.State.replaceStackAndIncrPC, EVM.State.incrPC, Stack.push,
-    binaryPost, stack, show ¬s.gasAvailable.toNat < 5 by omega,
-    show ¬1024 < tail.length + 1 by omega]
-  rfl
-
 @[simp] theorem mem_shl (s : EVM.State) : memoryExpansionCost s .SHL = 0 := by
   simp [memoryExpansionCost, memoryExpansionCost.μᵢ']
 
 @[simp] theorem cost_shl (s : EVM.State) : C' s .SHL = 3 := by rfl
-
-theorem X_shl (s : EVM.State) (a b : UInt256) (tail : List UInt256) (fuel : Nat)
-    (jumps : Array UInt256)
-    (decoded : decode s.executionEnv.code s.pc = some (.SHL, none))
-    (stack : s.stack = b :: a :: tail)
-    (gas : 3 ≤ s.gasAvailable.toNat)
-    (height : tail.length < 1024) :
-    X (fuel + 2) jumps s = X (fuel + 1) jumps (binaryPost s (UInt256.shiftLeft a b) tail 3) := by
-  conv_lhs => unfold X
-  simp only [decoded]
-  simp [mem_shl, cost_shl, Operation.isCreate, δ, α, EVM.step,
-    EVM.State.replaceStackAndIncrPC, EVM.State.incrPC, Stack.push,
-    binaryPost, stack, show ¬s.gasAvailable.toNat < 3 by omega,
-    show ¬1024 < tail.length + 1 by omega]
-  rfl
 
 theorem word_sub_toNat (g : UInt256) (n : Nat) (small : n < UInt256.size)
     (enough : n ≤ g.toNat) :
@@ -101,22 +71,6 @@ theorem step_push (s : EVM.State) (p : Operation.POp) (v : UInt256)
         execLength := s.execLength + 1 } := by
   cases p <;> first | exact False.elim (nonzero rfl) | rfl
 
-theorem X_push_width (s : EVM.State) (p : Operation.POp) (v : UInt256)
-    (width fuel : Nat) (jumps : Array UInt256) (nonzero : p ≠ .PUSH0)
-    (decoded : decode s.executionEnv.code s.pc = some (.Push p, some (v, width)))
-    (gas : 3 ≤ s.gasAvailable.toNat) (height : s.stack.length < 1024) :
-    X (fuel + 2) jumps s = X (fuel + 1) jumps (pushedWidth s v width) := by
-  conv_lhs => unfold X
-  simp only [decoded]
-  simp [mem_push, cost_push s p nonzero, Operation.isCreate, δ, α,
-    show ¬s.gasAvailable.toNat < 3 by omega,
-    show ¬1024 < s.stack.length + 1 by omega]
-  change (do
-    let next ← EVM.step (fuel + 1) 3 (some (.Push p, some (v, width))) s
-    X (fuel + 1) jumps next) = _
-  rw [step_push s p v width fuel 3 nonzero]
-  rfl
-
 def stopped (s : EVM.State) : EVM.State :=
   { s with returnData := ByteArray.empty, execLength := s.execLength + 1 }
 
@@ -130,11 +84,9 @@ theorem X_stop (s : EVM.State) (fuel : Nat) (jumps : Array UInt256)
     (height : s.stack.length ≤ 1024) :
     X (fuel + 2) jumps s = .ok (.success (stopped s) ByteArray.empty) := by
   conv_lhs => unfold X
-  simp [decoded, mem_stop, cost_stop, Operation.isCreate, δ, α, EVM.step,
-    stopped, show ¬1024 < s.stack.length by omega]
+  simp [decoded, mem_stop, cost_stop, Operation.isCreate, δ, α, show ¬1024 < s.stack.length by omega]
   change Except.ok (ExecutionResult.success (stopped { s with gasAvailable := s.gasAvailable - UInt256.ofNat 0 }) ByteArray.empty) = _
   rw [word_sub_zero]
-  rfl
 
 inductive NonterminalStackOp : Operation .EVM → Prop where
   | push (p : Operation.POp) (nonzero : p ≠ .PUSH0) : NonterminalStackOp (.Push p)
@@ -212,16 +164,16 @@ theorem step_mul (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat
     (a b : UInt256) (tail : List UInt256) (stack : s.stack = b :: a :: tail) :
     EVM.step (fuel + 1) cost (some (.MUL, arg)) s =
       .ok (binaryPost s (UInt256.mul b a) tail cost) := by
-  simp [EVM.step, stack, binaryPost, EVM.State.replaceStackAndIncrPC,
-    EVM.State.incrPC, Stack.push]
+  have specified : { s with stack := b :: a :: tail } = s := by rw [←stack]
+  rw [←specified]
   rfl
 
 theorem step_shl (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat))
     (a b : UInt256) (tail : List UInt256) (stack : s.stack = b :: a :: tail) :
     EVM.step (fuel + 1) cost (some (.SHL, arg)) s =
       .ok (binaryPost s (UInt256.shiftLeft a b) tail cost) := by
-  simp [EVM.step, stack, binaryPost, EVM.State.replaceStackAndIncrPC,
-    EVM.State.incrPC, Stack.push]
+  have specified : { s with stack := b :: a :: tail } = s := by rw [←stack]
+  rw [←specified]
   rfl
 
 inductive ExtendedStackOp : Operation .EVM → Prop where
@@ -254,24 +206,24 @@ theorem step_add (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat
     (a b : UInt256) (tail : List UInt256) (stack : s.stack = b :: a :: tail) :
     EVM.step (fuel+1) cost (some (.ADD,arg)) s =
       .ok (binaryPost s (UInt256.add b a) tail cost) := by
-  simp [EVM.step, stack, binaryPost, EVM.State.replaceStackAndIncrPC,
-    EVM.State.incrPC, Stack.push]
+  have specified : { s with stack := b :: a :: tail } = s := by rw [←stack]
+  rw [←specified]
   rfl
 
 theorem step_swap1 (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat))
     (a b : UInt256) (tail : List UInt256) (stack : s.stack = b :: a :: tail) :
     EVM.step (fuel+1) cost (some (.SWAP1,arg)) s =
       .ok (binaryPost s a (b :: tail) cost) := by
-  simp [EVM.step, stack, binaryPost, EVM.State.replaceStackAndIncrPC,
-    EVM.State.incrPC, EvmYul.swap]
+  have specified : { s with stack := b :: a :: tail } = s := by rw [←stack]
+  rw [←specified]
   rfl
 
 theorem step_dup1 (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat))
     (a : UInt256) (tail : List UInt256) (stack : s.stack = a :: tail) :
     EVM.step (fuel+1) cost (some (.DUP1,arg)) s =
       .ok (binaryPost s a (a :: tail) cost) := by
-  simp [EVM.step, stack, binaryPost, EVM.State.replaceStackAndIncrPC,
-    EVM.State.incrPC, EvmYul.dup]
+  have specified : { s with stack := a :: tail } = s := by rw [←stack]
+  rw [←specified]
   rfl
 
 theorem step_push0 (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat)) :
@@ -343,6 +295,39 @@ theorem X_next_extended (s next : EVM.State) (fuel : Nat) (jumps : Array UInt256
     rw [canonical]
     rfl
 
+
+theorem X_mul (s : EVM.State) (a b : UInt256) (tail : List UInt256) (fuel : Nat)
+    (jumps : Array UInt256)
+    (decoded : decode s.executionEnv.code s.pc = some (.MUL, none))
+    (stack : s.stack = b :: a :: tail)
+    (gas : 5 ≤ s.gasAvailable.toNat)
+    (height : tail.length < 1024) :
+    X (fuel + 2) jumps s = X (fuel + 1) jumps (binaryPost s (UInt256.mul b a) tail 5) := by
+  apply X_next s (binaryPost s (UInt256.mul b a) tail 5) fuel jumps .MUL none .mul decoded
+  · exact ⟨gas, by simp [δ, stack], by simp [δ, α, stack]; omega⟩
+  · exact step_mul s fuel 5 none a b tail stack
+
+theorem X_shl (s : EVM.State) (a b : UInt256) (tail : List UInt256) (fuel : Nat)
+    (jumps : Array UInt256)
+    (decoded : decode s.executionEnv.code s.pc = some (.SHL, none))
+    (stack : s.stack = b :: a :: tail)
+    (gas : 3 ≤ s.gasAvailable.toNat)
+    (height : tail.length < 1024) :
+    X (fuel + 2) jumps s = X (fuel + 1) jumps (binaryPost s (UInt256.shiftLeft a b) tail 3) := by
+  apply X_next s (binaryPost s (UInt256.shiftLeft a b) tail 3) fuel jumps .SHL none .shl decoded
+  · exact ⟨gas, by simp [δ, stack], by simp [δ, α, stack]; omega⟩
+  · exact step_shl s fuel 3 none a b tail stack
+
+theorem X_push_width (s : EVM.State) (p : Operation.POp) (v : UInt256)
+    (width fuel : Nat) (jumps : Array UInt256) (nonzero : p ≠ .PUSH0)
+    (decoded : decode s.executionEnv.code s.pc = some (.Push p, some (v, width)))
+    (gas : 3 ≤ s.gasAvailable.toNat) (height : s.stack.length < 1024) :
+    X (fuel + 2) jumps s = X (fuel + 1) jumps (pushedWidth s v width) := by
+  apply X_next s (pushedWidth s v width) fuel jumps (.Push p) (some (v, width))
+    (.push p nonzero) decoded
+  · exact ⟨by simpa [cost_push s p nonzero] using gas,
+      by simp [δ], by simp [δ, α]; omega⟩
+  · simpa [cost_push s p nonzero] using step_push s p v width fuel 3 nonzero
 
 #print axioms X_next
 #print axioms X_next_extended
