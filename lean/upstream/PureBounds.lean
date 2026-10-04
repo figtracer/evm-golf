@@ -97,6 +97,20 @@ theorem canonical_step_dup1 (s : EVM.State) (fuel : Nat)
   rw [cost_dup1]
   exact step_dup1 s fuel 3 arg a tail stack
 
+theorem remaining_enough (initial available spent cost total : Nat)
+    (within : spent + cost ≤ total) (funded : total ≤ initial)
+    (balance : available = initial - spent) : cost ≤ available := by
+  omega
+
+theorem remaining_sub (initial current : UInt256) (spent cost total : Nat)
+    (small : cost < UInt256.size) (within : spent + cost ≤ total)
+    (funded : total ≤ initial.toNat)
+    (balance : current.toNat = initial.toNat - spent) :
+    (current - UInt256.ofNat cost).toNat = initial.toNat - (spent + cost) := by
+  rw [word_sub_toNat current cost small
+    (remaining_enough initial.toNat current.toNat spent cost total within funded balance), balance]
+  omega
+
 end GolfPureBounds
 
 #print axioms GolfPureBounds.bounds_push
@@ -113,3 +127,6 @@ end GolfPureBounds
 #print axioms GolfPureBounds.canonical_step_add
 #print axioms GolfPureBounds.canonical_step_swap1
 #print axioms GolfPureBounds.canonical_step_dup1
+
+#print axioms GolfPureBounds.remaining_enough
+#print axioms GolfPureBounds.remaining_sub

@@ -521,6 +521,8 @@ impl Span {
                 }
             }
             writeln!(definitions, "def stage{} {code_binder} (s : EVM.State) {binders} (tail : List UInt256) : EVM.State :=\n {body}", i+1).unwrap();
+            let previous_spent = spent;
+            let total_gas = self.source.gas;
             spent += cost;
             writeln!(
                 gas_proof,
@@ -531,7 +533,7 @@ impl Span {
             match segment.kind {
                 SegmentKind::Mask => writeln!(gas_proof, "  change (spend ({prev}).gasAvailable 12).toNat = _\n  rw [spend_nat _ 12 (by rw [g{i}]; omega),g{i}] <;> omega").unwrap(),
                 SegmentKind::Power { .. } => writeln!(gas_proof, "  change (({prev}).gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5).toNat = _\n  have h := word_sub_toNat ({prev}).gasAvailable 3 (by decide) (by rw [g{i}]; omega)\n  rw [word_sub_toNat _ 5 (by decide) (by rw [h,g{i}]; omega),h,g{i}] <;> omega").unwrap(),
-                SegmentKind::Same { .. } => writeln!(gas_proof, "  change (({prev}).gasAvailable - UInt256.ofNat {cost}).toNat = _\n  rw [word_sub_toNat _ {cost} (by decide) (by rw [g{i}]; omega),g{i}] <;> omega").unwrap(),
+                SegmentKind::Same { .. } => writeln!(gas_proof, "  change (({prev}).gasAvailable - UInt256.ofNat {cost}).toNat = _\n  exact GolfPureBounds.remaining_sub s.gasAvailable ({prev}).gasAvailable {previous_spent} {cost} {total_gas} (by decide) (by decide) gas g{i}").unwrap(),
             }
             let pc = segment.pc;
             if i == 0 {
@@ -650,7 +652,7 @@ impl Span {
                         };
                         format!("GolfPureBounds.bounds_{name} ({prev})")
                     };
-                    writeln!(preparations, " have bounds{i} : FullXBounds ({prev}) {operation} := {bounds}\n  (by rw [g{i}]; omega)\n  (by simp only [stack{i},List.length_cons]; omega)\n  (by simp only [stack{i},List.length_cons]; omega)\n have step{i} : EVM.step (({source_fuel})+1) (C' ({prev}) {operation}) (some ({operation},{argument})) ({prev}) = .ok ({next}) := {step}").unwrap();
+                    writeln!(preparations, " have bounds{i} : FullXBounds ({prev}) {operation} := {bounds}\n  (GolfPureBounds.remaining_enough _ _ {previous_spent} {cost} {total_gas} (by decide) gas g{i})\n  (by simp only [stack{i},List.length_cons]; omega)\n  (by simp only [stack{i},List.length_cons]; omega)\n have step{i} : EVM.step (({source_fuel})+1) (C' ({prev}) {operation}) (some ({operation},{argument})) ({prev}) = .ok ({next}) := {step}").unwrap();
                     writeln!(constructors," apply MixedTrace.{constructor} ({prev}) ({next}) {trace_final} ({source_fuel}) ({target_fuel}) {powers} {masks} {operation} {argument} {allowed} original{i} candidate{i} bounds{i} step{i}").unwrap();
                 }
             }

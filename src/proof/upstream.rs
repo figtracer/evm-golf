@@ -337,6 +337,8 @@ const CHUNK_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfPureBounds.canonical_step_add",
             "GolfPureBounds.canonical_step_swap1",
             "GolfPureBounds.canonical_step_dup1",
+            "GolfPureBounds.remaining_enough",
+            "GolfPureBounds.remaining_sub",
         ],
     ),
     (
