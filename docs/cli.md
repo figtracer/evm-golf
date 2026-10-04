@@ -11,7 +11,7 @@ Every `--out` directory must be new; existing output is never overwritten.
 | `discover-runtime-proposals --bytecode <hex-file>` | Emit unverified, hash-bound stack proposals from bounded search |
 | `optimize-runtime --bytecode <hex-file> (--cases <json-file> or --sequences <json-file> or --scenarios <json-file>) --out <dir>` | Optimize a supported runtime with local proofs; fixed-layout account fixtures also guard external calls |
 | `check-runtime --original <hex-file> --candidate <hex-file> --scenarios <json-file> --out <dir>` | Compare arbitrary Cancun runtimes on supplied account fixtures; concrete tests only |
-| `certify-runtime-region --original <hex-file> --candidate <hex-file> --entry-pc <offset> --out <dir>` | [Conditional internal-region proof](regions.md) against pinned upstream semantics; stops before JUMP |
+| `certify-runtime-region --original <hex-file> --candidate <hex-file> --entry-pc <offset> --out <dir>` | [Conditional power or mask region proof](regions.md) against pinned upstream semantics |
 | `optimize <expression> --out <dir>` | Search for a cheaper expression, then verify it |
 | `check <original> <candidate> --out <dir>` | Verify an independently proposed replacement |
 | `challenges` | Print the fixed puzzle specifications as JSON |

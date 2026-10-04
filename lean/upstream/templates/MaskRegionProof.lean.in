@@ -1,0 +1,37 @@
+import $decode_module
+set_option Elab.async false
+set_option maxRecDepth 4096
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream GolfCountOffset CanonicalMaskWindow
+namespace $namespace
+
+/-- Each side reduces to its own residual call; no equality of residual outcomes is asserted. -/
+theorem compiler_mask_boundary (owner : AccountAddress) (s t : EVM.State)
+    (a : UInt256) (tail : List UInt256) (fuel surplus skipped : Nat)
+    (oldJumps newJumps : Array UInt256)
+    (related : DeployedOffset owner originalCode candidateCode surplus skipped s t)
+    (pc : s.pc = UInt256.ofNat $entry_pc) (stack : s.stack = a :: tail)
+    (gas : 36 ≤ s.gasAvailable.toNat) (height : tail.length ≤ 1020) :
+    X (fuel+13) oldJumps s = X (fuel+1) oldJumps (snapshot s (finalStack a tail) 18 12) ∧
+    X (fuel+10) newJumps t = X (fuel+1) newJumps (snapshot t (finalStack a tail) 18 9) ∧
+    DeployedOffset owner originalCode candidateCode (surplus+9) (skipped+3)
+      (snapshot s (finalStack a tail) 18 12) (snapshot t (finalStack a tail) 18 9) ∧
+    (snapshot s (finalStack a tail) 18 12).pc = UInt256.ofNat $exit_pc ∧
+    (snapshot t (finalStack a tail) 18 9).pc = UInt256.ofNat $exit_pc := by
+  have samePc := congrArg EVM.State.pc related.frame
+  change s.pc = t.pc at samePc
+  have candidatePc : t.pc = UInt256.ofNat $entry_pc := samePc.symm.trans pc
+  have before := beforeDecoded s related.maps.2.2.1.2.1 pc
+  have after := afterDecoded t related.maps.2.2.2.2.1 candidatePc
+  obtain ⟨sourceRun, candidateRun, exitRelation⟩ :=
+    canonical_mask_replacement related a tail fuel oldJumps newJumps before after stack gas height
+  refine ⟨sourceRun, candidateRun, exitRelation, ?_, ?_⟩
+  · simp only [snapshot, pc]
+    rfl
+  · simp only [snapshot, candidatePc]
+    rfl
+
+#print axioms beforeDecoded
+#print axioms afterDecoded
+#print axioms compiler_mask_boundary
+end $namespace

@@ -1,0 +1,41 @@
+import $image_module
+import CanonicalMask
+set_option Elab.async false
+set_option maxRecDepth 131072
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream GolfCountOffset CanonicalMaskWindow
+namespace $namespace
+
+$decoded_facts
+
+theorem beforeDecoded (s : EVM.State)
+    (code : s.executionEnv.code = originalCode)
+    (pc : s.pc = UInt256.ofNat $entry_pc) : BeforeDecoded s := by
+  constructor
+  · simpa only [code, pc] using originalDecoded0
+  · simpa only [code, pc] using originalDecoded1
+  · simpa only [code, pc] using originalDecoded2
+  · simpa only [code, pc] using originalDecoded3
+  · simpa only [code, pc] using originalDecoded4
+  · simpa only [code, pc] using originalDecoded5
+  · simpa only [code, pc] using originalDecoded6
+  · simpa only [code, pc] using originalDecoded7
+  · simpa only [code, pc] using originalDecoded8
+  · simpa only [code, pc] using originalDecoded9
+  · simpa only [code, pc] using originalDecoded10
+  · simpa only [code, pc] using originalDecoded11
+
+theorem afterDecoded (s : EVM.State)
+    (code : s.executionEnv.code = candidateCode)
+    (pc : s.pc = UInt256.ofNat $entry_pc) : AfterDecoded s := by
+  constructor
+  · simpa only [code, pc] using candidateDecoded0
+  · simpa only [code, pc] using candidateDecoded1
+  · simpa only [code, pc] using candidateDecoded2
+  · simpa only [code, pc] using candidateDecoded3
+  · simpa only [code, pc] using candidateDecoded4
+  · simpa only [code, pc] using candidateDecoded5
+  · simpa only [code, pc] using candidateDecoded6
+  · simpa only [code, pc] using candidateDecoded7
+  · simpa only [code, pc] using candidateDecoded8
+end $namespace

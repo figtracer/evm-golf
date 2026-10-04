@@ -38,9 +38,9 @@ upstream/dependency compiled artifacts remain trusted, like the toolchain itself
 source revision checks do not authenticate those compiled artifacts. The existing
 Lean 4.34 expression and runtime rewrite gates are unchanged.
 
-## Supported region
+## Supported regions
 
-The first supported shape is exactly:
+The command selects one of two exact byte patterns. The power region is:
 
 ```text
 original:  PUSH1 32; MUL; ADD; SWAP1; PUSH0; DUP1; DUP1; PUSH2 destination; JUMP
@@ -74,6 +74,32 @@ The proof excludes entry reachability, jump execution, suffix behavior,
 whole-contract equivalence, and formal correspondence with revm. Concrete replay
 with `check-runtime` is separate evidence. Region certificates are not expression
 leaderboard entries and do not alter `optimize-runtime` acceptance.
+
+The mask region is the following exact 18-byte pair:
+
+```text
+original:  6001600160e01b03166001600160e01b0319
+candidate: 6001600160e01b03166400ffffffff60e01b
+```
+
+It checks 12 source instructions and nine candidate instructions, ending at
+`entry_pc + 18` before the next instruction. Its input is `a :: tail`, with
+arbitrary words and at most 1,020 tail items. At least 36 source gas is required;
+the candidate costs 27, increasing its gas surplus by nine. Both output stacks
+are `high :: (low AND a) :: tail`, where `low = 2^224 - 1` and `high = NOT low`.
+The deployed-code relation permits an incoming execution-count offset; the source
+executes three more instructions, increasing that offset by three. All other
+frame fields are preserved subject to the same deployed-code and entry premises.
+For every natural `fuel`, source `X(fuel+13)` and candidate `X(fuel+10)` reduce to
+their respective `X(fuel+1)` calls. Their residual outcomes are not equated.
+This is a source-gas-conditioned statement, not equivalence for every gas limit.
+
+The public Rust `region::certify` function and its power-region JSON remain
+unchanged. `region::certify_selected`, used by the CLI, also accepts the mask pair.
+Its mask JSON records separate instruction counts, execution-count offset,
+candidate gas cost and the same proof limitations; it has no `pushed_destination`.
+Only mask checks compile the additional mask support modules. Surrounding bytes
+are independently bound and may differ, as for the power region.
 
 ## Evidence
 

@@ -68,6 +68,48 @@ const MODULES: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
+#[derive(Clone, Copy)]
+pub(crate) enum RegionKind {
+    Power,
+    Mask,
+}
+
+const MASK_MODULES: &[(&str, &str, &[&str])] = &[
+    (
+        "CountOffset",
+        include_str!("../../lean/upstream/CountOffset.lean"),
+        &[
+            "GolfCountOffset.of_exact",
+            "GolfCountOffset.zero_to_exact",
+            "GolfCountOffset.step_sub",
+            "GolfCountOffset.step_and",
+            "GolfCountOffset.step_not",
+        ],
+    ),
+    (
+        "MaskSupport",
+        include_str!("../../lean/upstream/MaskSupport.lean"),
+        &[
+            "CanonicalMaskWindow.word_add_nat",
+            "CanonicalMaskWindow.snapshot_push",
+            "CanonicalMaskWindow.snapshot_binary",
+            "CanonicalMaskWindow.spend_nat",
+            "CanonicalMaskWindow.X_next_extra",
+        ],
+    ),
+    (
+        "CanonicalMask",
+        include_str!("../../lean/upstream/CanonicalMask.lean"),
+        &[
+            "CanonicalMaskWindow.before_execution",
+            "CanonicalMaskWindow.after_execution",
+            "CanonicalMaskWindow.canonical_mask_replacement",
+            "CanonicalMaskWindow.mask_identity",
+            "CanonicalMaskWindow.final_relation",
+        ],
+    ),
+];
+
 #[derive(Deserialize)]
 struct Manifest {
     #[serde(rename = "packagesDir")]
@@ -86,7 +128,7 @@ struct Package {
 }
 
 /// Called only after the trusted generator writes the three fixed certificate files.
-pub(crate) fn verify_region(out: &Path) -> Result<String> {
+pub(crate) fn verify_region(out: &Path, kind: RegionKind) -> Result<String> {
     let out = out.canonicalize()?;
     for entry in fs::read_dir(&out)? {
         let path = entry?.path();
@@ -162,7 +204,11 @@ pub(crate) fn verify_region(out: &Path) -> Result<String> {
             "trust": "installed Lean and pinned upstream/dependency build artifacts are trusted; local certificate support modules are rebuilt from embedded sources"
         }))?,
     )?;
-    for (name, source, _) in MODULES {
+    let additional = match kind {
+        RegionKind::Power => &[][..],
+        RegionKind::Mask => MASK_MODULES,
+    };
+    for (name, source, _) in MODULES.iter().chain(additional) {
         let path = out.join(format!("{name}.lean"));
         ensure!(
             !path.exists(),
@@ -171,19 +217,34 @@ pub(crate) fn verify_region(out: &Path) -> Result<String> {
         );
         fs::write(path, source)?;
     }
+    let region_roots: &[&str] = match kind {
+        RegionKind::Power => &[
+            "GolfCertificates.Region.compilerTrace",
+            "GolfCertificates.Region.compiler_region_boundary",
+        ],
+        RegionKind::Mask => &[
+            "GolfCertificates.Mask.beforeDecoded",
+            "GolfCertificates.Mask.afterDecoded",
+            "GolfCertificates.Mask.compiler_mask_boundary",
+        ],
+    };
+    let image_roots: &[&str] = match kind {
+        RegionKind::Power => &[],
+        RegionKind::Mask => &[
+            "GolfCertificates.originalRoundtrip",
+            "GolfCertificates.candidateRoundtrip",
+            "GolfCertificates.originalWindowFetch",
+            "GolfCertificates.candidateWindowFetch",
+        ],
+    };
     let generated: &[(&str, &[&str])] = &[
-        ("Images", &[]),
+        ("Images", image_roots),
         ("Decode", &[]),
-        (
-            "RegionProof",
-            &[
-                "GolfCertificates.Region.compilerTrace",
-                "GolfCertificates.Region.compiler_region_boundary",
-            ],
-        ),
+        ("RegionProof", region_roots),
     ];
     for (name, expected) in MODULES
         .iter()
+        .chain(additional)
         .map(|(name, _, roots)| (*name, *roots))
         .chain(generated.iter().copied())
     {

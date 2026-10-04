@@ -48,7 +48,7 @@ enum Action {
         out: PathBuf,
     },
     /// Certify a supported internal region with pinned upstream EVM semantics.
-    /// Ends before JUMP; does not prove whole-contract equivalence.
+    /// Supports power and mask regions; does not prove whole-contract equivalence.
     CertifyRuntimeRegion {
         #[arg(long)]
         original: PathBuf,
@@ -198,11 +198,17 @@ fn main() -> Result<()> {
             let original = runtime::input::read_bytecode(&original)?;
             let candidate = runtime::input::read_bytecode(&candidate)?;
             prepare_parent(&out)?;
-            let report = runtime::region::certify(&original, &candidate, entry_pc, &out)?;
+            let report = runtime::region::certify_selected(&original, &candidate, entry_pc, &out)?;
+            let (exit_pc, boundary) = match report {
+                runtime::region::SelectedRegionCertificate::Power(report) => {
+                    (report.exit_pc, "Stops before JUMP")
+                }
+                runtime::region::SelectedRegionCertificate::Mask(report) => {
+                    (report.exit_pc, "Stops after the mask replacement")
+                }
+            };
             println!(
-                "Region {}..{} certified under stated stack, gas and state conditions. Stops before JUMP; no whole-contract equivalence proof.\nEvidence: {}",
-                report.entry_pc,
-                report.exit_pc,
+                "Region {entry_pc}..{exit_pc} certified under stated stack, gas and state conditions. {boundary}; no whole-contract equivalence proof.\nEvidence: {}",
                 out.display()
             );
         }

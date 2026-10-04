@@ -1,0 +1,81 @@
+import Bytes
+import Regions
+set_option Elab.async false
+set_option maxRecDepth 131072
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream
+namespace CanonicalFetch
+
+theorem byte_get (a : ByteArray) (i : Nat) : a.get? i = a.data[i]? := by
+ simp only [ByteArray.get?,getElem?_def,ByteArray.size,ByteArray.get]
+
+theorem extract_data (a : ByteArray) (start stop : Nat)
+ (ordered : start ≤ stop) (small : stop < 2^64) :
+ (a.extract' start stop).data = a.data.extract start stop := by
+ have smallStart : start < 2^64 := by omega
+ change start < 18446744073709551616 at smallStart
+ change stop < 18446744073709551616 at small
+ simp [ByteArray.extract',smallStart,small,ByteArray.extract,ByteArray.copySlice,
+   ByteArray.empty,Nat.add_sub_of_le ordered]
+
+theorem extract_of_fetch (a : ByteArray) (start width : Nat) (wanted : Array UInt8)
+ (length : wanted.size = width) (bound : start+width ≤ a.size)
+ (small : start+width < 2^64)
+ (fetch : ∀ i, i < width → a.data[start+i]? = wanted[i]?) :
+ a.extract' start (start+width) = ByteArray.mk wanted := by
+ change ByteArray.mk ((a.extract' start (start+width)).data) = ByteArray.mk wanted
+ apply congrArg ByteArray.mk
+ rw [extract_data a start (start+width) (by omega) small]
+ apply Array.ext_getElem?
+ intro i
+ rw [Array.getElem?_extract]
+ have sizeBound : start+width ≤ a.data.size := bound
+ rw [Nat.min_eq_left sizeBound,Nat.add_sub_cancel_left]
+ split
+ · rename_i h
+   exact fetch i h
+ · rename_i h
+   symm
+   simp only [getElem?_eq_none_iff]
+   omega
+
+end CanonicalFetch
+namespace CanonicalFetch
+
+-- Derive canonical PUSH-immediate extraction from already proved byte fetches.
+theorem slice_of_window (code window : ByteArray) (base windowLength start width : Nat)
+ (windowSize : window.size = windowLength)
+ (codeSize : base+windowLength ≤ code.size)
+ (small : base+windowLength < 2^64)
+ (inside : start+width ≤ windowLength)
+ (fetch : ∀ i, i < windowLength → code.data[base+i]? = window.data[i]?) :
+ code.extract' (base+start) (base+start+width) =
+ ByteArray.mk (window.data.extract start (start+width)) := by
+ have windowDataSize : window.data.size = windowLength := windowSize
+ apply extract_of_fetch code (base+start) width (window.data.extract start (start+width))
+ · rw [Array.size_extract,windowDataSize,Nat.min_eq_left inside,Nat.add_sub_cancel_left]
+ · omega
+ · omega
+ · intro i hi
+   rw [Array.getElem?_extract,windowDataSize,Nat.min_eq_left inside,Nat.add_sub_cancel_left,if_pos hi]
+   simpa only [Nat.add_assoc] using fetch (start+i) (by omega)
+
+end CanonicalFetch
+namespace $namespace
+namespace GolfImageNodes
+theorem roundtrip_append (left right : ByteArray) (leftBytes rightBytes : List Nat)
+    (leftProof : left.data.toList.map UInt8.toNat = leftBytes)
+    (rightProof : right.data.toList.map UInt8.toNat = rightBytes) :
+    (left.data ++ right.data).toList.map UInt8.toNat = leftBytes ++ rightBytes := by
+  rw [Array.toList_append, List.map_append, leftProof, rightProof]
+theorem size_append (left right : ByteArray) (leftSize rightSize : Nat)
+    (leftProof : left.data.size = leftSize) (rightProof : right.data.size = rightSize) :
+    (left.data ++ right.data).size = leftSize + rightSize := by
+  rw [Array.size_append, leftProof, rightProof]
+end GolfImageNodes
+$image_definitions
+#print axioms originalRoundtrip
+#print axioms candidateRoundtrip
+#print axioms originalWindowFetch
+#print axioms candidateWindowFetch
+end $namespace

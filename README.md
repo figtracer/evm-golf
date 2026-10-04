@@ -24,7 +24,7 @@ and surrounding offsets. Agents select built-in rewrites with [hash-bound plans]
 or [discover and propose byte pairs](docs/runtime.md#discover-byte-pairs), including stack permutations and neutral arithmetic,
 individually or in disjoint batches,
 for generated proofs and guarded replay of the final candidate. An opt-in
-[region checker](docs/regions.md) also certifies a supported compiler prefix
+[region checker](docs/regions.md) also certifies supported power and mask regions
 against pinned upstream EVM semantics.
 
 - **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
