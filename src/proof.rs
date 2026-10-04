@@ -21,7 +21,7 @@ use crate::{
 };
 
 mod upstream;
-pub(crate) use upstream::{RegionKind, verify_region};
+pub(crate) use upstream::{RegionKind, SpanNode, SpanPlan, verify_region};
 
 const MODEL: &str = include_str!("../lean/Model.lean");
 const LEAN_VERSION: &str = "4.34.0";

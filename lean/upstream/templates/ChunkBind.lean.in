@@ -1,0 +1,11 @@
+import $decode_module
+set_option Elab.async false
+open EvmYul EvmYul.EVM GolfCertificates GolfChunkSummary
+namespace $namespace
+
+def summary : Summary originalCode candidateCode :=
+  $trace_namespace.summary originalCode candidateCode
+    $decode_namespace.originalDecoded $decode_namespace.candidateDecoded
+
+#print axioms summary
+end $namespace

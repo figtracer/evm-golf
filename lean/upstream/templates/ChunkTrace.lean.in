@@ -1,0 +1,102 @@
+import ChunkSummary
+import PureBounds
+set_option Elab.async false
+set_option maxRecDepth 4096
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream GolfCountOffset CanonicalMaskWindow GolfComposition GolfChunk GolfChunkSummary
+namespace $namespace
+$state_definitions
+
+def OriginalDecoded (originalCode : ByteArray) : Prop :=
+  $original_decoded_type
+
+def CandidateDecoded (candidateCode : ByteArray) : Prop :=
+  $candidate_decoded_type
+
+theorem source_gas (originalCode candidateCode : ByteArray) (s : EVM.State) $input_binders (tail : List UInt256)
+    (gas : $source_gas ≤ s.gasAvailable.toNat) :
+    ($source_final).gasAvailable.toNat = s.gasAvailable.toNat - $source_gas := by
+$gas_proof
+
+theorem source_stack (originalCode candidateCode : ByteArray) (s : EVM.State) $input_binders (tail : List UInt256)
+    (stack : s.stack = $input_stack) :
+    ($source_final).stack = $output_stack := by
+$stack_proof
+
+theorem source_count (originalCode candidateCode : ByteArray) (s : EVM.State) $input_binders (tail : List UInt256) :
+    ($source_final).execLength = s.execLength + $source_steps := by
+$count_proof
+
+theorem source_pc (originalCode candidateCode : ByteArray) (s : EVM.State) $input_binders (tail : List UInt256)
+    (pc : s.pc = UInt256.ofNat $entry_pc) :
+    ($source_final).pc = UInt256.ofNat $exit_pc := by
+$pc_proof
+
+theorem valid_trace (originalCode candidateCode : ByteArray)
+    (originalDecoded : OriginalDecoded originalCode)
+    (candidateDecoded : CandidateDecoded candidateCode)
+    (s : EVM.State) $input_binders (tail : List UInt256)
+    (pc : s.pc = UInt256.ofNat $entry_pc) (stack : s.stack = $input_stack)
+    (gas : $source_gas ≤ s.gasAvailable.toNat) (height : tail.length ≤ $maximum_tail) :
+    TraceChunk originalCode candidateCode $source_steps $candidate_steps $powers $masks s ($source_final) := by
+$decode_destructure
+$trace_proof
+
+-- Total functions allow ancillary projections to retain their weaker premises.
+def rawPost (originalCode : ByteArray) (s : EVM.State) : EVM.State :=
+  $projected_final
+
+def stackMap (xs : List UInt256) : List UInt256 :=
+  $projected_output
+
+def post (originalCode : ByteArray) (s : EVM.State) : EVM.State :=
+  { rawPost originalCode s with stack := stackMap s.stack }
+
+theorem post_on_stack (originalCode candidateCode : ByteArray) (s : EVM.State) $input_binders (tail : List UInt256)
+    (stack : s.stack = $input_stack) :
+    post originalCode s = $source_final := by
+  have raw : rawPost originalCode s = $source_final := by
+    simp [rawPost, stack]
+  have output : stackMap s.stack = $output_stack := by
+    simp [stackMap, stack]
+  simp only [post, raw, output]
+  rw [← source_stack originalCode candidateCode s $input_arguments tail stack]
+
+def summary (originalCode candidateCode : ByteArray)
+    (originalDecoded : OriginalDecoded originalCode)
+    (candidateDecoded : CandidateDecoded candidateCode) : Summary originalCode candidateCode where
+  post := post originalCode
+  stackMap := stackMap
+  entry := UInt256.ofNat $entry_pc
+  exit := UInt256.ofNat $exit_pc
+  sourceSteps := $source_steps
+  targetSteps := $candidate_steps
+  powers := $powers
+  masks := $masks
+  gasCost := $source_gas
+  required := $required
+  maximum := $maximum
+  produced := $produced
+  feasible := by decide
+  count_eq := by
+    intro s
+    exact source_count originalCode candidateCode s $projection_arguments (s.stack.drop $required)
+  pc_eq := by
+    intro s pc
+    exact source_pc originalCode candidateCode s $projection_arguments (s.stack.drop $required) pc
+  stack_eq := by
+    intro s xs stack
+    change stackMap s.stack = stackMap xs
+    rw [stack]
+  stack_length := by
+    intro xs low
+    simp only [stackMap, List.length_cons, List.length_drop] <;> omega
+  gas_eq := by
+    intro s gas
+    exact source_gas originalCode candidateCode s $projection_arguments (s.stack.drop $required) gas
+  trace := by
+    intro s pc low high gas
+$summary_cases
+
+#print axioms summary
+end $namespace

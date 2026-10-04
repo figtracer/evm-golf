@@ -1,0 +1,13 @@
+import $left_module
+import $right_module
+set_option Elab.async false
+set_option maxRecDepth 4096
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfCertificates GolfChunkSummary
+namespace $namespace
+
+def summary : Summary originalCode candidateCode :=
+  compose $left_summary $right_summary (by rfl) (by decide) (by decide)
+
+#print axioms summary
+end $namespace

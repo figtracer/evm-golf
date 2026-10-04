@@ -211,6 +211,21 @@ struct ImageNode {
     roundtrip: String,
     size: String,
     len: usize,
+    children: Option<Box<(ImageNode, ImageNode)>>,
+}
+
+struct ImageLeaf {
+    side: &'static str,
+    base: usize,
+    len: usize,
+    code: String,
+    route: String,
+    size: String,
+}
+
+struct RenderedImages {
+    source: String,
+    leaves: Vec<ImageLeaf>,
 }
 
 struct MaskRegion {
@@ -281,8 +296,20 @@ impl MaskRegion {
 }
 
 fn images(original: &[u8], candidate: &[u8], entry_pc: usize, window_len: usize) -> String {
+    render_images(original, candidate, entry_pc, window_len, false).source
+}
+
+fn render_images(
+    original: &[u8],
+    candidate: &[u8],
+    entry_pc: usize,
+    window_len: usize,
+    routed: bool,
+) -> RenderedImages {
     let mut definitions = String::new();
+    let mut leaves = Vec::new();
     for (side, data) in [("original", original), ("candidate", candidate)] {
+        let mut window_node = None;
         for (part, block) in [
             ("Prefix", &data[..entry_pc]),
             ("Window", &data[entry_pc..entry_pc + window_len]),
@@ -303,17 +330,30 @@ fn images(original: &[u8], candidate: &[u8], entry_pc: usize, window_len: usize)
                     roundtrip: format!("{name}Roundtrip"),
                     size: format!("{name}Size"),
                     len: chunk.len(),
+                    children: None,
                 });
             }
             let node = image_tree(&mut definitions, &format!("{side}{part}"), &nodes, &mut 0);
             writeln!(definitions, "def {side}{part}Bytes : List Nat := {}\ndef {side}{part} : ByteArray := {}\ntheorem {side}{part}Roundtrip : {side}{part}.data.toList.map UInt8.toNat = {side}{part}Bytes := {}\ntheorem {side}{part}Size : {side}{part}.data.size = {} := {}\ntheorem {side}{part}ByteSize : {side}{part}.size = {} := {side}{part}Size", node.bytes, node.code, node.roundtrip, block.len(), node.size, block.len()).unwrap();
+            if part == "Window" {
+                window_node = Some(node);
+            }
         }
         let pc = entry_pc;
         writeln!(definitions, "def {side} : List Nat := {side}PrefixBytes ++ {side}WindowBytes ++ {side}SuffixBytes\ndef {side}Code : ByteArray := ⟨{side}Prefix.data ++ {side}Window.data ++ {side}Suffix.data⟩\ntheorem {side}Roundtrip : GolfArtifactBytes.bytes {side}Code = {side} := by\n simp only [GolfArtifactBytes.bytes, {side}Code, {side}, Array.toList_append, List.map_append, {side}PrefixRoundtrip, {side}WindowRoundtrip, {side}SuffixRoundtrip]\ntheorem {side}Size : {side}Code.size = {} := by\n change ({side}Prefix.data ++ {side}Window.data ++ {side}Suffix.data).size = {}\n rw [Array.size_append, Array.size_append, {side}PrefixSize, {side}WindowSize, {side}SuffixSize]\ntheorem {side}WindowFetch (i : Nat) (bound : i < {window_len}) :\n {side}Code.data[{pc}+i]? = {side}Window.data[i]? := by\n change (({side}Prefix.data ++ {side}Window.data) ++ {side}Suffix.data)[{pc}+i]? = _\n rw [Array.append_assoc]\n rw [Array.getElem?_append_right (by rw [{side}PrefixSize]; omega), {side}PrefixSize]\n simp only [Nat.add_sub_cancel_left]\n rw [Array.getElem?_append_left (by rw [{side}WindowSize]; exact bound)]", data.len(), data.len()).unwrap();
+        if routed {
+            let node = window_node.expect("selected window node");
+            writeln!(definitions, "theorem {side}WindowRoute : GolfByteRouting.Route {side}Code {entry_pc} {side}Window := by\n constructor\n · rw [{side}Size, {side}WindowByteSize] <;> decide\n · intro i hi\n   exact {side}WindowFetch i (by simpa only [{side}WindowByteSize] using hi)\ntheorem {}Route : GolfByteRouting.Route {side}Code {entry_pc} {} := {side}WindowRoute", node.code, node.code).unwrap();
+            emit_routes(&mut definitions, side, entry_pc, &node, &mut leaves);
+        }
     }
-    IMAGES
+    let mut source = IMAGES
         .replace("$namespace", "GolfCertificates")
-        .replace("$image_definitions", &definitions)
+        .replace("$image_definitions", &definitions);
+    if routed {
+        source.insert_str(0, "import ByteRouting\n");
+    }
+    RenderedImages { source, leaves }
 }
 
 fn decoded_facts(
@@ -340,6 +380,75 @@ fn decoded_facts(
                 facts.push_str(" rfl\n");
             } else {
                 writeln!(facts, " change some (({opcode} : Operation .EVM), some (uInt256OfByteArray ({side}Code.extract' {} {}), {width})) = some (({opcode} : Operation .EVM), some (UInt256.ofNat {value}, {width}))\n rw [slice_of_window {side}Code {side}Window {pc} {window_len} {} {width}\n   {side}WindowByteSize (by rw [{side}Size] <;> decide) (by decide) (by decide) {side}WindowFetch]\n decide +kernel", absolute+1, absolute+1+width, offset+1).unwrap();
+            }
+        }
+    }
+    facts
+}
+
+// Decode against bounded routed image leaves, including complete PUSH immediates
+// that straddle a physical leaf boundary. Every fetch still names the full code.
+fn routed_decoded_facts(
+    original: &[u8],
+    candidate: &[u8],
+    entry: usize,
+    exit: usize,
+    leaves: &[ImageLeaf],
+) -> String {
+    let mut facts = String::from("open CanonicalFetch GolfCertificates\n");
+    for (side, code) in [("original", original), ("candidate", candidate)] {
+        for instruction in super::decode(&code[entry..exit]) {
+            let pc = entry + instruction.pc;
+            let index = leaves
+                .iter()
+                .position(|leaf| leaf.side == side && leaf.base <= pc && pc < leaf.base + leaf.len)
+                .expect("instruction belongs to the selected image window");
+            let leaf = &leaves[index];
+            let (window, route, size, len) = if pc + instruction.bytes.len() <= leaf.base + leaf.len
+            {
+                (
+                    leaf.code.clone(),
+                    leaf.route.clone(),
+                    leaf.size.clone(),
+                    leaf.len,
+                )
+            } else {
+                let next = &leaves[index + 1];
+                assert_eq!(next.side, side);
+                assert_eq!(next.base, leaf.base + leaf.len);
+                assert!(pc + instruction.bytes.len() <= next.base + next.len);
+                let name = format!("{side}Cross{pc}");
+                let len = leaf.len + next.len;
+                writeln!(facts, "def {name} : ByteArray := ⟨{}.data ++ {}.data⟩\ntheorem {name}Size : {name}.size = {len} := by\n change ({}.data ++ {}.data).size = {len}\n rw [Array.size_append, {}, {}]\ntheorem {name}Route : GolfByteRouting.Route {side}Code {} {name} := by\n apply GolfByteRouting.adjacent\n · exact {}\n · simpa only [{}] using {}", leaf.code, next.code, leaf.code, next.code, leaf.size, next.size, leaf.base, leaf.route, leaf.size, next.route).unwrap();
+                (
+                    name.clone(),
+                    format!("{name}Route"),
+                    format!("{name}Size"),
+                    len,
+                )
+            };
+            let byte_size = format!("{side}RoutedSize{pc}");
+            writeln!(
+                facts,
+                "theorem {byte_size} : {window}.size = {len} := {size}"
+            )
+            .unwrap();
+            let size = byte_size;
+            let offset = pc - leaf.base;
+            let op = instruction.bytes[0];
+            let width = instruction.bytes.len() - 1;
+            let (opcode, argument) = decoded_operation(&instruction.bytes);
+            writeln!(facts, "theorem {side}Opcode{pc} : {side}Code.get? {pc} = some (UInt8.ofNat {op}) := by\n rw [byte_get]\n calc\n  {side}Code.data[{pc}]? = {window}.data[{offset}]? := {route}.fetch {offset} (by rw [{size}]; decide)\n  _ = some (UInt8.ofNat {op}) := by decide +kernel\ntheorem {side}At{pc} : decode {side}Code (UInt256.ofNat {pc}) = some (({opcode} : Operation .EVM), {argument}) := by").unwrap();
+            if width == 0 {
+                let helper = opcode
+                    .strip_prefix("Operation.")
+                    .expect("non-push operation name")
+                    .to_ascii_lowercase();
+                writeln!(facts, " exact GolfOpcodeDecode.decode_{helper} {side}Code (UInt256.ofNat {pc})\n  (by simpa only [show (UInt256.ofNat {pc}).toNat = {pc} by decide] using {side}Opcode{pc})").unwrap();
+            } else {
+                writeln!(facts, " rw [GolfOpcodeDecode.decode_push{width} {side}Code (UInt256.ofNat {pc})\n  (by simpa only [show (UInt256.ofNat {pc}).toNat = {pc} by decide] using {side}Opcode{pc})]").unwrap();
+                let value = U256::from_be_slice(&instruction.bytes[1..]);
+                writeln!(facts, " change some (({opcode} : Operation .EVM), some (uInt256OfByteArray ({side}Code.extract' {} {}), {width})) = some (({opcode} : Operation .EVM), some (UInt256.ofNat {value}, {width}))\n rw [slice_of_window {side}Code {window} {} {len} {} {width}\n   {size} (by rw [{side}Size] <;> decide) (by decide) (by decide)\n   (fun i hi => {route}.fetch i (by simpa only [{size}] using hi))]\n decide +kernel", pc+1, pc+1+width, leaf.base, offset+1).unwrap();
             }
         }
     }
@@ -376,6 +485,32 @@ fn decoded_operation(bytes: &[u8]) -> (String, String) {
     (opcode, argument)
 }
 
+fn emit_routes(
+    out: &mut String,
+    side: &'static str,
+    base: usize,
+    node: &ImageNode,
+    leaves: &mut Vec<ImageLeaf>,
+) {
+    let route = format!("{}Route", node.code);
+    if let Some(children) = &node.children {
+        let (left, right) = children.as_ref();
+        writeln!(out, "theorem {}Route : GolfByteRouting.Route {side}Code {base} {} := by\n simpa only [Nat.add_zero] using GolfByteRouting.trans {side}Code {} {} {base} 0 {route} (GolfByteRouting.left {} {})", left.code, left.code, node.code, left.code, left.code, right.code).unwrap();
+        writeln!(out, "theorem {}Route : GolfByteRouting.Route {side}Code {} {} := by\n have size : {}.size = {} := {}\n simpa only [size] using GolfByteRouting.trans {side}Code {} {} {base} {}.size {route} (GolfByteRouting.right {} {})", right.code, base + left.len, right.code, left.code, left.len, left.size, node.code, right.code, left.code, left.code, right.code).unwrap();
+        emit_routes(out, side, base, left, leaves);
+        emit_routes(out, side, base + left.len, right, leaves);
+    } else {
+        leaves.push(ImageLeaf {
+            side,
+            base,
+            len: node.len,
+            code: node.code.clone(),
+            route,
+            size: node.size.clone(),
+        });
+    }
+}
+
 // Each node references its children's proved byte representation and size;
 // concrete full arrays never need to normalize to find a matching child lemma.
 fn image_tree(
@@ -400,6 +535,7 @@ fn image_tree(
         roundtrip: format!("{name}Roundtrip"),
         size: format!("{name}Size"),
         len,
+        children: Some(Box::new((left, right))),
     }
 }
 
