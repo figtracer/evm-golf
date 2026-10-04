@@ -72,6 +72,7 @@ const MODULES: &[(&str, &str, &[&str])] = &[
 pub(crate) enum RegionKind {
     Power,
     Mask,
+    Span,
 }
 
 const POWER_MODULES: &[(&str, &str, &[&str])] = &[(
@@ -123,6 +124,34 @@ const MASK_MODULES: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
+const SPAN_MODULES: &[(&str, &str, &[&str])] = &[
+    (
+        "OffsetPower",
+        include_str!("../../lean/upstream/OffsetPower.lean"),
+        &[
+            "GolfComposition.offset_pc",
+            "GolfComposition.offset_stack",
+            "GolfComposition.offset_power_boundary",
+        ],
+    ),
+    (
+        "OffsetTransport",
+        include_str!("../../lean/upstream/OffsetTransport.lean"),
+        &[
+            "GolfComposition.offset_step_transport",
+            "GolfComposition.offset_extended_transport",
+        ],
+    ),
+    (
+        "MixedTrace",
+        include_str!("../../lean/upstream/MixedTrace.lean"),
+        &[
+            "GolfComposition.fuel_gap",
+            "GolfComposition.mixed_simulation",
+        ],
+    ),
+];
+
 #[derive(Deserialize)]
 struct Manifest {
     #[serde(rename = "packagesDir")]
@@ -140,7 +169,7 @@ struct Package {
     sub_dir: Option<String>,
 }
 
-/// Called only after the trusted generator writes the three fixed certificate files.
+/// Called only after the trusted generator writes its fixed certificate files.
 pub(crate) fn verify_region(out: &Path, kind: RegionKind) -> Result<String> {
     let out = out.canonicalize()?;
     for entry in fs::read_dir(&out)? {
@@ -219,9 +248,13 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind) -> Result<String> {
     )?;
     let additional = match kind {
         RegionKind::Power => POWER_MODULES,
-        RegionKind::Mask => MASK_MODULES,
+        RegionKind::Mask | RegionKind::Span => MASK_MODULES,
     };
-    for (name, source, _) in MODULES.iter().chain(additional) {
+    let composition = match kind {
+        RegionKind::Span => SPAN_MODULES,
+        RegionKind::Power | RegionKind::Mask => &[],
+    };
+    for (name, source, _) in MODULES.iter().chain(additional).chain(composition) {
         let path = out.join(format!("{name}.lean"));
         ensure!(
             !path.exists(),
@@ -240,6 +273,14 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind) -> Result<String> {
             "GolfCertificates.Mask.afterDecoded",
             "GolfCertificates.Mask.compiler_mask_boundary",
         ],
+        RegionKind::Span => &[
+            "GolfCertificates.Span.source_gas",
+            "GolfCertificates.Span.bound_trace",
+            "GolfCertificates.Span.source_stack",
+            "GolfCertificates.Span.source_count",
+            "GolfCertificates.Span.source_pc",
+            "GolfCertificates.Span.span_boundary",
+        ],
     };
     let image_roots: &[&str] = &[
         "GolfCertificates.originalRoundtrip",
@@ -247,14 +288,31 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind) -> Result<String> {
         "GolfCertificates.originalWindowFetch",
         "GolfCertificates.candidateWindowFetch",
     ];
-    let generated: &[(&str, &[&str])] = &[
-        ("Images", image_roots),
-        ("Decode", &[]),
-        ("RegionProof", region_roots),
+    let span_roots: &[&str] = &[
+        "GolfSpanTrace.source_gas",
+        "GolfSpanTrace.bound_trace",
+        "GolfSpanTrace.source_stack",
+        "GolfSpanTrace.source_count",
+        "GolfSpanTrace.source_pc",
+        "GolfSpanTrace.span_boundary",
     ];
+    let generated: &[(&str, &[&str])] = match kind {
+        RegionKind::Span => &[
+            ("Images", image_roots),
+            ("Decode", &[]),
+            ("SpanTrace", span_roots),
+            ("RegionProof", region_roots),
+        ],
+        RegionKind::Power | RegionKind::Mask => &[
+            ("Images", image_roots),
+            ("Decode", &[]),
+            ("RegionProof", region_roots),
+        ],
+    };
     for (name, expected) in MODULES
         .iter()
         .chain(additional)
+        .chain(composition)
         .map(|(name, _, roots)| (*name, *roots))
         .chain(generated.iter().copied())
     {

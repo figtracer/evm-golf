@@ -96,4 +96,67 @@ if cargo run --locked -- certify-runtime-region \
 fi
 [[ ! -e "$work/mask-rejected/result.json" ]]
 
+# An explicit span composes the mask with a power rewrite before STOP.
+printf '%s\n' 6001600160e01b03166001600160e01b031960200200 > "$work/span-original.hex"
+printf '%s\n' 6001600160e01b03166400ffffffff60e01b60051b00 > "$work/span-candidate.hex"
+if ! cargo run --locked -- certify-runtime-region \
+  --original "$work/span-original.hex" --candidate "$work/span-candidate.hex" \
+  --entry-pc 0 --exit-pc 21 --out "$work/span-accepted"; then
+  cat "$work/span-accepted"/*.log 2>/dev/null || true
+  echo "Failed span certificate evidence: $work" >&2
+  exit 1
+fi
+python3 - "$work/span-accepted/result.json" <<'PY_SPAN'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    report = json.load(handle)
+assert report["entry_pc"] == 0 and report["exit_pc"] == 21
+assert report["source_instruction_count"] == 14
+assert report["candidate_instruction_count"] == 11
+assert report["source_gas_minimum"] == 44
+assert report["candidate_gas_cost"] == 33
+assert report["gas_surplus_increase"] == 11
+assert report["execution_count_offset_increase"] == 3
+assert report["required_input_stack_words"] == 1
+assert report["maximum_input_stack_words"] == 1021
+assert report["output_stack_delta"] == 1
+assert "whole-contract and all-gas equivalence" in report["unproved"]
+PY_SPAN
+# The same selection cannot include the terminal instruction or end in PUSH data.
+for end in 19 22; do
+  if cargo run --locked -- certify-runtime-region \
+    --original "$work/span-original.hex" --candidate "$work/span-candidate.hex" \
+    --entry-pc 0 --exit-pc "$end" --out "$work/span-rejected-$end"; then
+    echo 'Unsupported span was accepted.' >&2
+    exit 1
+  fi
+  [[ ! -e "$work/span-rejected-$end/result.json" ]]
+done
+
+# Cover every supported unchanged opcode family with an arbitrary input tail.
+printf '%s\n' 5f80600190017f0000000000000000000000000000000000000000000000000000000000000002021b > "$work/unchanged-span.hex"
+if ! cargo run --locked -- certify-runtime-region \
+  --original "$work/unchanged-span.hex" --candidate "$work/unchanged-span.hex" \
+  --entry-pc 0 --exit-pc 41 --out "$work/unchanged-span-accepted"; then
+  cat "$work/unchanged-span-accepted"/*.log 2>/dev/null || true
+  echo "Failed unchanged span certificate evidence: $work" >&2
+  exit 1
+fi
+python3 - "$work/unchanged-span-accepted/result.json" <<'PY_UNCHANGED'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    report = json.load(handle)
+assert report["entry_pc"] == 0 and report["exit_pc"] == 41
+assert report["source_instruction_count"] == report["candidate_instruction_count"] == 8
+assert report["source_gas_minimum"] == report["candidate_gas_cost"] == 25
+assert report["gas_surplus_increase"] == report["execution_count_offset_increase"] == 0
+assert report["required_input_stack_words"] == 0
+assert report["maximum_input_stack_words"] == 1021
+assert report["output_stack_delta"] == 1
+PY_UNCHANGED
+
 echo "Upstream region checks passed. Local evidence: $work"

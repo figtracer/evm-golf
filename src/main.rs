@@ -56,6 +56,9 @@ enum Action {
         candidate: PathBuf,
         #[arg(long)]
         entry_pc: usize,
+        /// Exclusive exit PC for a generated straight-line span certificate.
+        #[arg(long)]
+        exit_pc: Option<usize>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -193,18 +196,25 @@ fn main() -> Result<()> {
             original,
             candidate,
             entry_pc,
+            exit_pc,
             out,
         } => {
             let original = runtime::input::read_bytecode(&original)?;
             let candidate = runtime::input::read_bytecode(&candidate)?;
             prepare_parent(&out)?;
-            let report = runtime::region::certify_selected(&original, &candidate, entry_pc, &out)?;
-            let (exit_pc, boundary) = match report {
-                runtime::region::SelectedRegionCertificate::Power(report) => {
-                    (report.exit_pc, "Stops before JUMP")
-                }
-                runtime::region::SelectedRegionCertificate::Mask(report) => {
-                    (report.exit_pc, "Stops after the mask replacement")
+            let (exit_pc, boundary) = if let Some(exit_pc) = exit_pc {
+                runtime::region::certify_span(&original, &candidate, entry_pc, exit_pc, &out)?;
+                (exit_pc, "Stops at the selected exit PC")
+            } else {
+                let report =
+                    runtime::region::certify_selected(&original, &candidate, entry_pc, &out)?;
+                match report {
+                    runtime::region::SelectedRegionCertificate::Power(report) => {
+                        (report.exit_pc, "Stops before JUMP")
+                    }
+                    runtime::region::SelectedRegionCertificate::Mask(report) => {
+                        (report.exit_pc, "Stops after the mask replacement")
+                    }
                 }
             };
             println!(

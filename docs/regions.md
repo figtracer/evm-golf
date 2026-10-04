@@ -40,7 +40,7 @@ Lean 4.34 expression and runtime rewrite gates are unchanged.
 
 ## Supported regions
 
-The command selects one of two exact byte patterns. The power region is:
+Without `--exit-pc`, the command selects one of two exact byte patterns. The power region is:
 
 ```text
 original:  PUSH1 32; MUL; ADD; SWAP1; PUSH0; DUP1; DUP1; PUSH2 destination; JUMP
@@ -94,12 +94,33 @@ For every natural `fuel`, source `X(fuel+13)` and candidate `X(fuel+10)` reduce 
 their respective `X(fuel+1)` calls. Their residual outcomes are not equated.
 This is a source-gas-conditioned statement, not equivalence for every gas limit.
 
-The public Rust `region::certify` function and its power-region JSON remain
-unchanged. `region::certify_selected`, used by the CLI, also accepts the mask pair.
-Its mask JSON records separate instruction counts, execution-count offset,
-candidate gas cost and the same proof limitations; it has no `pushed_destination`.
-Only mask checks compile the additional mask support modules. Surrounding bytes
-are independently bound and may differ, as for the power region.
+## Select a span
+
+Supply an exclusive end byte offset to check multiple supported rewrites together:
+
+```sh
+cargo run --locked -- certify-runtime-region \
+  --original runs/original.hex --candidate runs/candidate.hex \
+  --entry-pc 0 --exit-pc 21 --out runs/span-1
+```
+
+Choose instruction boundaries in both images. A span may combine the mask pair
+above with same-width `PUSHn 2^k; MUL` → `PUSHn k; SHL` rewrites (`k < 256`).
+Unchanged `PUSH1`–`PUSH32`, `PUSH0`, `MUL`, `SHL`, `ADD`, `SWAP1`, and `DUP1`
+instructions may appear between them. Other instructions are rejected; the
+instruction at the end offset is not executed.
+
+The result records the required input stack size, maximum input stack size,
+source gas requirement, and separate instruction counts. The proof permits
+arbitrary input words and incoming gas/count offsets. It proves related boundary
+states and separate residual interpreter calls, subject to those requirements;
+it does not establish whole-contract or all-gas equivalence. Unchanged supported
+spans are accepted with zero savings. Bytes outside the span remain independently
+bound, without certification of their behavior.
+
+Rust callers can use `region::certify_span` for explicit spans,
+`region::certify_selected` for automatic pattern selection, or `region::certify`
+for the power compiler region.
 
 ## Evidence
 

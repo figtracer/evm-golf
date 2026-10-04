@@ -1,0 +1,9 @@
+import $image_module
+import MixedTrace
+set_option Elab.async false
+set_option maxRecDepth 4096
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream GolfCountOffset CanonicalMaskWindow GolfComposition
+namespace $namespace
+$decoded_facts
+end $namespace

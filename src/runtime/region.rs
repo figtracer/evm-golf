@@ -1,9 +1,12 @@
 //! Conditional internal-region certificates against pinned upstream EVM semantics.
 
 use anyhow::{Context as _, Result, ensure};
-use revm::primitives::{hex, keccak256};
+use revm::primitives::{U256, hex, keccak256};
 use serde::Serialize;
 use std::{fmt::Write as _, fs, path::Path};
+
+mod span;
+pub use span::{SpanCertificate, certify_span};
 
 use super::MAX_RUNTIME_BYTES;
 use crate::proof;
@@ -86,7 +89,7 @@ impl Region {
             &original[self.entry_pc..self.entry_pc + 12],
             &candidate[self.entry_pc..self.entry_pc + 12],
             self.entry_pc,
-            &[
+            Some(&[
                 "PushDecoded",
                 "OpDecoded",
                 "AddDecoded",
@@ -96,7 +99,7 @@ impl Region {
                 "DupBDecoded",
                 "TargetDecoded",
                 "JumpDecoded",
-            ],
+            ]),
         );
         let decode = DECODE
             .replace("$image_module", "Images")
@@ -244,7 +247,7 @@ impl MaskRegion {
             &MASK_BEFORE,
             &MASK_AFTER,
             self.entry_pc,
-            &[
+            Some(&[
                 "Decoded0",
                 "Decoded1",
                 "Decoded2",
@@ -257,7 +260,7 @@ impl MaskRegion {
                 "Decoded9",
                 "Decoded10",
                 "Decoded11",
-            ],
+            ]),
         );
         let decode = MASK_DECODE
             .replace("$image_module", "Images")
@@ -313,43 +316,25 @@ fn images(original: &[u8], candidate: &[u8], entry_pc: usize, window_len: usize)
         .replace("$image_definitions", &definitions)
 }
 
-fn decoded_facts(original: &[u8], candidate: &[u8], entry_pc: usize, names: &[&str]) -> String {
+fn decoded_facts(
+    original: &[u8],
+    candidate: &[u8],
+    entry_pc: usize,
+    names: Option<&[&str]>,
+) -> String {
     let window_len = original.len();
     let mut facts = String::from("open CanonicalFetch\n");
     for (side, code) in [("original", original), ("candidate", candidate)] {
         for (index, instruction) in super::decode(code).iter().enumerate() {
             let op = instruction.bytes[0];
             let width = instruction.bytes.len() - 1;
-            let opcode = match op {
-                0x60 => "Operation.Push .PUSH1",
-                0x61 => "Operation.Push .PUSH2",
-                0x64 => "Operation.Push .PUSH5",
-                0x02 => "Operation.MUL",
-                0x01 => "Operation.ADD",
-                0x90 => "Operation.SWAP1",
-                0x5f => "Operation.PUSH0",
-                0x80 => "Operation.DUP1",
-                0x56 => "Operation.JUMP",
-                0x1b => "Operation.SHL",
-                0x03 => "Operation.SUB",
-                0x16 => "Operation.AND",
-                0x19 => "Operation.NOT",
-                _ => {
-                    unreachable!("trusted region template contains only fixed supported opcodes")
-                }
-            };
-            let value = instruction.bytes[1..]
-                .iter()
-                .fold(0_u64, |value, byte| value * 256 + u64::from(*byte));
-            let argument = if width == 0 {
-                "none".to_owned()
-            } else {
-                format!("some (UInt256.ofNat {value}, {width})")
-            };
+            let (opcode, argument) = decoded_operation(&instruction.bytes);
+            let value = U256::from_be_slice(&instruction.bytes[1..]);
             let pc = entry_pc;
-            let name = names[index];
             let offset = instruction.pc;
             let absolute = pc + offset;
+            let name =
+                names.map_or_else(|| format!("At{absolute}"), |names| names[index].to_owned());
             writeln!(facts, "theorem {side}Opcode{index} : {side}Code.get? {absolute} = some (UInt8.ofNat {op}) := by\n rw [byte_get]\n calc\n  {side}Code.data[{absolute}]? = {side}Window.data[{offset}]? := {side}WindowFetch {offset} (by decide)\n  _ = some (UInt8.ofNat {op}) := by decide +kernel\ntheorem {side}{name} : decode {side}Code (UInt256.ofNat {absolute}) = some (({opcode} : Operation .EVM), {argument}) := by\n unfold decode\n rw [show (UInt256.ofNat {absolute}).toNat = {absolute} by decide, {side}Opcode{index}]").unwrap();
             if width == 0 {
                 facts.push_str(" rfl\n");
@@ -359,6 +344,36 @@ fn decoded_facts(original: &[u8], candidate: &[u8], entry_pc: usize, names: &[&s
         }
     }
     facts
+}
+
+fn decoded_operation(bytes: &[u8]) -> (String, String) {
+    let width = bytes.len() - 1;
+    let opcode = match bytes[0] {
+        0x60..=0x7f => format!("Operation.Push .PUSH{width}"),
+        op => match op {
+            0x02 => "Operation.MUL",
+            0x01 => "Operation.ADD",
+            0x90 => "Operation.SWAP1",
+            0x5f => "Operation.PUSH0",
+            0x80 => "Operation.DUP1",
+            0x56 => "Operation.JUMP",
+            0x1b => "Operation.SHL",
+            0x03 => "Operation.SUB",
+            0x16 => "Operation.AND",
+            0x19 => "Operation.NOT",
+            _ => unreachable!("trusted region template contains only supported opcodes"),
+        }
+        .to_owned(),
+    };
+    let argument = if width == 0 {
+        "none".to_owned()
+    } else {
+        format!(
+            "some (UInt256.ofNat {}, {width})",
+            U256::from_be_slice(&bytes[1..])
+        )
+    };
+    (opcode, argument)
 }
 
 // Each node references its children's proved byte representation and size;
