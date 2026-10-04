@@ -74,6 +74,19 @@ pub(crate) enum RegionKind {
     Mask,
 }
 
+const POWER_MODULES: &[(&str, &str, &[&str])] = &[(
+    "PowerRegion",
+    include_str!("../../lean/upstream/PowerRegion.lean"),
+    &[
+        "GolfPowerRegion.pc_add",
+        "GolfPowerRegion.compilerExitPC",
+        "GolfPowerRegion.compilerExitStack",
+        "GolfPowerRegion.compilerExitGas",
+        "GolfPowerRegion.compilerTrace",
+        "GolfPowerRegion.compiler_region_boundary",
+    ],
+)];
+
 const MASK_MODULES: &[(&str, &str, &[&str])] = &[
     (
         "CountOffset",
@@ -205,7 +218,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind) -> Result<String> {
         }))?,
     )?;
     let additional = match kind {
-        RegionKind::Power => &[][..],
+        RegionKind::Power => POWER_MODULES,
         RegionKind::Mask => MASK_MODULES,
     };
     for (name, source, _) in MODULES.iter().chain(additional) {
@@ -228,15 +241,12 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind) -> Result<String> {
             "GolfCertificates.Mask.compiler_mask_boundary",
         ],
     };
-    let image_roots: &[&str] = match kind {
-        RegionKind::Power => &[],
-        RegionKind::Mask => &[
-            "GolfCertificates.originalRoundtrip",
-            "GolfCertificates.candidateRoundtrip",
-            "GolfCertificates.originalWindowFetch",
-            "GolfCertificates.candidateWindowFetch",
-        ],
-    };
+    let image_roots: &[&str] = &[
+        "GolfCertificates.originalRoundtrip",
+        "GolfCertificates.candidateRoundtrip",
+        "GolfCertificates.originalWindowFetch",
+        "GolfCertificates.candidateWindowFetch",
+    ];
     let generated: &[(&str, &[&str])] = &[
         ("Images", image_roots),
         ("Decode", &[]),

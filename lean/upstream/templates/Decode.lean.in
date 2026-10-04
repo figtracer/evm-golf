@@ -5,9 +5,10 @@ set_option maxHeartbeats 2000000
 open EvmYul EvmYul.EVM GolfUpstream
 namespace $namespace
 
-theorem originalSite : MulPowerAt originalCode (UInt256.ofNat $entry_pc) .PUSH1 1 5 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-theorem candidateSite : ShiftPowerAt candidateCode (UInt256.ofNat $entry_pc) .PUSH1 1 5 :=
-  ⟨by decide +kernel, by decide +kernel⟩
 $decoded_facts
+
+theorem originalSite : MulPowerAt originalCode (UInt256.ofNat $entry_pc) .PUSH1 1 5 :=
+  ⟨originalPushDecoded, originalOpDecoded⟩
+theorem candidateSite : ShiftPowerAt candidateCode (UInt256.ofNat $entry_pc) .PUSH1 1 5 :=
+  ⟨candidatePushDecoded, candidateOpDecoded⟩
 end $namespace

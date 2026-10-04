@@ -12,8 +12,7 @@ const IMAGES: &str = include_str!("../../lean/upstream/templates/Images.lean.in"
 const DECODE: &str = include_str!("../../lean/upstream/templates/Decode.lean.in");
 // Bounded leaves and balanced appends avoid kernel stack overflow on full EIP-170
 // images. This changes proof representation, not the accepted input size.
-const MASK_IMAGE_CHUNK_BYTES: usize = 256;
-const MASK_IMAGES: &str = include_str!("../../lean/upstream/templates/MaskImages.lean.in");
+const IMAGE_CHUNK_BYTES: usize = 256;
 const MASK_DECODE: &str = include_str!("../../lean/upstream/templates/MaskDecode.lean.in");
 const MASK_REGION: &str = include_str!("../../lean/upstream/templates/MaskRegionProof.lean.in");
 const MASK_BEFORE: [u8; 18] = [
@@ -82,31 +81,23 @@ impl Region {
     }
 
     fn sources(&self, original: &[u8], candidate: &[u8]) -> [(&'static str, String); 3] {
-        let images = IMAGES
-            .replace("$namespace", "GolfCertificates")
-            .replace("$original_list", &format!("{original:?}"))
-            .replace("$candidate_list", &format!("{candidate:?}"));
-        let mut facts = String::new();
-        for side in ["original", "candidate"] {
-            for (offset, name, opcode) in [
-                (3, "Add", "ADD"),
-                (4, "Swap", "SWAP1"),
-                (5, "Zero", "PUSH0"),
-                (6, "DupA", "DUP1"),
-                (7, "DupB", "DUP1"),
-                (8, "Target", "PUSH2"),
-                (11, "Jump", "JUMP"),
-            ] {
-                let immediate = if offset == 8 {
-                    format!("some (UInt256.ofNat {},2)", self.destination)
-                } else {
-                    "none".to_owned()
-                };
-                writeln!(facts,
-                    "theorem {side}{name}Decoded : decode {side}Code (UInt256.ofNat {}) = some (.{opcode},{immediate}) := by decide +kernel",
-                    self.entry_pc + offset).unwrap();
-            }
-        }
+        let images = images(original, candidate, self.entry_pc, 12);
+        let facts = decoded_facts(
+            &original[self.entry_pc..self.entry_pc + 12],
+            &candidate[self.entry_pc..self.entry_pc + 12],
+            self.entry_pc,
+            &[
+                "PushDecoded",
+                "OpDecoded",
+                "AddDecoded",
+                "SwapDecoded",
+                "ZeroDecoded",
+                "DupADecoded",
+                "DupBDecoded",
+                "TargetDecoded",
+                "JumpDecoded",
+            ],
+        );
         let decode = DECODE
             .replace("$image_module", "Images")
             .replace("$namespace", "GolfCertificates.Region")
@@ -247,85 +238,27 @@ impl MaskRegion {
         Ok(Self { entry_pc })
     }
 
-    fn images(&self, original: &[u8], candidate: &[u8]) -> String {
-        let mut definitions = String::new();
-        for (side, data) in [("original", original), ("candidate", candidate)] {
-            for (part, block) in [
-                ("Prefix", &data[..self.entry_pc]),
-                (
-                    "Window",
-                    &data[self.entry_pc..self.entry_pc + MASK_BEFORE.len()],
-                ),
-                ("Suffix", &data[self.entry_pc + MASK_BEFORE.len()..]),
-            ] {
-                let chunks = if block.is_empty() {
-                    vec![block]
-                } else {
-                    block.chunks(MASK_IMAGE_CHUNK_BYTES).collect()
-                };
-                let mut nodes = Vec::new();
-                for (index, chunk) in chunks.iter().enumerate() {
-                    let name = format!("{side}{part}Chunk{index}");
-                    writeln!(definitions, "def {name} : List Nat := {chunk:?}\ndef {name}Code : ByteArray := GolfArtifactBytes.encode {name}\ntheorem {name}Roundtrip : {name}Code.data.toList.map UInt8.toNat = {name} := GolfArtifactBytes.bytes_encode {name} (GolfArtifactBytes.range_of_all {name} (by decide +kernel))\ntheorem {name}Size : {name}Code.data.size = {} := rfl", chunk.len()).unwrap();
-                    nodes.push(ImageNode {
-                        bytes: name.clone(),
-                        code: format!("{name}Code"),
-                        roundtrip: format!("{name}Roundtrip"),
-                        size: format!("{name}Size"),
-                        len: chunk.len(),
-                    });
-                }
-                let node = image_tree(&mut definitions, &format!("{side}{part}"), &nodes, &mut 0);
-                writeln!(definitions, "def {side}{part}Bytes : List Nat := {}\ndef {side}{part} : ByteArray := {}\ntheorem {side}{part}Roundtrip : {side}{part}.data.toList.map UInt8.toNat = {side}{part}Bytes := {}\ntheorem {side}{part}Size : {side}{part}.data.size = {} := {}\ntheorem {side}{part}ByteSize : {side}{part}.size = {} := {side}{part}Size", node.bytes, node.code, node.roundtrip, block.len(), node.size, block.len()).unwrap();
-            }
-            let pc = self.entry_pc;
-            writeln!(definitions, "def {side} : List Nat := {side}PrefixBytes ++ {side}WindowBytes ++ {side}SuffixBytes\ndef {side}Code : ByteArray := ⟨{side}Prefix.data ++ {side}Window.data ++ {side}Suffix.data⟩\ntheorem {side}Roundtrip : GolfArtifactBytes.bytes {side}Code = {side} := by\n simp only [GolfArtifactBytes.bytes, {side}Code, {side}, Array.toList_append, List.map_append, {side}PrefixRoundtrip, {side}WindowRoundtrip, {side}SuffixRoundtrip]\ntheorem {side}Size : {side}Code.size = {} := by\n change ({side}Prefix.data ++ {side}Window.data ++ {side}Suffix.data).size = {}\n rw [Array.size_append, Array.size_append, {side}PrefixSize, {side}WindowSize, {side}SuffixSize]\ntheorem {side}WindowFetch (i : Nat) (bound : i < 18) :\n {side}Code.data[{pc}+i]? = {side}Window.data[i]? := by\n change (({side}Prefix.data ++ {side}Window.data) ++ {side}Suffix.data)[{pc}+i]? = _\n rw [Array.append_assoc]\n rw [Array.getElem?_append_right (by rw [{side}PrefixSize]; omega), {side}PrefixSize]\n simp only [Nat.add_sub_cancel_left]\n rw [Array.getElem?_append_left (by rw [{side}WindowSize]; exact bound)]", data.len(), data.len()).unwrap();
-        }
-        MASK_IMAGES
-            .replace("$namespace", "GolfCertificates")
-            .replace("$image_definitions", &definitions)
-    }
-
     fn sources(&self, original: &[u8], candidate: &[u8]) -> [(&'static str, String); 3] {
-        let images = self.images(original, candidate);
-        let mut facts = String::from("open CanonicalFetch\n");
-        for (side, code) in [
-            ("original", MASK_BEFORE.as_slice()),
-            ("candidate", MASK_AFTER.as_slice()),
-        ] {
-            for (index, instruction) in super::decode(code).iter().enumerate() {
-                let op = instruction.bytes[0];
-                let width = instruction.bytes.len() - 1;
-                let opcode = match op {
-                    0x60 => "Operation.Push .PUSH1",
-                    0x64 => "Operation.Push .PUSH5",
-                    0x1b => "Operation.SHL",
-                    0x03 => "Operation.SUB",
-                    0x16 => "Operation.AND",
-                    0x19 => "Operation.NOT",
-                    _ => {
-                        unreachable!("trusted mask template contains only fixed supported opcodes")
-                    }
-                };
-                let value = instruction.bytes[1..]
-                    .iter()
-                    .fold(0_u64, |value, byte| value * 256 + u64::from(*byte));
-                let argument = if width == 0 {
-                    "none".to_owned()
-                } else {
-                    format!("some (UInt256.ofNat {value}, {width})")
-                };
-                let pc = self.entry_pc;
-                let offset = instruction.pc;
-                let absolute = pc + offset;
-                writeln!(facts, "theorem {side}Opcode{index} : {side}Code.get? {absolute} = some (UInt8.ofNat {op}) := by\n rw [byte_get]\n calc\n  {side}Code.data[{absolute}]? = {side}Window.data[{offset}]? := {side}WindowFetch {offset} (by decide)\n  _ = some (UInt8.ofNat {op}) := by decide +kernel\ntheorem {side}Decoded{index} : decode {side}Code (UInt256.ofNat {absolute}) = some (({opcode} : Operation .EVM), {argument}) := by\n unfold decode\n rw [show (UInt256.ofNat {absolute}).toNat = {absolute} by decide, {side}Opcode{index}]").unwrap();
-                if width == 0 {
-                    facts.push_str(" rfl\n");
-                } else {
-                    writeln!(facts, " change some (({opcode} : Operation .EVM), some (uInt256OfByteArray ({side}Code.extract' {} {}), {width})) = some (({opcode} : Operation .EVM), some (UInt256.ofNat {value}, {width}))\n rw [slice_of_window {side}Code {side}Window {pc} 18 {} {width}\n   {side}WindowByteSize (by rw [{side}Size] <;> decide) (by decide) (by decide) {side}WindowFetch]\n decide +kernel", absolute+1, absolute+1+width, offset+1).unwrap();
-                }
-            }
-        }
+        let images = images(original, candidate, self.entry_pc, MASK_BEFORE.len());
+        let facts = decoded_facts(
+            &MASK_BEFORE,
+            &MASK_AFTER,
+            self.entry_pc,
+            &[
+                "Decoded0",
+                "Decoded1",
+                "Decoded2",
+                "Decoded3",
+                "Decoded4",
+                "Decoded5",
+                "Decoded6",
+                "Decoded7",
+                "Decoded8",
+                "Decoded9",
+                "Decoded10",
+                "Decoded11",
+            ],
+        );
         let decode = MASK_DECODE
             .replace("$image_module", "Images")
             .replace("$namespace", "GolfCertificates.Mask")
@@ -342,6 +275,90 @@ impl MaskRegion {
             ("RegionProof.lean", region),
         ]
     }
+}
+
+fn images(original: &[u8], candidate: &[u8], entry_pc: usize, window_len: usize) -> String {
+    let mut definitions = String::new();
+    for (side, data) in [("original", original), ("candidate", candidate)] {
+        for (part, block) in [
+            ("Prefix", &data[..entry_pc]),
+            ("Window", &data[entry_pc..entry_pc + window_len]),
+            ("Suffix", &data[entry_pc + window_len..]),
+        ] {
+            let chunks = if block.is_empty() {
+                vec![block]
+            } else {
+                block.chunks(IMAGE_CHUNK_BYTES).collect()
+            };
+            let mut nodes = Vec::new();
+            for (index, chunk) in chunks.iter().enumerate() {
+                let name = format!("{side}{part}Chunk{index}");
+                writeln!(definitions, "def {name} : List Nat := {chunk:?}\ndef {name}Code : ByteArray := GolfArtifactBytes.encode {name}\ntheorem {name}Roundtrip : {name}Code.data.toList.map UInt8.toNat = {name} := GolfArtifactBytes.bytes_encode {name} (GolfArtifactBytes.range_of_all {name} (by decide +kernel))\ntheorem {name}Size : {name}Code.data.size = {} := rfl", chunk.len()).unwrap();
+                nodes.push(ImageNode {
+                    bytes: name.clone(),
+                    code: format!("{name}Code"),
+                    roundtrip: format!("{name}Roundtrip"),
+                    size: format!("{name}Size"),
+                    len: chunk.len(),
+                });
+            }
+            let node = image_tree(&mut definitions, &format!("{side}{part}"), &nodes, &mut 0);
+            writeln!(definitions, "def {side}{part}Bytes : List Nat := {}\ndef {side}{part} : ByteArray := {}\ntheorem {side}{part}Roundtrip : {side}{part}.data.toList.map UInt8.toNat = {side}{part}Bytes := {}\ntheorem {side}{part}Size : {side}{part}.data.size = {} := {}\ntheorem {side}{part}ByteSize : {side}{part}.size = {} := {side}{part}Size", node.bytes, node.code, node.roundtrip, block.len(), node.size, block.len()).unwrap();
+        }
+        let pc = entry_pc;
+        writeln!(definitions, "def {side} : List Nat := {side}PrefixBytes ++ {side}WindowBytes ++ {side}SuffixBytes\ndef {side}Code : ByteArray := ⟨{side}Prefix.data ++ {side}Window.data ++ {side}Suffix.data⟩\ntheorem {side}Roundtrip : GolfArtifactBytes.bytes {side}Code = {side} := by\n simp only [GolfArtifactBytes.bytes, {side}Code, {side}, Array.toList_append, List.map_append, {side}PrefixRoundtrip, {side}WindowRoundtrip, {side}SuffixRoundtrip]\ntheorem {side}Size : {side}Code.size = {} := by\n change ({side}Prefix.data ++ {side}Window.data ++ {side}Suffix.data).size = {}\n rw [Array.size_append, Array.size_append, {side}PrefixSize, {side}WindowSize, {side}SuffixSize]\ntheorem {side}WindowFetch (i : Nat) (bound : i < {window_len}) :\n {side}Code.data[{pc}+i]? = {side}Window.data[i]? := by\n change (({side}Prefix.data ++ {side}Window.data) ++ {side}Suffix.data)[{pc}+i]? = _\n rw [Array.append_assoc]\n rw [Array.getElem?_append_right (by rw [{side}PrefixSize]; omega), {side}PrefixSize]\n simp only [Nat.add_sub_cancel_left]\n rw [Array.getElem?_append_left (by rw [{side}WindowSize]; exact bound)]", data.len(), data.len()).unwrap();
+    }
+    IMAGES
+        .replace("$namespace", "GolfCertificates")
+        .replace("$image_definitions", &definitions)
+}
+
+fn decoded_facts(original: &[u8], candidate: &[u8], entry_pc: usize, names: &[&str]) -> String {
+    let window_len = original.len();
+    let mut facts = String::from("open CanonicalFetch\n");
+    for (side, code) in [("original", original), ("candidate", candidate)] {
+        for (index, instruction) in super::decode(code).iter().enumerate() {
+            let op = instruction.bytes[0];
+            let width = instruction.bytes.len() - 1;
+            let opcode = match op {
+                0x60 => "Operation.Push .PUSH1",
+                0x61 => "Operation.Push .PUSH2",
+                0x64 => "Operation.Push .PUSH5",
+                0x02 => "Operation.MUL",
+                0x01 => "Operation.ADD",
+                0x90 => "Operation.SWAP1",
+                0x5f => "Operation.PUSH0",
+                0x80 => "Operation.DUP1",
+                0x56 => "Operation.JUMP",
+                0x1b => "Operation.SHL",
+                0x03 => "Operation.SUB",
+                0x16 => "Operation.AND",
+                0x19 => "Operation.NOT",
+                _ => {
+                    unreachable!("trusted region template contains only fixed supported opcodes")
+                }
+            };
+            let value = instruction.bytes[1..]
+                .iter()
+                .fold(0_u64, |value, byte| value * 256 + u64::from(*byte));
+            let argument = if width == 0 {
+                "none".to_owned()
+            } else {
+                format!("some (UInt256.ofNat {value}, {width})")
+            };
+            let pc = entry_pc;
+            let name = names[index];
+            let offset = instruction.pc;
+            let absolute = pc + offset;
+            writeln!(facts, "theorem {side}Opcode{index} : {side}Code.get? {absolute} = some (UInt8.ofNat {op}) := by\n rw [byte_get]\n calc\n  {side}Code.data[{absolute}]? = {side}Window.data[{offset}]? := {side}WindowFetch {offset} (by decide)\n  _ = some (UInt8.ofNat {op}) := by decide +kernel\ntheorem {side}{name} : decode {side}Code (UInt256.ofNat {absolute}) = some (({opcode} : Operation .EVM), {argument}) := by\n unfold decode\n rw [show (UInt256.ofNat {absolute}).toNat = {absolute} by decide, {side}Opcode{index}]").unwrap();
+            if width == 0 {
+                facts.push_str(" rfl\n");
+            } else {
+                writeln!(facts, " change some (({opcode} : Operation .EVM), some (uInt256OfByteArray ({side}Code.extract' {} {}), {width})) = some (({opcode} : Operation .EVM), some (UInt256.ofNat {value}, {width}))\n rw [slice_of_window {side}Code {side}Window {pc} {window_len} {} {width}\n   {side}WindowByteSize (by rw [{side}Size] <;> decide) (by decide) (by decide) {side}WindowFetch]\n decide +kernel", absolute+1, absolute+1+width, offset+1).unwrap();
+            }
+        }
+    }
+    facts
 }
 
 // Each node references its children's proved byte representation and size;
@@ -509,7 +526,7 @@ mod tests {
         ] {
             // Distinct chunks make duplicated or reordered child references observable.
             let mut original = (0..entry)
-                .map(|index| (index as u8) ^ ((index / MASK_IMAGE_CHUNK_BYTES) as u8))
+                .map(|index| (index as u8) ^ ((index / IMAGE_CHUNK_BYTES) as u8))
                 .collect::<Vec<_>>();
             let mut candidate = original.iter().map(|byte| !byte).collect::<Vec<_>>();
             original.extend(MASK_BEFORE);

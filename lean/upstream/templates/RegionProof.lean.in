@@ -1,4 +1,4 @@
-import Regions
+import PowerRegion
 import $decode_module
 set_option Elab.async false
 set_option maxRecDepth 4096
@@ -6,128 +6,46 @@ set_option maxHeartbeats 2000000
 open EvmYul EvmYul.EVM GolfUpstream
 namespace $namespace
 def compilerPower (s : EVM.State) (a b c : UInt256) (tail : List UInt256) : EVM.State :=
-  mulPowerPost s originalCode 1 5 a (b :: c :: tail)
+  GolfPowerRegion.compilerPower originalCode s a b c tail
 
 def compilerAdd (s : EVM.State) (a b c : UInt256) (tail : List UInt256) : EVM.State :=
-  binaryPost (compilerPower s a b c tail) (UInt256.add (UInt256.mul (UInt256.ofNat 32) a) b) (c :: tail) 3
+  GolfPowerRegion.compilerAdd originalCode s a b c tail
 
 def compilerSwap (s : EVM.State) (a b c : UInt256) (tail : List UInt256) : EVM.State :=
-  binaryPost (compilerAdd s a b c tail) c ((UInt256.add (UInt256.mul (UInt256.ofNat 32) a) b) :: tail) 3
+  GolfPowerRegion.compilerSwap originalCode s a b c tail
 
 def compilerZero (s : EVM.State) (a b c : UInt256) (tail : List UInt256) : EVM.State :=
-  binaryPost (compilerSwap s a b c tail) (UInt256.ofNat 0) (compilerSwap s a b c tail).stack 2
+  GolfPowerRegion.compilerZero originalCode s a b c tail
 
 def compilerDupA (s : EVM.State) (a b c : UInt256) (tail : List UInt256) : EVM.State :=
-  binaryPost (compilerZero s a b c tail) (UInt256.ofNat 0) ((UInt256.ofNat 0) :: c :: (UInt256.add (UInt256.mul (UInt256.ofNat 32) a) b) :: tail) 3
+  GolfPowerRegion.compilerDupA originalCode s a b c tail
 
 def compilerDupB (s : EVM.State) (a b c : UInt256) (tail : List UInt256) : EVM.State :=
-  binaryPost (compilerDupA s a b c tail) (UInt256.ofNat 0) ((UInt256.ofNat 0) :: (UInt256.ofNat 0) :: c :: (UInt256.add (UInt256.mul (UInt256.ofNat 32) a) b) :: tail) 3
+  GolfPowerRegion.compilerDupB originalCode s a b c tail
 
 def compilerExit (s : EVM.State) (a b c : UInt256) (tail : List UInt256) : EVM.State :=
-  pushedWidth (compilerDupB s a b c tail) (UInt256.ofNat $destination) 2
+  GolfPowerRegion.compilerExit originalCode $destination s a b c tail
 
 theorem compilerTrace (s : EVM.State) (a b c : UInt256) (tail : List UInt256) (fuel : Nat)
     (pc : s.pc = UInt256.ofNat $entry_pc) (stack : s.stack = a :: b :: c :: tail)
     (gas : 25 ≤ s.gasAvailable.toNat) (peak : tail.length + 6 ≤ 1024) :
-    OpenRegionTrace originalCode candidateCode (fuel+1) (fuel+9) 1 s (compilerExit s a b c tail) := by
-  have g1 := word_sub_toNat (s.gasAvailable) 3 (by decide) (by omega)
-  have g2 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3) 5 (by decide) (by omega)
-  have g3 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5) 3 (by decide) (by omega)
-  have g4 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3) 3 (by decide) (by omega)
-  have g5 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3) 2 (by decide) (by omega)
-  have g6 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3 - UInt256.ofNat 2) 3 (by decide) (by omega)
-  have g7 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3 - UInt256.ofNat 2 - UInt256.ofNat 3) 3 (by decide) (by omega)
-  apply OpenRegionTrace.power s _ (fuel+6) 0 .PUSH1 1 5 a (b :: c :: tail) (by decide) (by decide)
-  · rw [pc]; exact originalSite
-  · rw [pc]; exact candidateSite
-  · exact stack
-  · omega
-  · simp [stack]; omega
-  change OpenRegionTrace originalCode candidateCode (fuel+1) (fuel+7) 0 (compilerPower s a b c tail) (compilerExit s a b c tail)
-  apply OpenRegionTrace.extended (compilerPower s a b c tail) (compilerAdd s a b c tail) _ (fuel+5) 0 .ADD (none) .add
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact originalAddDecoded
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact candidateAddDecoded
-  · constructor
-    · change 3 ≤ (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5).toNat
-      omega
-    · simp [δ,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]
-    · simp [δ,α,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]; omega
-  · exact step_add _ (fuel+5) 3 none b (UInt256.mul (UInt256.ofNat 32) a) (c :: tail) rfl
-  change OpenRegionTrace originalCode candidateCode (fuel+1) (fuel+6) 0 (compilerAdd s a b c tail) (compilerExit s a b c tail)
-  apply OpenRegionTrace.extended (compilerAdd s a b c tail) (compilerSwap s a b c tail) _ (fuel+4) 0 .SWAP1 (none) .swap1
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact originalSwapDecoded
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact candidateSwapDecoded
-  · constructor
-    · change 3 ≤ (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3).toNat
-      omega
-    · simp [δ,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]
-    · simp [δ,α,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]; omega
-  · exact step_swap1 _ (fuel+4) 3 none c (UInt256.add (UInt256.mul (UInt256.ofNat 32) a) b) tail rfl
-  change OpenRegionTrace originalCode candidateCode (fuel+1) (fuel+5) 0 (compilerSwap s a b c tail) (compilerExit s a b c tail)
-  apply OpenRegionTrace.extended (compilerSwap s a b c tail) (compilerZero s a b c tail) _ (fuel+3) 0 .PUSH0 (none) .push0
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact originalZeroDecoded
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact candidateZeroDecoded
-  · constructor
-    · change 2 ≤ (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3).toNat
-      omega
-    · simp [δ,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]
-    · simp [δ,α,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]; omega
-  · exact step_push0 _ (fuel+3) 2 none
-  change OpenRegionTrace originalCode candidateCode (fuel+1) (fuel+4) 0 (compilerZero s a b c tail) (compilerExit s a b c tail)
-  apply OpenRegionTrace.extended (compilerZero s a b c tail) (compilerDupA s a b c tail) _ (fuel+2) 0 .DUP1 (none) .dup1
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact originalDupADecoded
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact candidateDupADecoded
-  · constructor
-    · change 3 ≤ (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3 - UInt256.ofNat 2).toNat
-      omega
-    · simp [δ,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]
-    · simp [δ,α,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]; omega
-  · exact step_dup1 _ (fuel+2) 3 none (UInt256.ofNat 0) (c :: (UInt256.add (UInt256.mul (UInt256.ofNat 32) a) b) :: tail) rfl
-  change OpenRegionTrace originalCode candidateCode (fuel+1) (fuel+3) 0 (compilerDupA s a b c tail) (compilerExit s a b c tail)
-  apply OpenRegionTrace.extended (compilerDupA s a b c tail) (compilerDupB s a b c tail) _ (fuel+1) 0 .DUP1 (none) .dup1
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact originalDupBDecoded
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact candidateDupBDecoded
-  · constructor
-    · change 3 ≤ (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3 - UInt256.ofNat 2 - UInt256.ofNat 3).toNat
-      omega
-    · simp [δ,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]
-    · simp [δ,α,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]; omega
-  · exact step_dup1 _ (fuel+1) 3 none (UInt256.ofNat 0) ((UInt256.ofNat 0) :: c :: (UInt256.add (UInt256.mul (UInt256.ofNat 32) a) b) :: tail) rfl
-  change OpenRegionTrace originalCode candidateCode (fuel+1) (fuel+2) 0 (compilerDupB s a b c tail) (compilerExit s a b c tail)
-  apply OpenRegionTrace.same (compilerDupB s a b c tail) (compilerExit s a b c tail) _ fuel 0 .PUSH2 (some (UInt256.ofNat $destination,2)) (.push .PUSH2 (by decide))
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact originalTargetDecoded
-  · simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]; exact candidateTargetDecoded
-  · constructor
-    · change 3 ≤ (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3 - UInt256.ofNat 2 - UInt256.ofNat 3 - UInt256.ofNat 3).toNat
-      omega
-    · simp [δ,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]
-    · simp [δ,α,compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode]; omega
-  · exact step_push _ .PUSH2 (UInt256.ofNat $destination) 2 fuel 3 (by decide)
-  exact OpenRegionTrace.done _
+    OpenRegionTrace originalCode candidateCode (fuel+1) (fuel+9) 1 s (compilerExit s a b c tail) :=
+  GolfPowerRegion.compilerTrace originalCode candidateCode $entry_pc $destination originalAddDecoded originalSwapDecoded originalZeroDecoded originalDupADecoded originalDupBDecoded originalTargetDecoded candidateAddDecoded candidateSwapDecoded candidateZeroDecoded candidateDupADecoded candidateDupBDecoded candidateTargetDecoded originalSite candidateSite s a b c tail fuel pc stack gas peak
 
 theorem compilerExitPC (s : EVM.State) (a b c : UInt256) (tail : List UInt256) (pc : s.pc = UInt256.ofNat $entry_pc) :
-    (compilerExit s a b c tail).pc = UInt256.ofNat $exit_pc := by
-  simp only [compilerPower,compilerAdd,compilerSwap,compilerZero,compilerDupA,compilerDupB,compilerExit,mulPowerPost,binaryPost,pushedWidth,withCode,pc]
-  rfl
+    (compilerExit s a b c tail).pc = UInt256.ofNat $exit_pc :=
+  GolfPowerRegion.compilerExitPC originalCode $entry_pc $destination s a b c tail pc
 
 theorem compilerExitStack (s : EVM.State) (a b c : UInt256) (tail : List UInt256) :
     (compilerExit s a b c tail).stack =
       UInt256.ofNat $destination :: UInt256.ofNat 0 :: UInt256.ofNat 0 :: UInt256.ofNat 0 :: c ::
-        (UInt256.add (UInt256.mul (UInt256.ofNat 32) a) b) :: tail := rfl
+        (UInt256.add (UInt256.mul (UInt256.ofNat 32) a) b) :: tail :=
+  GolfPowerRegion.compilerExitStack originalCode $destination s a b c tail
 
 theorem compilerExitGas (s : EVM.State) (a b c : UInt256) (tail : List UInt256)
     (gas : 25 ≤ s.gasAvailable.toNat) :
-    (compilerExit s a b c tail).gasAvailable.toNat = s.gasAvailable.toNat - 25 := by
-  have g1 := word_sub_toNat (s.gasAvailable) 3 (by decide) (by omega)
-  have g2 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3) 5 (by decide) (by omega)
-  have g3 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5) 3 (by decide) (by omega)
-  have g4 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3) 3 (by decide) (by omega)
-  have g5 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3) 2 (by decide) (by omega)
-  have g6 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3 - UInt256.ofNat 2) 3 (by decide) (by omega)
-  have g7 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3 - UInt256.ofNat 2 - UInt256.ofNat 3) 3 (by decide) (by omega)
-  have g8 := word_sub_toNat (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3 - UInt256.ofNat 2 - UInt256.ofNat 3 - UInt256.ofNat 3) 3 (by decide) (by omega)
-  change (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 5 - UInt256.ofNat 3 - UInt256.ofNat 3 - UInt256.ofNat 2 - UInt256.ofNat 3 - UInt256.ofNat 3 - UInt256.ofNat 3).toNat = _
-  omega
+    (compilerExit s a b c tail).gasAvailable.toNat = s.gasAvailable.toNat - 25 :=
+  GolfPowerRegion.compilerExitGas originalCode $destination s a b c tail gas
 
 theorem compiler_region_boundary (owner : AccountAddress) (s t : EVM.State)
     (a b c : UInt256) (tail : List UInt256) (fuel surplus : Nat)
@@ -142,15 +60,8 @@ theorem compiler_region_boundary (owner : AccountAddress) (s t : EVM.State)
       (compilerExit s a b c tail).pc = UInt256.ofNat $exit_pc ∧
       candidateExit.pc = UInt256.ofNat $exit_pc ∧
       decode originalCode (compilerExit s a b c tail).pc = some (.JUMP,none) ∧
-      decode candidateCode candidateExit.pc = some (.JUMP,none) := by
-  obtain ⟨ce, sourceRun, targetRun, exitRelation⟩ := open_region_simulation owner originalCode candidateCode
-    (fuel+9) (fuel+1) 1 s t (compilerExit s a b c tail) surplus oldJumps newJumps
-    (compilerTrace s a b c tail fuel pc stack gas peak) related
-  have epc := compilerExitPC s a b c tail pc
-  have cpc := (deployed_frame_pc exitRelation).symm.trans epc
-  exact ⟨ce,sourceRun,targetRun,exitRelation,epc,cpc,
-    by rw [epc]; exact originalJumpDecoded,
-    by rw [cpc]; exact candidateJumpDecoded⟩
+      decode candidateCode candidateExit.pc = some (.JUMP,none) :=
+  GolfPowerRegion.compiler_region_boundary originalCode candidateCode $entry_pc $destination originalAddDecoded originalSwapDecoded originalZeroDecoded originalDupADecoded originalDupBDecoded originalTargetDecoded candidateAddDecoded candidateSwapDecoded candidateZeroDecoded candidateDupADecoded candidateDupBDecoded candidateTargetDecoded originalSite candidateSite originalJumpDecoded candidateJumpDecoded owner s t a b c tail fuel surplus oldJumps newJumps related pc stack gas peak
 
 #print axioms compilerTrace
 #print axioms compiler_region_boundary
