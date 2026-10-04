@@ -1,20 +1,32 @@
-import EvmYul.EVM.Semantics
-import LayoutScanner
+import CheckedParserTable0
+import CheckedParserTable1
+import CheckedParserTable2
+import CheckedParserTable3
 set_option Elab.async false
 set_option maxRecDepth 4096
 set_option maxHeartbeats 2000000
 open EvmYul EvmYul.EVM
 namespace GolfParserFacts
 
-def Agrees (byte : UInt8) : Prop :=
-  let op := (parseInstr byte).getD .INVALID
-  parseInstr byte = some op ∧
-  argOnNBytesOfInstr op = (if 96 ≤ byte.toNat ∧ byte.toNat ≤ 127 then byte.toNat - 95 else 0) ∧
-  (op = .JUMPDEST ↔ byte.toNat = 91)
-
-instance (byte : UInt8) : Decidable (Agrees byte) := by unfold Agrees; infer_instance
-
-theorem parser_table : ∀ n : Fin 256, Agrees (UInt8.ofNat n.val) := by decide
+theorem parser_table : ∀ n : Fin 256, Agrees (UInt8.ofNat n.val) := by
+  intro n
+  have hn := n.isLt
+  by_cases h0 : n.val < 64
+  · simpa only [Nat.zero_add] using parser_table0 ⟨n.val, h0⟩
+  by_cases h1 : n.val < 128
+  · have offset : 64 + (n.val - 64) = n.val := by omega
+    have fact := parser_table1 ⟨n.val - 64, by omega⟩
+    change Agrees (UInt8.ofNat (64 + (n.val - 64))) at fact
+    simpa only [offset] using fact
+  by_cases h2 : n.val < 192
+  · have offset : 128 + (n.val - 128) = n.val := by omega
+    have fact := parser_table2 ⟨n.val - 128, by omega⟩
+    change Agrees (UInt8.ofNat (128 + (n.val - 128))) at fact
+    simpa only [offset] using fact
+  · have offset : 192 + (n.val - 192) = n.val := by omega
+    have fact := parser_table3 ⟨n.val - 192, by omega⟩
+    change Agrees (UInt8.ofNat (192 + (n.val - 192))) at fact
+    simpa only [offset] using fact
 
 theorem parser_agrees (byte : UInt8) : Agrees byte := by
   have fact := parser_table ⟨byte.toNat, byte.toNat_lt_size⟩

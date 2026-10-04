@@ -362,6 +362,31 @@ const JUMP_MODULES: &[(&str, &str, &[&str])] = &[
         ],
     ),
     (
+        "CheckedParserBase",
+        include_str!("../../lean/upstream/CheckedParserBase.lean"),
+        &[],
+    ),
+    (
+        "CheckedParserTable0",
+        include_str!("../../lean/upstream/CheckedParserTable0.lean"),
+        &["GolfParserFacts.parser_table0"],
+    ),
+    (
+        "CheckedParserTable1",
+        include_str!("../../lean/upstream/CheckedParserTable1.lean"),
+        &["GolfParserFacts.parser_table1"],
+    ),
+    (
+        "CheckedParserTable2",
+        include_str!("../../lean/upstream/CheckedParserTable2.lean"),
+        &["GolfParserFacts.parser_table2"],
+    ),
+    (
+        "CheckedParserTable3",
+        include_str!("../../lean/upstream/CheckedParserTable3.lean"),
+        &["GolfParserFacts.parser_table3"],
+    ),
+    (
         "CheckedParserFacts",
         include_str!("../../lean/upstream/CheckedParserFacts.lean"),
         &[
