@@ -60,6 +60,37 @@ proofs and fixture checks as other fixed-layout runs; no whole-contract or all-i
 equivalence is established. This supports external proposal search, but does not
 launch agents, schedule a campaign or resume interrupted runs.
 
+## Discover byte pairs
+
+Search for stack rewrites and pass the resulting JSON through the existing checker:
+
+```sh
+cargo run --locked -- discover-runtime-proposals --bytecode runs/runtime.hex > runs/proposals.json
+cargo run --locked -- optimize-runtime --bytecode runs/runtime.hex \
+  --preserve-layout --scenarios runs/scenarios.json --proposals runs/proposals.json \
+  --out runs/discovered-1
+```
+
+Discovery emits **unverified** proposals bound to the complete original bytecode.
+It does not execute Lean or transactions. Only the second command checks generated
+proofs and replays the final candidate. Proposals can be rejected or time out during
+checking; neither outcome accepts a candidate. An empty `sites` array means no eligible
+proposal was found within this search; the optimizer rejects empty batches.
+
+The finite search enumerates up to four POP, SWAP1–SWAP7 or DUP1–DUP8 instructions
+(69,905 raw sequences), within the existing eight-input and two-extra-slot bounds.
+It examines two to six such source instructions followed by a PUSH, and can widen
+that PUSH's immediate to keep byte offsets unchanged. These limits bound search
+work; they do not establish global optimality or completeness for other windows.
+Candidates retain the full symbolic stack, stack requirements, peak and fault
+classes, and pass existing layout guards before they are proposed.
+
+Discovery ranks by static gas saving, shorter window, original offset and candidate
+bytes, then selects at most 32 disjoint sites and emits them in offset order. This
+is a deterministic greedy selection, not a maximum-total-saving solution. All sites
+refer to the same immutable original image. Static savings are not transaction
+savings; supplied scenarios still determine whether a candidate is accepted.
+
 ## Propose a byte pair
 
 Agents can propose one new local rewrite within a full runtime. Pass a JSON object

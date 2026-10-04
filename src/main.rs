@@ -30,6 +30,11 @@ enum Action {
         #[arg(long)]
         bytecode: PathBuf,
     },
+    /// Discover unverified fixed-layout stack proposals with bounded search.
+    DiscoverRuntimeProposals {
+        #[arg(long)]
+        bytecode: PathBuf,
+    },
     /// Compare arbitrary Cancun runtimes on supplied account/transaction fixtures.
     /// This is concrete replay, not a Lean or whole-contract equivalence proof.
     CheckRuntime {
@@ -156,6 +161,16 @@ fn main() -> Result<()> {
                 "{}",
                 serde_json::to_string_pretty(&runtime::rewrite_opportunities(&code)?)?
             );
+        }
+        Action::DiscoverRuntimeProposals { bytecode } => {
+            let code = runtime::input::read_bytecode(&bytecode)?;
+            let proposals = runtime::discover_proposals(&code)?;
+            let json = serde_json::to_string_pretty(&proposals)?;
+            eprintln!(
+                "{} unverified proposals from bounded Cancun stack search; verify with optimize-runtime --proposals before use.",
+                proposals.sites.len()
+            );
+            println!("{json}");
         }
         Action::CheckRuntime {
             original,

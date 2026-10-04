@@ -20,7 +20,7 @@ calls in fixed-layout mode, including constant own-code reads with certified byt
 Rewrites include power-of-two multiplication, constant folds, known-zero
 duplication chains, and certified mask elimination and reuse with unchanged jump destinations
 and surrounding offsets. Agents select built-in rewrites with [hash-bound plans](docs/runtime.md#select-rewrite-sites)
-or [propose byte pairs](docs/runtime.md#propose-a-byte-pair), including stack permutations and neutral arithmetic,
+or [discover and propose byte pairs](docs/runtime.md#discover-byte-pairs), including stack permutations and neutral arithmetic,
 individually or in disjoint batches,
 for generated proofs and guarded replay of the final candidate. An opt-in
 [region checker](docs/regions.md) also certifies a supported compiler prefix

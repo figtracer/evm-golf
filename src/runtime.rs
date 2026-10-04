@@ -27,6 +27,7 @@ mod calls;
 pub mod input;
 mod layout;
 mod precompile;
+mod proposal_search;
 pub mod region;
 pub mod scenario;
 mod window_proposal;
@@ -200,6 +201,13 @@ pub fn rewrite_opportunities(code: &[u8]) -> Result<RewriteOpportunities> {
         original_keccak256: keccak256(code).to_string(),
         rewrites: layout::opportunities(&analysis)?,
     })
+}
+
+/// Discover a deterministic, bounded set of unverified exact byte-pair proposals.
+/// Empty sites means this heuristic found no eligible candidate. Acceptance still
+/// requires the existing batch proof and guarded account-scenario replay.
+pub fn discover_proposals(code: &[u8]) -> Result<RewriteProposalBatch> {
+    proposal_search::discover(code)
 }
 
 /// Analyze all reachable paths, including both conditional edges. Unsupported

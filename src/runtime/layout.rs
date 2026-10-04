@@ -43,7 +43,7 @@ pub struct LayoutAnalysis {
     #[serde(skip)]
     instructions: Vec<Instruction>,
     #[serde(skip)]
-    reachable: BTreeSet<usize>,
+    pub(super) reachable: BTreeSet<usize>,
     #[serde(skip)]
     pub(super) copies: Vec<CodeCopy>,
 }
