@@ -17,8 +17,7 @@ const MAX_OPS: usize = 16;
 const MAX_REQUIRED: usize = 8;
 const MAX_PEAK: usize = 2;
 const STACK_LIMIT: usize = 1024;
-const ALGEBRA: &str =
-    "BitVec.and_assoc, BitVec.and_comm, GolfGenerated.and_left_comm, BitVec.and_self";
+const ALGEBRA: &str = "BitVec.and_assoc, BitVec.and_comm, GolfGenerated.and_left_comm, BitVec.and_self, BitVec.zero_add, BitVec.add_zero";
 
 pub(super) struct WindowProof {
     pub source: String,
@@ -35,6 +34,7 @@ enum Word {
     Constant(U256),
     Input(usize),
     And(Box<Self>, Box<Self>),
+    Add(Box<Self>, Box<Self>),
     Sub(Box<Self>, Box<Self>),
     Shl(Box<Self>, Box<Self>),
 }
@@ -58,6 +58,7 @@ impl Word {
             Self::Constant(value) => format!("(BitVec.ofNat 256 {value})"),
             Self::Input(index) => format!("a{index}"),
             Self::And(left, right) => format!("({} &&& {})", left.lean(), right.lean()),
+            Self::Add(top, next) => format!("({} + {})", top.lean(), next.lean()),
             Self::Sub(top, next) => format!("({} - {})", top.lean(), next.lean()),
             Self::Shl(value, shift) => format!("({} <<< ({}).toNat)", value.lean(), shift.lean()),
         }
@@ -65,6 +66,10 @@ impl Word {
 
     fn folded(&self) -> Option<U256> {
         match self {
+            Self::Add(top, next) => match (&**top, &**next) {
+                (Self::Constant(a), Self::Constant(b)) => Some(a.wrapping_add(*b)),
+                _ => None,
+            },
             Self::Sub(top, next) => match (&**top, &**next) {
                 (Self::Constant(a), Self::Constant(b)) => Some(a.wrapping_sub(*b)),
                 _ => None,
@@ -97,6 +102,18 @@ impl Word {
         }
         match self {
             Self::Constant(_) | Self::Input(_) => self.clone(),
+            Self::Add(top, next) => {
+                let a = top.normalize();
+                let b = next.normalize();
+                if a == Self::Constant(U256::ZERO) {
+                    b
+                } else if b == Self::Constant(U256::ZERO) {
+                    a
+                } else {
+                    let node = Self::Add(Box::new(a), Box::new(b));
+                    node.folded().map(Self::Constant).unwrap_or(node)
+                }
+            }
             Self::Sub(top, next) | Self::Shl(top, next) => {
                 let a = Box::new(top.normalize());
                 let b = Box::new(next.normalize());
@@ -265,9 +282,12 @@ fn inspect(code: &[u8]) -> Result<(Vec<Instruction>, Profile)> {
                 ensure!(push_value(&instruction.bytes).is_some(), "truncated PUSH");
                 (0, 1, if op == 0x5f { 2 } else { 3 })
             }
-            0x03 | 0x16 | 0x1b => (2, -1, 3),
+            0x01 | 0x03 | 0x16 | 0x1b => (2, -1, 3),
             0x50 => (1, -1, 2),
-            _ => bail!("unsupported proposal opcode 0x{op:02x}; expected PUSH/AND/POP/SUB/SHL"),
+            0x80..=0x8f => (isize::from(op - 0x7f), 1, 3),
+            _ => bail!(
+                "unsupported proposal opcode 0x{op:02x}; expected PUSH/AND/POP/SUB/SHL/DUP/ADD"
+            ),
         };
         required = required.max((need - height).max(0) as usize);
         height += delta;
@@ -296,11 +316,19 @@ fn fault(ops: &[Instruction], mut height: usize) -> u8 {
                 }
                 height += 1;
             }
-            0x03 | 0x16 | 0x1b => {
+            0x01 | 0x03 | 0x16 | 0x1b => {
                 if height < 2 {
                     return 1;
                 }
                 height -= 1;
+            }
+            0x80..=0x8f => {
+                // Pinned revm reports missing DUP input as overflow, not underflow.
+                let depth = usize::from(instruction.bytes[0] - 0x7f);
+                if height < depth || height >= STACK_LIMIT {
+                    return 2;
+                }
+                height += 1;
             }
             0x50 => {
                 if height < 1 {
@@ -320,13 +348,20 @@ fn trace(ops: &[Instruction], input: &[Word]) -> (Vec<Step>, bool) {
     for instruction in ops {
         match instruction.bytes[0] {
             0x5f..=0x7f => stack.insert(0, Word::Constant(push_value(&instruction.bytes).unwrap())),
+            0x80..=0x8f => {
+                let index = usize::from(instruction.bytes[0] - 0x80);
+                let Some(word) = stack.get(index).cloned() else {
+                    return (steps, true);
+                };
+                stack.insert(0, word);
+            }
             0x50 => {
                 if stack.is_empty() {
                     return (steps, true);
                 }
                 stack.remove(0);
             }
-            0x03 | 0x16 | 0x1b => {
+            0x01 | 0x03 | 0x16 | 0x1b => {
                 if stack.len() < 2 {
                     return (steps, true);
                 }
@@ -335,6 +370,7 @@ fn trace(ops: &[Instruction], input: &[Word]) -> (Vec<Step>, bool) {
                 stack.insert(
                     0,
                     match instruction.bytes[0] {
+                        0x01 => Word::Add(Box::new(a), Box::new(b)),
                         0x03 => Word::Sub(Box::new(a), Box::new(b)),
                         0x1b => Word::Shl(Box::new(b), Box::new(a)),
                         _ => Word::And(Box::new(a), Box::new(b)),
@@ -361,7 +397,7 @@ fn emit_folds<'a>(out: &mut String, steps: impl Iterator<Item = &'a Step>) -> St
             nodes.insert(word.clone());
         }
         match word {
-            Word::And(a, b) | Word::Sub(a, b) | Word::Shl(a, b) => {
+            Word::And(a, b) | Word::Add(a, b) | Word::Sub(a, b) | Word::Shl(a, b) => {
                 collect(a, nodes);
                 collect(b, nodes);
             }
@@ -579,7 +615,7 @@ def run : Nat → List Nat → Nat → Result
        let width := op-95
        if width > rest.length then .unsupported
        else if height ≥ 1024 then .overflow else run fuel (rest.drop width) (height+1)
-     else if op = 3 ∨ op = 22 ∨ op = 27 then
+     else if op = 1 ∨ op = 3 ∨ op = 22 ∨ op = 27 then
        if height < 2 then .underflow else run fuel rest (height-1)
      else if op = 80 then
        if height < 1 then .underflow else run fuel rest (height-1)

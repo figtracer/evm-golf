@@ -272,8 +272,9 @@ pub(super) fn proposal_batch_certificate(
         source.push_str(&proof.source);
         names.extend(proof.names.iter().cloned());
     }
-    writeln!(source,"\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\n{}\n{}",
-        include_str!("../../lean/GenericWindowArtifact.lean"),include_str!("../../lean/GenericWindowBatch.lean")).unwrap();
+    writeln!(source,"\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\n{}\n{}\n{}",
+        include_str!("../../lean/GenericWindowArtifact.lean"),include_str!("../../lean/GenericWindowBatch.lean"),
+        include_str!("../../lean/GenericWindowBatchIndex.lean")).unwrap();
     source.push_str("\nnamespace GolfProposedBatch\nopen GolfLayout GolfGenericWindow\n");
     for (index, (before, after, proof)) in proofs.iter().enumerate() {
         let namespace = format!("GolfGenerated.Pair{index}");
@@ -341,9 +342,30 @@ pub(super) fn proposal_batch_certificate(
         )
         .unwrap();
     }
-    source.push_str("]\ndef artifact : GolfGenericWindowBatch.Artifact original candidate sites copies :=\n GolfGenericWindowBatch.certify locals (by decide +kernel)\nend GolfProposedBatch\n#print axioms GolfProposedBatch.artifact\n");
+    writeln!(
+        source,
+        "]\ndef tree : GolfBatchIntervals.Tree := {}",
+        proposal_tree(0, rewrites.len())
+    )
+    .unwrap();
+    source.push_str("def artifact : GolfGenericWindowBatch.Artifact original candidate sites copies :=\n ⟨locals, GolfGenericWindowBatch.fast_sound (tree := tree) (by decide +kernel) (by decide +kernel) (by decide +kernel)⟩\nend GolfProposedBatch\n#print axioms GolfProposedBatch.artifact\n");
     names.push("GolfProposedBatch.artifact".into());
     Ok((source, names))
+}
+
+// The kernel checks this index's ordering and exact coverage of the site list.
+// Balancing affects lookup cost only; it cannot authorize an omitted range.
+fn proposal_tree(start: usize, end: usize) -> String {
+    if start == end {
+        "GolfBatchIntervals.Tree.empty".into()
+    } else {
+        let middle = start + (end - start) / 2;
+        format!(
+            "(GolfBatchIntervals.Tree.node {} site_{middle} {})",
+            proposal_tree(start, middle),
+            proposal_tree(middle + 1, end)
+        )
+    }
 }
 
 #[cfg(test)]

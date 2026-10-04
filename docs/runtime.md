@@ -78,13 +78,16 @@ Only that proposed site is changed; built-in rewrites are not also applied. Exis
 plan and automatic optimization behavior is unchanged. Each attempt uses a fresh
 output directory and retains the input proposal with its evidence.
 
-The initial generator supports PUSH0–PUSH32, AND, POP, SHL and SUB. Both fragments must have
+The initial generator supports PUSH0–PUSH32, DUP1–DUP16, ADD, AND, POP, SHL and SUB. Both fragments must have
 equal byte length, identical stack requirements, growth and peak, and lower static
 opcode gas in the candidate. Each is limited to 64 bytes and 16 instructions, with
 at most eight required input words and two extra peak stack slots. These bounds
 limit generated proof size and case analysis; they do not restrict existing built-in
 rules. SHL uses the full 256-bit shift amount (amounts of 256 or more produce zero);
-SUB wraps modulo 2²⁵⁶ and subtracts the next word from the top word. Closed
+ADD and SUB wrap modulo 2²⁵⁶; SUB subtracts the next word from the top word.
+DUP preserves checked stack aliases. Neutral additions may be removed only with
+matching stack requirements, peak and failure classes. The eight-input bound still
+applies, including to aliases reached after temporary pushes. Closed
 arithmetic is kernel-checked; symbolic shifts and subtractions retain their operand
 order. Other instructions and unsupported algebra are rejected.
 

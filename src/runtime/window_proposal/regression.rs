@@ -138,3 +138,106 @@ fn kernel_checks_closed_arithmetic_and_symbolic_shift_subtraction() {
         );
     }
 }
+
+#[test]
+fn neutral_stack_aliases_preserve_every_word_and_fault_class() {
+    for depth in 1usize..=8 {
+        let before = vec![0x7f + depth as u8, 0x60, 0, 0x01];
+        let after = vec![0x7f + depth as u8, 0x60, 0, 0x50];
+        let local = certificate(&before, &after).unwrap();
+        assert_eq!((local.required, local.delta, local.peak), (depth, 1, 2));
+        let mut words = vec![U256::MAX, U256::ZERO, U256::from(1) << 255];
+        words.extend((0..depth).map(|i| U256::from(i + 17)));
+        let expected: Vec<u8> = std::iter::once(words[depth - 1])
+            .chain(words.iter().copied())
+            .flat_map(|word| word.to_be_bytes::<32>())
+            .collect();
+        for fragment in [&before, &after] {
+            let mut code: Vec<u8> = words.iter().rev().copied().flat_map(word_push).collect();
+            code.extend(fragment);
+            for index in 0..=words.len() {
+                code.extend(word_push(U256::from(index * 32)));
+                code.push(0x52);
+            }
+            code.extend(word_push(U256::from(expected.len())));
+            code.extend([0x5f, 0xf3]);
+            let result = run(&code);
+            assert!(result.is_success());
+            assert_eq!(result.output().unwrap().as_ref(), expected.as_slice());
+        }
+        for height in [0, depth - 1, depth, depth + 3, 1022, 1023, 1024] {
+            let prefix = vec![0x5f; height];
+            let left = run(&[prefix.as_slice(), &before, &[0]].concat());
+            let right = run(&[prefix.as_slice(), &after, &[0]].concat());
+            assert_eq!(left.is_halt(), height < depth || height >= 1023);
+            if left.is_halt() {
+                assert_eq!(left, right);
+            } else {
+                assert!(right.is_success());
+                assert_eq!(left.tx_gas_used() - right.tx_gas_used(), 1);
+            }
+        }
+    }
+    // Removing ADD without retaining a depth-establishing instruction loses the
+    // required input and changes failure behavior at an empty stack.
+    assert!(certificate(&from_hex("600001").unwrap(), &from_hex("600050").unwrap()).is_err());
+    // A different DUP depth changes the alias and entry stack requirement.
+    assert!(
+        certificate(
+            &from_hex("81600001").unwrap(),
+            &from_hex("80600050").unwrap()
+        )
+        .is_err()
+    );
+    assert!(
+        certificate(
+            &from_hex("88600001").unwrap(),
+            &from_hex("88600050").unwrap()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn kernel_checks_stack_aliases_neutral_addition_and_wrapping_addition() {
+    let directory = tempdir().unwrap();
+    let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = (1u8..=8)
+        .map(|depth| {
+            (
+                vec![0x7f + depth, 0x60, 0, 0x01],
+                vec![0x7f + depth, 0x60, 0, 0x50],
+            )
+        })
+        .collect();
+    // Closed addition wraps independently of the neutral symbolic rules.
+    pairs.push((
+        [vec![0x60, 1], word_push(U256::MAX), vec![0x01]].concat(),
+        [word_push(U256::ZERO), vec![0x60, 0, 0x50]].concat(),
+    ));
+    // Exercise the opposite zero operand order after a checked alias.
+    pairs.push((from_hex("5f8101").unwrap(), from_hex("805f50").unwrap()));
+    // Temporary growth permits DUP9 while still requiring only eight inputs.
+    pairs.push((from_hex("5f8801").unwrap(), from_hex("875f50").unwrap()));
+    for (index, (before, after)) in pairs.into_iter().enumerate() {
+        let local = certificate(&before, &after).unwrap();
+        let rewrite = Rewrite {
+            original_pc: 1,
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: local.required,
+        };
+        let original = [vec![0x5b], before, vec![0]].concat();
+        let candidate = [vec![0x5b], after, vec![0]].concat();
+        let (source, names) =
+            artifact::proposal_certificate(&original, &candidate, &rewrite, &[], local).unwrap();
+        let path = directory.path().join(format!("Alias{index}.lean"));
+        fs::write(&path, source).unwrap();
+        let result = proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational);
+        assert!(
+            result.is_ok(),
+            "{result:?}\n{}",
+            fs::read_to_string(path.with_extension("log")).unwrap_or_default()
+        );
+    }
+}
