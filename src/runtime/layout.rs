@@ -11,14 +11,26 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::{Instruction, MAX_RUNTIME_BYTES, Rewrite, allowed, decode, push_value, replacement};
 
-const MASK_WINDOWS: [(&str, &str); 2] = [
+const MASK_WINDOWS: [(&str, &str, usize); 4] = [
     (
         "6001600160e01b03166001600160e01b0319",
         "6001600160e01b03166400ffffffff60e01b",
+        1,
     ),
     (
         "6001600160a01b03166001600160a01b0316",
         "6800000000000000000161000160a01b0316",
+        1,
+    ),
+    (
+        "6001600160a01b0316866001600160a01b0316",
+        "6300000001600160a05f501b03809116908716",
+        7,
+    ),
+    (
+        "6001600160801b0316816001600160801b0316",
+        "6300000001600160805f501b03809116908216",
+        2,
     ),
 ];
 
@@ -186,7 +198,7 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
         .iter()
         .flat_map(|op| op.bytes.iter().copied())
         .collect();
-    for (before_hex, after_hex) in MASK_WINDOWS {
+    for (before_hex, after_hex, required_stack) in MASK_WINDOWS {
         let before = hex::decode(before_hex)?;
         let after = hex::decode(after_hex)?;
         for op in &analysis.instructions {
@@ -209,7 +221,7 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
                 original_pc: start,
                 before: hex::encode(&before),
                 after: hex::encode(&after),
-                required_stack: 1,
+                required_stack,
             });
         }
     }
@@ -220,10 +232,9 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
 }
 
 pub(super) fn is_mask(site: &Rewrite) -> bool {
-    site.required_stack == 1
-        && MASK_WINDOWS
-            .iter()
-            .any(|(before, after)| site.before == *before && site.after == *after)
+    MASK_WINDOWS.iter().any(|(before, after, required)| {
+        site.required_stack == *required && site.before == *before && site.after == *after
+    })
 }
 
 fn transform_aligned(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewrite>)> {
@@ -676,6 +687,87 @@ mod tests {
             } else {
                 assert_eq!(left.tx_gas_used() - right.tx_gas_used(), 18);
             }
+        }
+    }
+
+    #[test]
+    fn mask_reuse_preserves_outputs_metadata_and_stack_boundaries() {
+        for &(before, after, required) in &MASK_WINDOWS[2..] {
+            let prefix = "6001".repeat(required);
+            let original = bytes(&format!("{prefix}{before}00"));
+            let analysis = analyze(&original, false).unwrap();
+            let (candidate, sites) = transform(&analysis).unwrap();
+            assert_eq!(candidate, bytes(&format!("{prefix}{after}00")));
+            assert_eq!(sites.len(), 1);
+            assert_eq!(sites[0].required_stack, required);
+            assert!(is_mask(&sites[0]));
+            assert_eq!(
+                stack_signature(&bytes(before)).unwrap(),
+                (required as isize, 1, 4)
+            );
+            assert_eq!(
+                stack_signature(&bytes(after)).unwrap(),
+                (required as isize, 1, 4)
+            );
+            let mut wrong_depth = sites.into_iter().next().unwrap();
+            wrong_depth.required_stack = 1;
+            assert!(!is_mask(&wrong_depth));
+            let embedded = bytes(&format!("7f{before}{}00", "00".repeat(13)));
+            assert!(
+                transform(&analyze(&embedded, false).unwrap())
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
+            let copied = bytes(&format!(
+                "{prefix}{before}601360{:02x}60003900",
+                prefix.len() / 2
+            ));
+            assert_eq!(
+                transform(&analyze(&copied, true).unwrap()).unwrap().0,
+                copied
+            );
+
+            for height in (0..=required).chain(1020..=1024) {
+                let prefix = "5f".repeat(height);
+                let left = execute(&bytes(&format!("{prefix}{before}00")), &case(""))
+                    .unwrap()
+                    .result;
+                let right = execute(&bytes(&format!("{prefix}{after}00")), &case(""))
+                    .unwrap()
+                    .result;
+                assert_eq!(left.is_halt(), height < required || height > 1020);
+                assert_eq!(left.is_halt(), right.is_halt());
+                if left.is_halt() {
+                    assert_eq!(left, right, "required {required}, height {height}");
+                } else {
+                    assert_eq!(left.tx_gas_used() - right.tx_gas_used(), 2);
+                }
+            }
+            // Distinct full-width values expose incorrect source depth, mask or output order.
+            let words: Vec<U256> = (1..=required)
+                .map(|n| (U256::from(1) << 200) + (U256::from(1) << 140) + U256::from(n))
+                .collect();
+            let mut input = Vec::new();
+            for word in &words {
+                input.push(0x7f);
+                input.extend_from_slice(&word.to_be_bytes::<32>());
+            }
+            let run = |window: &str| {
+                let mut code = input.clone();
+                code.extend(bytes(window));
+                code.extend(bytes("5f5260205260405ff3"));
+                execute(&code, &case("")).unwrap().result
+            };
+            let left = run(before);
+            let right = run(after);
+            let width: usize = if required == 7 { 160 } else { 128 };
+            let mask: U256 = (U256::from(1) << width) - U256::from(1);
+            let mut expected = (words[0] & mask).to_be_bytes::<32>().to_vec();
+            expected.extend_from_slice(&(words[required - 1] & mask).to_be_bytes::<32>());
+            assert_eq!(left.output().unwrap().as_ref(), expected);
+            assert_eq!(right.output(), left.output());
+            assert_eq!(left.tx_gas_used() - right.tx_gas_used(), 2);
         }
     }
 

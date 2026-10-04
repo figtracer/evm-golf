@@ -301,11 +301,18 @@ The [idempotent address-mask window](../lean/IdempotentMask.lean) removes a repe
 stack peak. Its certificate proves the successful output and matching underflow
 and overflow behavior.
 
+The [mask-reuse windows](../lean/MaskReuse.lean) share a computed mask across two
+stack values, saving two opcode gas with unchanged byte length and stack peak.
+The two exact families require two or seven input words; their certificates cover
+successful outputs, failure outside the valid stack-height range, and contextual
+substitution in the bounded model. That model records failure without distinguishing
+exceptional-halt reasons; runtime regressions separately check those reasons.
+
 The exact mask window in [lean/MaskWindow.lean](../lean/MaskWindow.lean) replaces
 repeated 224-bit mask construction with a shifted literal, saving nine opcode
 gas while retaining both outputs and the untouched stack tail. Its separate
-[window certificate](../lean/WindowArtifact.lean) permits only this byte pattern
-to change interior boundaries. It checks both endpoints, exterior decoding,
+[window certificate](../lean/WindowArtifact.lean) permits only the exact certified
+mask patterns to change interior boundaries. It checks both endpoints, exterior decoding,
 all jump destinations and protected code reads. Success requires an incoming
 height of 1–1,021; empty stacks and heights from 1,022 fail in both fragments.
 Old-only artifacts continue using the original layout certificate.

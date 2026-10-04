@@ -127,3 +127,35 @@ theorem of_unbounded {before after : List Nat}
     simp only [show ¬stack.length < 1024 by omega, ↓reduceIte, and_self]
 
 end GolfBounded
+
+namespace GolfBounded
+theorem step_success (fuel op : Nat) (rest : List Nat) (stack next output : List Golf.Word) (x y : Golf.Word)
+ (height : stack.length ≤ 1024)
+ (step : Golf.run 2 (op :: rest.take (if 96 ≤ op ∧ op ≤ 127 then op-95 else 0)) stack x y = some next)
+ (later : GolfBounded.run fuel (rest.drop (if 96 ≤ op ∧ op ≤ 127 then op-95 else 0)) next x y = some output) :
+ GolfBounded.run (fuel+1) (op::rest) stack x y = some output := by
+ rw [GolfBounded.run, if_neg (by omega)]
+ dsimp only
+ rw [step]
+ exact later
+theorem empty_success (fuel : Nat) (stack : List Golf.Word) (x y : Golf.Word) (height : stack.length ≤ 1024) :
+ GolfBounded.run (fuel+1) [] stack x y = some stack := by
+ rw [GolfBounded.run, if_neg (by omega)]
+theorem step_failure (fuel op : Nat) (rest : List Nat) (stack next : List Golf.Word) (x y : Golf.Word)
+ (step : Golf.run 2 (op :: rest.take (if 96 ≤ op ∧ op ≤ 127 then op-95 else 0)) stack x y = some next)
+ (later : GolfBounded.run fuel (rest.drop (if 96 ≤ op ∧ op ≤ 127 then op-95 else 0)) next x y = none) :
+ GolfBounded.run (fuel+1) (op::rest) stack x y = none := by
+ rw [GolfBounded.run]
+ split
+ · rfl
+ · dsimp only
+   rw [step]
+   exact later
+
+theorem overflow_failure (fuel : Nat) (code : List Nat) (stack : List Golf.Word) (x y : Golf.Word)
+ (height : 1024 < stack.length) : GolfBounded.run (fuel+1) code stack x y = none := by
+ rw [GolfBounded.run.eq_def]
+ dsimp only
+ rw [if_pos height]
+
+end GolfBounded

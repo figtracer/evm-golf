@@ -10,6 +10,7 @@ const LITERAL_MODEL: &str = include_str!("../../lean/Literals.lean");
 const ZERO_CHAIN_MODEL: &str = include_str!("../../lean/ZeroChains.lean");
 const LOCAL_CERTIFICATES: &str = include_str!("../../lean/Certificates.lean");
 const MASK_MODEL: &str = include_str!("../../lean/MaskWindow.lean");
+const MASK_REUSE_MODEL: &str = include_str!("../../lean/MaskReuse.lean");
 const IDEMPOTENT_MASK_MODEL: &str = include_str!("../../lean/IdempotentMask.lean");
 const WINDOW_MODEL: &str = include_str!("../../lean/WindowArtifact.lean");
 const WINDOW_CHECKER: &str = include_str!("../../lean/WindowChecker.lean");
@@ -35,8 +36,10 @@ pub(super) fn certificate(
         "layout artifact exceeds EIP-170 size limit"
     );
     ensure!(
-        rewrites.iter().all(|rewrite| rewrite.required_stack <= 1),
-        "layout artifacts require zero- or one-word fragment prefixes"
+        rewrites
+            .iter()
+            .all(|rewrite| rewrite.required_stack <= 1 || layout::is_mask(rewrite)),
+        "layout artifacts require certified fragment prefixes"
     );
     // Local soundness is proved once; the kernel checks every actual site below.
     // Compact-mode certificates still emit their individual fragment theorems.
@@ -54,7 +57,7 @@ pub(super) fn certificate(
     if windows {
         writeln!(
             source,
-            "{MASK_MODEL}\n{IDEMPOTENT_MASK_MODEL}\n{WINDOW_MODEL}\n{WINDOW_CHECKER}\n{WINDOW_STRUCTURE}"
+            "{MASK_MODEL}\n{IDEMPOTENT_MASK_MODEL}\n{MASK_REUSE_MODEL}\n{WINDOW_MODEL}\n{WINDOW_CHECKER}\n{WINDOW_STRUCTURE}"
         )
         .unwrap();
     }
@@ -77,7 +80,7 @@ pub(super) fn certificate(
         .unwrap();
     }
     // These are kernel reductions, not native evaluation. The aggregate theorem
-    // depends transitively on every site's unbounded, bounded and context proof.
+    // depends transitively on each site's certified operational and context proofs.
     source.push_str("]\nend GolfArtifact\n");
     if windows {
         source.push_str("namespace GolfArtifact\nopen GolfLayout GolfWindowArtifact\ndef copies : List GolfLayout.CodeCopy := [\n");
@@ -207,6 +210,45 @@ mod tests {
         let mut altered_sites = sites;
         altered_sites[1].after = hex::encode(&wrong[20..38]);
         assert!(verify("WrongIdempotent", &wrong, &altered_sites).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires Lean 4.34.0"]
+    fn binds_all_mask_families_and_rejects_inconsistent_stack_metadata() {
+        let dir = tempdir().unwrap();
+        let original = from_hex(concat!(
+            "6001600260036004600560066007",
+            "6001600160e01b03166001600160e01b0319",
+            "6001600160a01b03166001600160a01b0316",
+            "6001600160a01b0316866001600160a01b0316",
+            "6001600160801b0316816001600160801b0316",
+            "00"
+        ))
+        .unwrap();
+        let (candidate, sites) =
+            layout::transform(&layout::analyze(&original, false).unwrap()).unwrap();
+        assert_eq!(
+            sites
+                .iter()
+                .map(|site| site.required_stack)
+                .collect::<Vec<_>>(),
+            [1, 1, 7, 2]
+        );
+        let verify = |name: &str, sites: &[Rewrite]| {
+            let (source, names) = certificate(&original, &candidate, sites, &[]).unwrap();
+            let path = dir.path().join(format!("{name}.lean"));
+            fs::write(&path, source).unwrap();
+            proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational)
+        };
+        verify("AllFamilies", &sites).unwrap();
+        let mut wrong = sites;
+        wrong[2].required_stack = 1;
+        assert!(verify("WrongMetadata", &wrong).is_err());
+        wrong[2].required_stack = 6;
+        assert!(certificate(&original, &candidate, &wrong, &[]).is_err());
+        wrong[2].required_stack = 7;
+        wrong[2].after = wrong[2].after.replacen("91", "90", 1);
+        assert!(certificate(&original, &candidate, &wrong, &[]).is_err());
     }
 
     #[test]

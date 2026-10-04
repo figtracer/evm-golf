@@ -28,7 +28,7 @@ theorem run_fragment (bytes : List Nat) (op : Nat)
     simp only [GolfBounded.fragment, List.length_cons, List.length_append,
       List.length_nil, Nat.add_zero]
     rw [Golf.run]
-    simp only [notPush0, push, size, ite_false, ite_true]
+    simp only [Golf.step.eq_def, notPush0, push, size, ite_false, ite_true]
     simp only [List.length_append, List.length_cons, List.length_nil,
       Nat.le_add_right, ite_true, List.take_left, List.drop_left]
     rcases binary with rfl | rfl | rfl | rfl <;> simp [Golf.run]

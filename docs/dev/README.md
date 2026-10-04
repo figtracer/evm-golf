@@ -18,7 +18,7 @@
 | `lean/Fragment.lean` | Reusable exact power-of-two fragment execution proofs |
 | `lean/Literals.lean` | Two-literal folds and exact zero duplication with preserved stack peaks |
 | `lean/ZeroChains.lean` | Exact known-zero chains with derived growth, successful outputs and overflow proofs |
-| `lean/MaskWindow.lean`, `lean/IdempotentMask.lean` | Exact mask rewrites, successful outputs and bounded contextual behavior |
+| `lean/MaskWindow.lean`, `lean/IdempotentMask.lean`, `lean/MaskReuse.lean` | Exact mask rewrites, successful outputs and bounded contextual behavior |
 | `lean/Window*.lean*` | Separate window artifact, reflected checker and emitted proof template |
 | `lean/Stack.lean` | Operational instruction-boundary stack limits for local fragments |
 | `lean/Composition.lean` | Decoded boundaries, fuel and contextual substitution in the bounded model |

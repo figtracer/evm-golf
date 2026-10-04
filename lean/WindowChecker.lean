@@ -42,7 +42,21 @@ theorem checkIdempotent_sound (site : Site) (h : idempotentShape site = true) : 
    subst required; subst before; subst after
    exact exact_idempotent pc
 
-def checkSite (site : Site) : Bool := maskShape site || (idempotentShape site || checkOld site)
+theorem checkReuse_sound (site : Site) (h : reuseShape site = true) : ReuseEquivalent site := by
+ cases site with
+ | mk pc before after required =>
+   simp only [reuseShape, Bool.or_eq_true] at h
+   rcases h with two | seven
+   · simp only [Bool.and_eq_true, beq_iff_eq] at two
+     rcases two with ⟨⟨requiredEq,beforeEq⟩,afterEq⟩
+     subst required; subst before; subst after
+     exact exact_reuse2 pc
+   · simp only [Bool.and_eq_true, beq_iff_eq] at seven
+     rcases seven with ⟨⟨requiredEq,beforeEq⟩,afterEq⟩
+     subst required; subst before; subst after
+     exact exact_reuse7 pc
+
+def checkSite (site : Site) : Bool := maskShape site || (idempotentShape site || (reuseShape site || checkOld site))
 def checkSites (sites : List Site) : Bool := sites.all checkSite
 
 theorem checkSites_sound (sites : List Site) (h : checkSites sites = true) :
@@ -53,8 +67,9 @@ theorem checkSites_sound (sites : List Site) (h : checkSites sites = true) :
    simp only [checkSites,List.all_cons,Bool.and_eq_true] at h
    have checked := h.1
    simp only [checkSite,Bool.or_eq_true] at checked
-   rcases checked with mask | idempotent | old
+   rcases checked with mask | idempotent | reuse | old
    · exact .mask (checkMask_sound site mask) (ih h.2)
    · exact .idempotent (checkIdempotent_sound site idempotent) (ih h.2)
+   · exact .reuse (checkReuse_sound site reuse) (ih h.2)
    · exact .old (checkOld_sound site old) (ih h.2)
 end GolfWindowArtifact

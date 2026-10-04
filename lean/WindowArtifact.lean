@@ -1,5 +1,5 @@
 /-! Exact mask-window certificates. The existing LayoutArtifact and checker
-remain unchanged; only the two exact proved mask shapes may change interior boundaries. -/
+remain unchanged; only exact proved mask shapes may change interior boundaries. -/
 namespace GolfWindowArtifact
 open GolfLayout
 def profileAuxExtended : Nat → List Nat → Int → Nat → Nat → Option (Nat × Int × Nat)
@@ -19,6 +19,11 @@ def profileAuxExtended : Nat → List Nat → Int → Nat → Nat → Option (Na
     else if op = 128 then
       let next := height + 1
       profileAuxExtended fuel rest next (max required (1 - height).toNat) (max peak next.toNat)
+    else if 129 ≤ op ∧ op ≤ 143 then
+      let next := height + 1
+      profileAuxExtended fuel rest next (max required (((op - 127 : Nat) : Int) - height).toNat) (max peak next.toNat)
+    else if 144 ≤ op ∧ op ≤ 159 then
+      profileAuxExtended fuel rest height (max required (((op - 142 : Nat) : Int) - height).toNat) peak
     else if op = 80 then
       profileAuxExtended fuel rest (height - 1) (max required (1 - height).toNat) peak
     else none
@@ -88,7 +93,44 @@ theorem exact_idempotent (pc : Nat) : IdempotentEquivalent ⟨pc,GolfIdempotentM
  · exact GolfIdempotentMask.underflow
  · exact GolfIdempotentMask.overflow
 
-def windowShape (site : Site) : Bool := maskShape site || idempotentShape site
+def reuseShape (site : Site) : Bool :=
+ (site.requiredStack == 2 && site.before == GolfMaskReuse.before2 && site.after == GolfMaskReuse.after2) ||
+ (site.requiredStack == 7 && site.before == GolfMaskReuse.before7 && site.after == GolfMaskReuse.after7)
+
+structure ReuseEquivalent (site : Site) : Prop where
+ shape : reuseShape site = true
+ beforeProfile : profileExtended site.before = some (site.requiredStack,1,4)
+ afterProfile : profileExtended site.after = some (site.requiredStack,1,4)
+ equal : ∀ stack x y, GolfBounded.run (site.before.length+1) site.before stack x y =
+   GolfBounded.run (site.after.length+1) site.after stack x y
+ success : ∀ stack x y, site.requiredStack ≤ stack.length → stack.length ≤ 1020 →
+   ∃ output, GolfBounded.run (site.before.length+1) site.before stack x y = some output ∧
+     GolfBounded.run (site.after.length+1) site.after stack x y = some output
+ underflow : ∀ stack x y, stack.length < site.requiredStack →
+   GolfBounded.run (site.before.length+1) site.before stack x y = none ∧
+   GolfBounded.run (site.after.length+1) site.after stack x y = none
+ overflow : ∀ stack x y, 1021 ≤ stack.length →
+   GolfBounded.run (site.before.length+1) site.before stack x y = none ∧
+   GolfBounded.run (site.after.length+1) site.after stack x y = none
+ context : GolfComposition.ContextEquivalent site.before site.after
+
+theorem exact_reuse2 (pc : Nat) : ReuseEquivalent ⟨pc,GolfMaskReuse.before2,GolfMaskReuse.after2,2⟩ := by
+ refine ⟨by rfl, ?_, ?_, GolfMaskReuse.all_height2, GolfMaskReuse.success2,
+   GolfMaskReuse.underflow2, GolfMaskReuse.overflow2, GolfMaskReuse.context2⟩
+ · change profileExtended GolfMaskReuse.before2 = some (2,1,4)
+   decide +kernel
+ · change profileExtended GolfMaskReuse.after2 = some (2,1,4)
+   decide +kernel
+
+theorem exact_reuse7 (pc : Nat) : ReuseEquivalent ⟨pc,GolfMaskReuse.before7,GolfMaskReuse.after7,7⟩ := by
+ refine ⟨by rfl, ?_, ?_, GolfMaskReuse.all_height7, GolfMaskReuse.success7,
+   GolfMaskReuse.underflow7, GolfMaskReuse.overflow7, GolfMaskReuse.context7⟩
+ · change profileExtended GolfMaskReuse.before7 = some (7,1,4)
+   decide +kernel
+ · change profileExtended GolfMaskReuse.after7 = some (7,1,4)
+   decide +kernel
+
+def windowShape (site : Site) : Bool := maskShape site || idempotentShape site || reuseShape site
 
 -- Existing sites must retain all their original structural and local obligations.
 inductive CertifiedWindowSites : List Site → Prop where
@@ -100,6 +142,8 @@ inductive CertifiedWindowSites : List Site → Prop where
      MaskEquivalent site → CertifiedWindowSites sites → CertifiedWindowSites (site::sites)
  | idempotent {site : Site} {sites : List Site} :
      IdempotentEquivalent site → CertifiedWindowSites sites → CertifiedWindowSites (site::sites)
+ | reuse {site : Site} {sites : List Site} :
+     ReuseEquivalent site → CertifiedWindowSites sites → CertifiedWindowSites (site::sites)
 
 abbrev Row := Nat × Nat × Bool
 def interior (site : Site) (pc : Nat) : Bool := site.pc < pc && pc < site.pc+site.before.length

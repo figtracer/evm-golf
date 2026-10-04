@@ -29,12 +29,12 @@ theorem mul_power_fragment
     Nat.lt_trans exponentBound (by decide +kernel)
   refine ⟨(BitVec.ofNat 256 (2 ^ exponent) * a) :: tail, ?_, ?_⟩
   · rw [Golf.run]
-    simp only [beforeNotPush0, beforePush, beforeSize, ite_false]
+    simp only [Golf.step.eq_def, beforeNotPush0, beforePush, beforeSize, ite_false]
     simp only [List.length_append, List.length_cons, List.length_nil, Nat.le_add_right,
       ite_true, List.take_left, List.drop_left, beforeValue]
     simp [Golf.run]
   · rw [Golf.run]
-    simp only [afterNotPush0, afterPush, afterSize, ite_false]
+    simp only [Golf.step.eq_def, afterNotPush0, afterPush, afterSize, ite_false]
     simp only [List.length_append, List.length_cons, List.length_nil, Nat.le_add_right,
       ite_true, List.take_left, List.drop_left, afterValue]
     simp [Golf.run, BitVec.toNat_ofNat, Nat.mod_eq_of_lt exponentFits,
