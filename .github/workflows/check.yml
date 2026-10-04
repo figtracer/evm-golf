@@ -37,6 +37,8 @@ jobs:
       - name: Check Rust and Lean proofs
         run: bash scripts/check.sh
       - name: Install pinned upstream semantics
-        run: bash scripts/setup-upstream.sh
+        run: bash scripts/setup-upstream.sh --checked-scanner
       - name: Check upstream region certificate
         run: bash scripts/check-upstream.sh
+      - name: Check canonical static jumps
+        run: bash scripts/check-checked-scanner.sh

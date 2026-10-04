@@ -1,0 +1,84 @@
+import RegionProof
+import JumpMembership
+import Jump
+set_option Elab.async false
+set_option maxRecDepth 4096
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream
+namespace GolfCertificates.Jump
+
+def outputStack (a b c : UInt256) (tail : List UInt256) : List UInt256 :=
+  UInt256.ofNat 0 :: UInt256.ofNat 0 :: UInt256.ofNat 0 :: c ::
+    (UInt256.add (UInt256.mul (UInt256.ofNat 32) a) b) :: tail
+
+def compilerJump (s : EVM.State) (a b c : UInt256) (tail : List UInt256) : EVM.State :=
+  GolfJump.jumpPost (GolfCertificates.Region.compilerExit s a b c tail)
+    (UInt256.ofNat $destination) (outputStack a b c tail)
+
+theorem source_count (s : EVM.State) (a b c : UInt256) (tail : List UInt256) :
+    (compilerJump s a b c tail).execLength = s.execLength+9 := by
+  exact GolfJump.compiler_jump_count originalCode $destination s a b c tail (outputStack a b c tail)
+
+theorem source_gas (s : EVM.State) (a b c : UInt256) (tail : List UInt256)
+    (gas : 33 ≤ s.gasAvailable.toNat) :
+    (compilerJump s a b c tail).gasAvailable.toNat = s.gasAvailable.toNat-33 := by
+  have before := GolfCertificates.Region.compilerExitGas s a b c tail (by omega)
+  change ((GolfCertificates.Region.compilerExit s a b c tail).gasAvailable-UInt256.ofNat 8).toNat = _
+  rw [word_sub_toNat _ 8 (by decide) (by omega),before]
+  omega
+
+-- Executes JUMP, but does not execute the destination JUMPDEST or its suffix.
+theorem compiler_jump_boundary (owner : AccountAddress) (s t : EVM.State)
+    (a b c : UInt256) (tail : List UInt256) (fuel surplus : Nat)
+    (related : DeployedFrameWithGas owner originalCode candidateCode surplus s t)
+    (pc : s.pc = UInt256.ofNat $entry_pc) (stack : s.stack = a::b::c::tail)
+    (gas : 33 ≤ s.gasAvailable.toNat) (peak : tail.length+6 ≤ 1024) :
+    ∃ candidateFinal : EVM.State,
+      X (fuel+10) (D_J originalCode (UInt256.ofNat 0)) s =
+        X (fuel+1) (D_J originalCode (UInt256.ofNat 0)) (compilerJump s a b c tail) ∧
+      X (fuel+10) (D_J candidateCode (UInt256.ofNat 0)) t =
+        X (fuel+1) (D_J candidateCode (UInt256.ofNat 0)) candidateFinal ∧
+      DeployedFrameWithGas owner originalCode candidateCode (surplus+2)
+        (compilerJump s a b c tail) candidateFinal ∧
+      (compilerJump s a b c tail).pc = UInt256.ofNat $destination ∧
+      candidateFinal.pc = UInt256.ofNat $destination ∧
+      (compilerJump s a b c tail).stack = outputStack a b c tail ∧
+      candidateFinal.stack = outputStack a b c tail ∧
+      (compilerJump s a b c tail).gasAvailable.toNat = s.gasAvailable.toNat-33 ∧
+      candidateFinal.gasAvailable.toNat = t.gasAvailable.toNat-31 ∧
+      (compilerJump s a b c tail).execLength = s.execLength+9 ∧
+      candidateFinal.execLength = t.execLength+9 := by
+  obtain ⟨ce,oldRun,newRun,exitRelated,oldPC,newPC,oldDecode,newDecode⟩ :=
+    GolfCertificates.Region.compiler_region_boundary owner s t a b c tail (fuel+1) surplus
+      (D_J originalCode (UInt256.ofNat 0)) (D_J candidateCode (UInt256.ofNat 0))
+      related pc stack (by omega) peak
+  have exitGas := GolfCertificates.Region.compilerExitGas s a b c tail (by omega)
+  have result := GolfJump.paired_jump exitRelated (UInt256.ofNat $destination)
+    (outputStack a b c tail) fuel oldDecode newDecode
+    (GolfCertificates.Region.compilerExitStack s a b c tail) (by omega)
+    (by simp only [outputStack,List.length_cons]; omega)
+    GolfCertificates.JumpMembership.original_membership
+    GolfCertificates.JumpMembership.candidate_membership
+  have sourceGas := source_gas s a b c tail gas
+  have sourceCount := source_count s a b c tail
+  have targetGas := result.2.2.gas
+  have initialGas := related.gas
+  have initialCount : s.execLength = t.execLength := by
+    simpa only [deployedFrame,eraseMaps,eraseCodeGas] using
+      congrArg EVM.State.execLength related.frame
+  have finalCount : (compilerJump s a b c tail).execLength =
+      (GolfJump.jumpPost ce (UInt256.ofNat $destination) (outputStack a b c tail)).execLength := by
+    simpa only [compilerJump,deployedFrame,eraseMaps,eraseCodeGas] using
+      congrArg EVM.State.execLength result.2.2.frame
+  refine ⟨_,oldRun.trans result.1,newRun.trans result.2.1,result.2.2,
+    rfl,rfl,rfl,rfl,sourceGas,?_,sourceCount,?_⟩
+  · change (GolfJump.jumpPost ce (UInt256.ofNat $destination) (outputStack a b c tail)).gasAvailable.toNat = _
+    change (GolfJump.jumpPost ce (UInt256.ofNat $destination) (outputStack a b c tail)).gasAvailable.toNat =
+      (compilerJump s a b c tail).gasAvailable.toNat+(surplus+2) at targetGas
+    omega
+  · omega
+
+#print axioms source_count
+#print axioms source_gas
+#print axioms compiler_jump_boundary
+end GolfCertificates.Jump

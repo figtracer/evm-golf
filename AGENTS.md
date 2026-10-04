@@ -55,7 +55,8 @@ separate from expression leaderboard submissions.
 Neither establishes whole-contract equivalence or produces expression leaderboard
 entries. `certify-runtime-region` separately checks a supported internal prefix
 against pinned upstream semantics; read docs/regions.md for its explicit premises
-and excluded jump/suffix behavior. Keep runtime input corpora and generated results local too.
+and proof boundaries. `--through-jump` also executes a supported static JUMP
+under the separately identified checked-scanner profile. Keep runtime input corpora and generated results local too.
 
 ## Batch experiments
 

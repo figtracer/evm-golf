@@ -5,6 +5,7 @@ use revm::primitives::{U256, hex, keccak256};
 use serde::Serialize;
 use std::{fmt::Write as _, fs, path::Path};
 
+mod jump;
 mod span;
 pub use span::{SpanCertificate, certify_span};
 
@@ -25,6 +26,7 @@ const MASK_AFTER: [u8; 18] = [
     0x60, 1, 0x60, 1, 0x60, 0xe0, 0x1b, 3, 0x16, 0x64, 0, 0xff, 0xff, 0xff, 0xff, 0x60, 0xe0, 0x1b,
 ];
 const REGION: &str = include_str!("../../lean/upstream/templates/RegionProof.lean.in");
+const JUMP_REGION: &str = include_str!("../../lean/upstream/templates/JumpRegionProof.lean.in");
 
 /// Conditions and scope of the generated theorem, not a whole-contract verdict.
 #[derive(Debug, Serialize)]
@@ -83,8 +85,12 @@ impl Region {
         })
     }
 
-    fn sources(&self, original: &[u8], candidate: &[u8]) -> [(&'static str, String); 3] {
-        let images = images(original, candidate, self.entry_pc, 12);
+    fn sources(
+        &self,
+        original: &[u8],
+        candidate: &[u8],
+        images: String,
+    ) -> [(&'static str, String); 3] {
         let facts = decoded_facts(
             &original[self.entry_pc..self.entry_pc + 12],
             &candidate[self.entry_pc..self.entry_pc + 12],
@@ -136,7 +142,11 @@ pub fn certify(
         .with_context(|| format!("use a new output directory: {}", out.display()))?;
     fs::write(out.join("original.hex"), hex::encode(original) + "\n")?;
     fs::write(out.join("candidate.hex"), hex::encode(candidate) + "\n")?;
-    for (name, source) in region.sources(original, candidate) {
+    for (name, source) in region.sources(
+        original,
+        candidate,
+        images(original, candidate, entry_pc, 12),
+    ) {
         fs::write(out.join(name), source)?;
     }
     let lean_version = proof::verify_region(out, proof::RegionKind::Power)?;
@@ -163,6 +173,97 @@ pub fn certify(
             "suffix outcomes",
             "whole-contract equivalence",
             "revm correspondence",
+        ],
+        lean_version,
+    };
+    fs::write(
+        out.join("result.json"),
+        serde_json::to_string_pretty(&report)? + "\n",
+    )?;
+    Ok(report)
+}
+
+/// Check the exact power region through its trailing JUMP under checked-scanner semantics.
+///
+/// Both complete images must have an instruction boundary at the entry and a
+/// valid JUMPDEST at the pushed destination. The destination is not executed;
+/// entry reachability and suffix equivalence remain outside the certificate.
+pub fn certify_through_jump(
+    original: &[u8],
+    candidate: &[u8],
+    entry_pc: usize,
+    out: &Path,
+) -> Result<RegionCertificate> {
+    let region = Region::select(original, candidate, entry_pc)?;
+    for (side, code) in [("source", original), ("candidate", candidate)] {
+        ensure!(
+            super::decode(code)
+                .iter()
+                .any(|instruction| instruction.pc == entry_pc),
+            "{side} entry PC is not an instruction boundary"
+        );
+    }
+    let rendered = render_images(original, candidate, entry_pc, 12, ImageRoutes::All);
+    let membership = jump::membership_sources(
+        original,
+        candidate,
+        usize::from(region.destination),
+        &rendered,
+    )?;
+    let mut plan = proof::JumpPlan {
+        modules: membership
+            .iter()
+            .map(|(name, _, roots)| (name.clone(), roots.clone()))
+            .collect(),
+    };
+    plan.modules.push((
+        "JumpRegionProof".to_owned(),
+        vec![
+            "GolfCertificates.Jump.source_count".to_owned(),
+            "GolfCertificates.Jump.source_gas".to_owned(),
+            "GolfCertificates.Jump.compiler_jump_boundary".to_owned(),
+        ],
+    ));
+    proof::check_jump_output(out)?;
+    if let Some(parent) = out.parent().filter(|path| !path.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    fs::create_dir(out)
+        .with_context(|| format!("use a new output directory: {}", out.display()))?;
+    fs::write(out.join("original.hex"), hex::encode(original) + "\n")?;
+    fs::write(out.join("candidate.hex"), hex::encode(candidate) + "\n")?;
+    for (name, source) in region.sources(original, candidate, rendered.source) {
+        fs::write(out.join(name), source)?;
+    }
+    for (name, source, _) in membership {
+        fs::write(out.join(format!("{name}.lean")), source)?;
+    }
+    let source = JUMP_REGION
+        .replace("$entry_pc", &entry_pc.to_string())
+        .replace("$exit_pc", &(entry_pc + 11).to_string())
+        .replace("$destination", &region.destination.to_string());
+    fs::write(out.join("JumpRegionProof.lean"), source)?;
+    let lean_version = proof::verify_region(out, proof::RegionKind::PowerJump(&plan))?;
+    let report = RegionCertificate {
+        claim: "conditional checked-scanner internal path through JUMP",
+        original_keccak256: keccak256(original).to_string(),
+        candidate_keccak256: keccak256(candidate).to_string(),
+        entry_pc,
+        exit_pc: usize::from(region.destination),
+        pushed_destination: region.destination,
+        source_gas_minimum: 33,
+        gas_surplus_increase: 2,
+        input_stack: "a :: b :: c :: tail (top first; arbitrary 256-bit words)",
+        maximum_tail_length: 1018,
+        output_stack: "0 :: 0 :: 0 :: c :: (32*a+b modulo 2^256) :: tail".to_owned(),
+        interpreter_fuel: "for every natural fuel, each X(fuel+10) reduces to its own X(fuel+1) at the destination",
+        state_relation: "arbitrary nonnegative incoming gas surplus; related current/original account maps differing only in designated deployed code; both execution-code links; all other frame fields preserved",
+        unproved: [
+            "entry reachability",
+            "suffix outcomes",
+            "whole-contract equivalence",
+            "revm correspondence",
+            "equivalence with the original opaque upstream scanner",
         ],
         lean_version,
     };
@@ -221,6 +322,13 @@ struct ImageLeaf {
     code: String,
     route: String,
     size: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImageRoutes {
+    None,
+    Window,
+    All,
 }
 
 struct RenderedImages {
@@ -296,7 +404,7 @@ impl MaskRegion {
 }
 
 fn images(original: &[u8], candidate: &[u8], entry_pc: usize, window_len: usize) -> String {
-    render_images(original, candidate, entry_pc, window_len, false).source
+    render_images(original, candidate, entry_pc, window_len, ImageRoutes::None).source
 }
 
 fn render_images(
@@ -304,12 +412,12 @@ fn render_images(
     candidate: &[u8],
     entry_pc: usize,
     window_len: usize,
-    routed: bool,
+    routes: ImageRoutes,
 ) -> RenderedImages {
     let mut definitions = String::new();
     let mut leaves = Vec::new();
     for (side, data) in [("original", original), ("candidate", candidate)] {
-        let mut window_node = None;
+        let mut route_nodes = Vec::new();
         for (part, block) in [
             ("Prefix", &data[..entry_pc]),
             ("Window", &data[entry_pc..entry_pc + window_len]),
@@ -335,23 +443,48 @@ fn render_images(
             }
             let node = image_tree(&mut definitions, &format!("{side}{part}"), &nodes, &mut 0);
             writeln!(definitions, "def {side}{part}Bytes : List Nat := {}\ndef {side}{part} : ByteArray := {}\ntheorem {side}{part}Roundtrip : {side}{part}.data.toList.map UInt8.toNat = {side}{part}Bytes := {}\ntheorem {side}{part}Size : {side}{part}.data.size = {} := {}\ntheorem {side}{part}ByteSize : {side}{part}.size = {} := {side}{part}Size", node.bytes, node.code, node.roundtrip, block.len(), node.size, block.len()).unwrap();
-            if part == "Window" {
-                window_node = Some(node);
+            if routes == ImageRoutes::All || (routes == ImageRoutes::Window && part == "Window") {
+                let base = match part {
+                    "Prefix" => 0,
+                    "Window" => entry_pc,
+                    "Suffix" => entry_pc + window_len,
+                    _ => unreachable!(),
+                };
+                route_nodes.push((part, base, node));
             }
         }
         let pc = entry_pc;
         writeln!(definitions, "def {side} : List Nat := {side}PrefixBytes ++ {side}WindowBytes ++ {side}SuffixBytes\ndef {side}Code : ByteArray := ⟨{side}Prefix.data ++ {side}Window.data ++ {side}Suffix.data⟩\ntheorem {side}Roundtrip : GolfArtifactBytes.bytes {side}Code = {side} := by\n simp only [GolfArtifactBytes.bytes, {side}Code, {side}, Array.toList_append, List.map_append, {side}PrefixRoundtrip, {side}WindowRoundtrip, {side}SuffixRoundtrip]\ntheorem {side}Size : {side}Code.size = {} := by\n change ({side}Prefix.data ++ {side}Window.data ++ {side}Suffix.data).size = {}\n rw [Array.size_append, Array.size_append, {side}PrefixSize, {side}WindowSize, {side}SuffixSize]\ntheorem {side}WindowFetch (i : Nat) (bound : i < {window_len}) :\n {side}Code.data[{pc}+i]? = {side}Window.data[i]? := by\n change (({side}Prefix.data ++ {side}Window.data) ++ {side}Suffix.data)[{pc}+i]? = _\n rw [Array.append_assoc]\n rw [Array.getElem?_append_right (by rw [{side}PrefixSize]; omega), {side}PrefixSize]\n simp only [Nat.add_sub_cancel_left]\n rw [Array.getElem?_append_left (by rw [{side}WindowSize]; exact bound)]", data.len(), data.len()).unwrap();
-        if routed {
-            let node = window_node.expect("selected window node");
-            writeln!(definitions, "theorem {side}WindowRoute : GolfByteRouting.Route {side}Code {entry_pc} {side}Window := by\n constructor\n · rw [{side}Size, {side}WindowByteSize] <;> decide\n · intro i hi\n   exact {side}WindowFetch i (by simpa only [{side}WindowByteSize] using hi)\ntheorem {}Route : GolfByteRouting.Route {side}Code {entry_pc} {} := {side}WindowRoute", node.code, node.code).unwrap();
-            emit_routes(&mut definitions, side, entry_pc, &node, &mut leaves);
+        for (part, base, node) in route_nodes {
+            match part {
+                "Window" => {
+                    writeln!(definitions, "theorem {side}WindowRoute : GolfByteRouting.Route {side}Code {entry_pc} {side}Window := by\n constructor\n · rw [{side}Size, {side}WindowByteSize] <;> decide\n · intro i hi\n   exact {side}WindowFetch i (by simpa only [{side}WindowByteSize] using hi)").unwrap();
+                }
+                "Prefix" => {
+                    writeln!(definitions, "theorem {side}PrefixRoute : GolfByteRouting.Route {side}Code 0 {side}Prefix := by\n have outer : GolfByteRouting.Route {side}Code 0 ⟨{side}Prefix.data ++ {side}Window.data⟩ := GolfByteRouting.left _ _\n exact GolfByteRouting.trans _ _ _ 0 0 outer (GolfByteRouting.left _ _)").unwrap();
+                }
+                "Suffix" => {
+                    writeln!(definitions, "theorem {side}SuffixRoute : GolfByteRouting.Route {side}Code {base} {side}Suffix := by\n have h := GolfByteRouting.right (ByteArray.mk ({side}Prefix.data ++ {side}Window.data)) {side}Suffix\n simpa only [ByteArray.size, Array.size_append, {side}PrefixSize, {side}WindowSize] using h").unwrap();
+                }
+                _ => unreachable!(),
+            }
+            writeln!(
+                definitions,
+                "theorem {}Route : GolfByteRouting.Route {side}Code {base} {} := {side}{part}Route",
+                node.code, node.code
+            )
+            .unwrap();
+            emit_routes(&mut definitions, side, base, &node, &mut leaves);
         }
     }
     let mut source = IMAGES
         .replace("$namespace", "GolfCertificates")
         .replace("$image_definitions", &definitions);
-    if routed {
+    if routes != ImageRoutes::None {
         source.insert_str(0, "import ByteRouting\n");
+    }
+    if routes == ImageRoutes::All {
+        source = source.replace("maxRecDepth 131072", "maxRecDepth 4096");
     }
     RenderedImages { source, leaves }
 }

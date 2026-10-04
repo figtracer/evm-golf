@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::{fmt::Write as _, fs, path::Path};
 
 use super::{
-    MASK_AFTER, MASK_BEFORE, MAX_RUNTIME_BYTES, decoded_operation, render_images,
+    ImageRoutes, MASK_AFTER, MASK_BEFORE, MAX_RUNTIME_BYTES, decoded_operation, render_images,
     routed_decoded_facts,
 };
 use crate::{
@@ -255,7 +255,7 @@ impl Span {
             candidate,
             self.entry,
             self.exit - self.entry,
-            true,
+            ImageRoutes::Window,
         );
         let mut sources = vec![("Images.lean".to_owned(), rendered.source)];
         let mut leaves = Vec::new();

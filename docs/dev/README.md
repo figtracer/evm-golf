@@ -24,6 +24,7 @@
 | `lean/Stack.lean` | Operational instruction-boundary stack limits for local fragments |
 | `lean/Composition.lean` | Decoded boundaries, fuel and contextual substitution in the bounded model |
 | `lean/Certificates.lean` | Soundness of the shared exact-site checker |
+| `lean/LayoutScanner.lean` | Shared PUSH-aware scan definitions for both Lean toolchains |
 | `lean/Layout.lean` | Exact fixed-layout reconstruction, local proofs and constant-copy byte binding |
 | `tests/` | Execution, CLI, proof, and campaign regression tests |
 | `challenges.json` | Puzzle IDs, descriptions, and reference expressions |
@@ -67,7 +68,9 @@ The standard check script covers its input validation and shared process handlin
 it does not install or run the upstream semantics toolchain. After that setup,
 `bash scripts/check-upstream.sh` exercises the actual CLI and kernel with a
 valid region and rejects an incorrect candidate. CI runs this separate check
-as well. Validate representative full contract images when changing generation.
+as well. `bash scripts/check-checked-scanner.sh` covers static jump certificates
+after `bash scripts/setup-upstream.sh --checked-scanner`. Validate representative
+full contract images when changing generation.
 
 ## Compatibility
 

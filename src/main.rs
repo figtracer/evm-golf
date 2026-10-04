@@ -56,6 +56,9 @@ enum Action {
         candidate: PathBuf,
         #[arg(long)]
         entry_pc: usize,
+        /// Execute the power region's trailing JUMP with checked destination proofs.
+        #[arg(long, conflicts_with = "exit_pc")]
+        through_jump: bool,
         /// Exclusive exit PC for a generated straight-line span certificate.
         #[arg(long)]
         exit_pc: Option<usize>,
@@ -197,12 +200,22 @@ fn main() -> Result<()> {
             candidate,
             entry_pc,
             exit_pc,
+            through_jump,
             out,
         } => {
             let original = runtime::input::read_bytecode(&original)?;
             let candidate = runtime::input::read_bytecode(&candidate)?;
-            prepare_parent(&out)?;
-            let (exit_pc, boundary) = if let Some(exit_pc) = exit_pc {
+            if !through_jump {
+                prepare_parent(&out)?;
+            }
+            let (exit_pc, boundary) = if through_jump {
+                let report =
+                    runtime::region::certify_through_jump(&original, &candidate, entry_pc, &out)?;
+                (
+                    report.exit_pc,
+                    "Stops before executing the destination JUMPDEST",
+                )
+            } else if let Some(exit_pc) = exit_pc {
                 runtime::region::certify_span(&original, &candidate, entry_pc, exit_pc, &out)?;
                 (exit_pc, "Stops at the selected exit PC")
             } else {

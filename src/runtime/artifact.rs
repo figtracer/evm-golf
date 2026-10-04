@@ -21,6 +21,7 @@ const WINDOW_STRUCTURE: &str = include_str!("../../lean/WindowStructure.lean");
 const WINDOW_PROOF: &str = include_str!("../../lean/WindowArtifactProof.lean.in");
 const STACK_MODEL: &str = include_str!("../../lean/Stack.lean");
 const COMPOSITION_MODEL: &str = include_str!("../../lean/Composition.lean");
+const LAYOUT_SCANNER: &str = include_str!("../../lean/LayoutScanner.lean");
 const LAYOUT_MODEL: &str = include_str!("../../lean/Layout.lean");
 // A full EIP-170 image exceeded 65K recursive elaboration depth and the default
 // heartbeat budget. Kernel reduction at these limits checked 24,576 bytes; the
@@ -49,7 +50,7 @@ pub(super) fn certificate(
     let (mut source, _) = certificates(&[])?;
     writeln!(
         source,
-        "\n{FRAGMENT_MODEL}\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_MODEL}\n{LITERAL_MODEL}\n{ZERO_CHAIN_MODEL}"
+        "\n{FRAGMENT_MODEL}\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_SCANNER}\n{LAYOUT_MODEL}\n{LITERAL_MODEL}\n{ZERO_CHAIN_MODEL}"
     )
     .unwrap();
     writeln!(

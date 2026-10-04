@@ -9,15 +9,19 @@ case "$root" in /*) ;; *) root="$PWD/$root" ;; esac
 version=4.22.0
 revision=047f63070309f436b66c61e276ab3b6d1169265a
 check_only=false
-case "${1:-}" in
-  '') ;;
-  --check) check_only=true ;;
-  *) echo 'Usage: scripts/setup-upstream.sh [--check]' >&2; exit 2 ;;
-esac
-if [[ $# -gt 1 ]]; then
-  echo 'Usage: scripts/setup-upstream.sh [--check]' >&2
-  exit 2
-fi
+checked_scanner=false
+for argument in "$@"; do
+  case "$argument" in
+    --check) $check_only && { echo 'Duplicate --check' >&2; exit 2; }; check_only=true ;;
+    --checked-scanner) $checked_scanner && { echo 'Duplicate --checked-scanner' >&2; exit 2; }; checked_scanner=true ;;
+    *) echo 'Usage: scripts/setup-upstream.sh [--check] [--checked-scanner]' >&2; exit 2 ;;
+  esac
+done
+check_scanner() {
+  python3 "$PWD/scripts/setup-checked-scanner.py" \
+    --semantics "$root/semantics" --lean "$root/lean/bin/lean" \
+    --out "$root/checked-scanner" "$@"
+}
 command -v python3 >/dev/null
 command -v git >/dev/null
 
@@ -108,6 +112,7 @@ for package in manifest["packages"]:
 PY
 
 if $check_only; then
+  if $checked_scanner; then check_scanner --check; fi
   echo "Pinned upstream sources and Lean $version verified: $root"
   exit 0
 fi
@@ -122,3 +127,12 @@ lake exe cache get
 # The explicit olean target avoids the project's default native-library targets.
 lake --no-cache build +EvmYul.EVM.Semantics:olean
 "$setup_script" --check
+
+if $checked_scanner; then
+  cd "$(dirname "$setup_script")/.."
+  if [[ -e "$root/checked-scanner" ]]; then
+    check_scanner --check
+  else
+    check_scanner
+  fi
+fi

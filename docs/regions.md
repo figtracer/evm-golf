@@ -38,6 +38,31 @@ upstream/dependency compiled artifacts remain trusted, like the toolchain itself
 source revision checks do not authenticate those compiled artifacts. The existing
 Lean 4.34 expression and runtime rewrite gates are unchanged.
 
+## Through JUMP
+
+Use `--through-jump` to include the power region's trailing static JUMP:
+
+```sh
+bash scripts/setup-upstream.sh --checked-scanner
+cargo run --locked -- certify-runtime-region \
+  --original runs/original.hex --candidate runs/candidate.hex \
+  --entry-pc 1399 --through-jump --out runs/jump-region-1
+```
+
+This mode independently proves destination validity in both complete images. It
+executes nine instructions per side, requires at least 33 source gas, and spends
+33/31 gas. Both reach the pushed destination with stack
+`0 :: 0 :: 0 :: c :: (32*a+b modulo 2^256) :: tail`; the destination instruction
+has not executed. The existing stack and state premises still apply. The entry
+must be an instruction boundary in each image. This mode cannot be combined with
+`--exit-pc` and currently supports the exact power region below.
+
+It uses a separately built, hash-identified scanner overlay on the pinned upstream
+sources. The overlay makes jump scanning available to proofs; it does not prove
+equivalence with upstream's original opaque scanner. The checker records the
+base revision, overlay identity and import paths in `environment.json`. The
+default region mode continues using the unchanged upstream semantics.
+
 ## Supported regions
 
 Without `--exit-pc`, the command selects one of two exact byte patterns. The power region is:

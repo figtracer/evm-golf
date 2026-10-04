@@ -165,6 +165,7 @@ fn prelude() -> Result<String> {
         include_str!("../../lean/Fragment.lean"),
         include_str!("../../lean/Stack.lean"),
         include_str!("../../lean/Composition.lean"),
+        include_str!("../../lean/LayoutScanner.lean"),
         include_str!("../../lean/Layout.lean"),
         include_str!("../../lean/GenericWindowProfile.lean"),
     ] {

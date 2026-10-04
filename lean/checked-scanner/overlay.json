@@ -1,0 +1,7 @@
+{
+  "base_revision": "047f63070309f436b66c61e276ab3b6d1169265a",
+  "original_sha256": "f2b1c28ddf273542a0ce2ae56be054f7a27c67918fc1cfaef172a5f647c5bc28",
+  "revised_sha256": "3d94b61e0b1354a6b7d2992f17e8599a311ae5e5a9feb1d62596dfeadbd0a336",
+  "before": "def D_J (c : ByteArray) (i : UInt256) : Array UInt256 :=\n  D_J_aux c i #[]\n",
+  "after": "/-- A bounded scan reports exhaustion explicitly and never returns a partial table. -/\ndef D_J_checked : Nat \u2192 ByteArray \u2192 Nat \u2192 Array UInt256 \u2192 Option (Array UInt256)\n  | 0, _, _, _ => none\n  | fuel + 1, c, pc, result =>\n    match c.get? pc >>= EvmYul.EVM.parseInstr with\n    | none => some result\n    | some op =>\n      D_J_checked fuel c (pc + 1 + argOnNBytesOfInstr op)\n        (if op = .JUMPDEST then result.push (UInt256.ofNat pc) else result)\n\n/-- On nonwrapping images use a terminating natural-cursor scan.\n    The original opaque scanner remains the fallback; None is not a partial table. -/\ndef D_J (c : ByteArray) (i : UInt256) : Array UInt256 :=\n  if c.size + 32 < UInt256.size then\n    match D_J_checked (c.size - i.toNat + 1) c i.toNat #[] with\n    | some result => result\n    | none => D_J_aux c i #[]\n  else\n    D_J_aux c i #[]\n"
+}

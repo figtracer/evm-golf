@@ -72,8 +72,122 @@ const MODULES: &[(&str, &str, &[&str])] = &[
 #[derive(Clone, Copy)]
 pub(crate) enum RegionKind<'a> {
     Power,
+    PowerJump(&'a JumpPlan),
     Mask,
     ChunkedSpan(&'a SpanPlan),
+}
+
+/// Ordered modules emitted by the trusted full-image membership generator.
+#[derive(Debug)]
+pub(crate) struct JumpPlan {
+    pub(crate) modules: Vec<(String, Vec<String>)>,
+}
+
+impl JumpPlan {
+    fn validate(&self) -> Result<()> {
+        let mut counters = [0usize; 3];
+        let mut seen = BTreeSet::new();
+        let mut phase = 0;
+        for (position, (name, roots)) in self.modules.iter().enumerate() {
+            ensure!(seen.insert(name), "duplicate jump proof module");
+            let suffixes: Vec<&str> = match name.as_str() {
+                "JumpOriginal" => {
+                    ensure!(phase == 0, "misordered source membership module");
+                    phase = 1;
+                    vec!["original_byte", "original_membership"]
+                }
+                "JumpCandidate" => {
+                    ensure!(phase == 1, "misordered candidate membership module");
+                    phase = 2;
+                    vec!["candidate_byte", "candidate_membership"]
+                }
+                "JumpMembership" => {
+                    ensure!(phase == 2, "misordered membership certificate");
+                    phase = 3;
+                    vec!["original_membership", "candidate_membership"]
+                }
+                "JumpRegionProof" => {
+                    ensure!(
+                        phase == 3 && position + 1 == self.modules.len(),
+                        "jump boundary must be the final generated module"
+                    );
+                    phase = 4;
+                    ensure!(
+                        roots
+                            == &[
+                                "GolfCertificates.Jump.source_count".to_owned(),
+                                "GolfCertificates.Jump.source_gas".to_owned(),
+                                "GolfCertificates.Jump.compiler_jump_boundary".to_owned()
+                            ],
+                        "unexpected jump boundary roots"
+                    );
+                    continue;
+                }
+                _ => {
+                    ensure!(phase < 2, "membership nodes after final side certificate");
+                    let family = ["JumpCover", "JumpChunk", "JumpNode"]
+                        .iter()
+                        .position(|prefix| name.starts_with(*prefix))
+                        .context("unknown generated jump module")?;
+                    let prefix = ["JumpCover", "JumpChunk", "JumpNode"][family];
+                    ensure!(
+                        name == &format!("{prefix}{}", counters[family]),
+                        "jump module numbers must be contiguous and ordered"
+                    );
+                    counters[family] += 1;
+                    let endings = match family {
+                        0 => vec!["size", "route"],
+                        1 if roots.len() == 3 => vec!["size", "complete", "route"],
+                        1 => vec!["size", "complete", "local", "route"],
+                        _ => vec!["size", "complete", "route"],
+                    };
+                    let expected: Vec<_> = endings
+                        .iter()
+                        .map(|ending| format!("GolfCertificates.JumpMembership.{name}_{ending}"))
+                        .collect();
+                    ensure!(roots == &expected, "unexpected jump node roots");
+                    continue;
+                }
+            };
+            let expected: Vec<_> = suffixes
+                .iter()
+                .map(|suffix| format!("GolfCertificates.JumpMembership.{suffix}"))
+                .collect();
+            ensure!(roots == &expected, "unexpected jump membership roots");
+        }
+        ensure!(phase == 4 && counters[1] >= 2, "incomplete jump proof plan");
+        Ok(())
+    }
+
+    fn generated_modules(&self) -> Vec<(String, Vec<String>)> {
+        let mut modules = power_generated_modules();
+        modules.extend(self.modules.clone());
+        modules
+    }
+}
+
+fn power_generated_modules() -> Vec<(String, Vec<String>)> {
+    vec![
+        (
+            "Images".to_owned(),
+            [
+                "originalRoundtrip",
+                "candidateRoundtrip",
+                "originalWindowFetch",
+                "candidateWindowFetch",
+            ]
+            .map(|name| format!("GolfCertificates.{name}"))
+            .to_vec(),
+        ),
+        ("Decode".to_owned(), vec![]),
+        (
+            "RegionProof".to_owned(),
+            vec![
+                "GolfCertificates.Region.compilerTrace".to_owned(),
+                "GolfCertificates.Region.compiler_region_boundary".to_owned(),
+            ],
+        ),
+    ]
 }
 
 /// The generator and verifier share one ordered, complete composition tree.
@@ -206,6 +320,151 @@ const POWER_MODULES: &[(&str, &str, &[&str])] = &[(
         "GolfPowerRegion.compiler_region_boundary",
     ],
 )];
+
+const JUMP_MODULES: &[(&str, &str, &[&str])] = &[
+    (
+        "ByteRouting",
+        include_str!("../../lean/upstream/ByteRouting.lean"),
+        &[
+            "GolfByteRouting.left",
+            "GolfByteRouting.right",
+            "GolfByteRouting.trans",
+            "GolfByteRouting.adjacent",
+        ],
+    ),
+    (
+        "LayoutScanner",
+        concat!(
+            include_str!("../../lean/LayoutScanner.lean"),
+            "\n#print axioms GolfLayout.scan\n#print axioms GolfWindowArtifact.jumpTargets\n"
+        ),
+        &["GolfLayout.scan", "GolfWindowArtifact.jumpTargets"],
+    ),
+    (
+        "CheckedScannerSpec",
+        include_str!("../../lean/upstream/CheckedScannerSpec.lean"),
+        &[
+            "GolfScannerSpec.next_progress",
+            "GolfScannerSpec.scan_sound",
+            "GolfScannerSpec.member_boundary",
+            "GolfScannerSpec.boundary_decoded",
+            "GolfScannerSpec.boundary_not_before",
+        ],
+    ),
+    (
+        "CheckedScannerComplete",
+        include_str!("../../lean/upstream/CheckedScannerComplete.lean"),
+        &[
+            "GolfScannerSpec.parsed_present_in_bounds",
+            "GolfScannerSpec.scan_complete",
+            "GolfScannerSpec.scan_complete_trace",
+            "GolfScannerSpec.full_image_complete",
+        ],
+    ),
+    (
+        "CheckedParserFacts",
+        include_str!("../../lean/upstream/CheckedParserFacts.lean"),
+        &[
+            "GolfParserFacts.parser_table",
+            "GolfParserFacts.parser_agrees",
+            "GolfParserFacts.parser_present",
+            "GolfParserFacts.parser_width",
+            "GolfParserFacts.parser_jumpdest",
+        ],
+    ),
+    (
+        "CheckedScannerBridge",
+        include_str!("../../lean/upstream/CheckedScannerBridge.lean"),
+        &[
+            "GolfScannerBridge.bytes_drop_head",
+            "GolfScannerBridge.targets_of_success",
+            "GolfScannerBridge.full_image_targets",
+        ],
+    ),
+    (
+        "CheckedRevisedScannerProof",
+        include_str!("../../lean/upstream/CheckedRevisedScannerProof.lean"),
+        &[
+            "RevisedScannerProof.checked_of_scan",
+            "RevisedScannerProof.checked_complete",
+            "RevisedScannerProof.bounded_wrapper",
+            "RevisedScannerProof.bounded_table_exists",
+            "RevisedScannerProof.outside_fallback",
+        ],
+    ),
+    (
+        "CheckedTableEquality",
+        include_str!("../../lean/upstream/CheckedTableEquality.lean"),
+        &[
+            "RevisedTableEquality.table_of_layout",
+            "RevisedTableEquality.tables_equal",
+        ],
+    ),
+    (
+        "CheckedCompleteSegments",
+        include_str!("../../lean/upstream/CheckedCompleteSegments.lean"),
+        &[
+            "GolfLayout.scanAux_suffix",
+            "GolfLayout.scanAux_sufficient",
+            "GolfLayout.complete_steps_le_length",
+            "GolfLayout.scan_chunks",
+            "GolfLayout.chunkSteps_le_length",
+            "GolfLayout.scan_complete_chunks",
+        ],
+    ),
+    (
+        "CheckedAlignedSplice",
+        include_str!("../../lean/upstream/CheckedAlignedSplice.lean"),
+        &[
+            "GolfAlignedSplice.targets_append",
+            "GolfAlignedSplice.scan_two",
+            "GolfAlignedSplice.targets_splice",
+            "GolfAlignedSplice.targets_splice_empty",
+        ],
+    ),
+    (
+        "CheckedBoundaryMembership",
+        include_str!("../../lean/upstream/CheckedBoundaryMembership.lean"),
+        &[
+            "GolfBoundaryMembership.layout_member",
+            "GolfBoundaryMembership.contains_of_binding",
+            "GolfBoundaryMembership.contains_at_boundary",
+        ],
+    ),
+    (
+        "CheckedRouteMembership",
+        include_str!("../../lean/upstream/CheckedRouteMembership.lean"),
+        &[
+            "GolfRouteMembership.byte_get",
+            "GolfRouteMembership.route_take",
+            "GolfRouteMembership.route_binding",
+            "GolfRouteMembership.contains_of_route",
+        ],
+    ),
+    (
+        "CheckedRouteSupport",
+        include_str!("../../lean/upstream/CheckedRouteSupport.lean"),
+        &[
+            "SpliceSupport.complete_append",
+            "SpliceSupport.complete_bytes_append",
+            "SpliceSupport.append_size",
+            "GolfJumpRoute.empty_route",
+        ],
+    ),
+    (
+        "Jump",
+        include_str!("../../lean/upstream/Jump.lean"),
+        &[
+            "GolfJump.cost_jump",
+            "GolfJump.mem_jump",
+            "GolfJump.step_jump",
+            "GolfJump.X_jump",
+            "GolfJump.jump_preserves",
+            "GolfJump.paired_jump",
+            "GolfJump.compiler_jump_count",
+        ],
+    ),
+];
 
 const MASK_MODULES: &[(&str, &str, &[&str])] = &[
     (
@@ -405,14 +664,85 @@ struct Package {
     sub_dir: Option<String>,
 }
 
+fn upstream_root() -> Result<PathBuf> {
+    env::var_os("EVM_GOLF_UPSTREAM")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join(".tools/upstream"))
+        .canonicalize()
+        .context("upstream toolchain unavailable; run scripts/setup-upstream.sh")
+}
+
+/// Reject installation-local output before any certificate files are written.
+pub(crate) fn check_jump_output(out: &Path) -> Result<()> {
+    check_output_separation(out, &upstream_root()?.join("checked-scanner"))
+}
+
+fn check_output_separation(out: &Path, installation: &Path) -> Result<()> {
+    let installation = installation
+        .canonicalize()
+        .context("checked scanner unavailable; run scripts/setup-upstream.sh --checked-scanner")?;
+    // Resolve the nearest existing parent before creating anything. Missing
+    // components must be ordinary names: unresolved '..' could create an
+    // installation-local directory before traversing back outside it.
+    let mut parent = out
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let mut missing = Vec::new();
+    while !parent
+        .try_exists()
+        .context("checking certificate output parent")?
+    {
+        ensure!(
+            !parent.is_symlink(),
+            "certificate output parent is a dangling symlink"
+        );
+        missing.push(
+            parent
+                .file_name()
+                .context("missing output parents must not contain unresolved '..'")?
+                .to_owned(),
+        );
+        parent.pop();
+        if parent.as_os_str().is_empty() {
+            parent.push(".");
+        }
+    }
+    let mut resolved = parent
+        .canonicalize()
+        .context("resolving certificate output parent")?;
+    for component in missing.iter().rev() {
+        resolved.push(component);
+    }
+    resolved.push(
+        out.file_name()
+            .context("certificate output must name a new directory")?,
+    );
+    ensure!(
+        !resolved.starts_with(&installation),
+        "certificate output must be outside the checked-scanner installation"
+    );
+    Ok(())
+}
+
 /// Called only after the trusted generator writes its fixed certificate files.
 pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> {
     let out = out.canonicalize()?;
-    if let RegionKind::ChunkedSpan(plan) = kind {
-        plan.validate()?;
-        let expected: BTreeSet<_> = plan
-            .modules()
-            .into_iter()
+    let planned = match kind {
+        RegionKind::ChunkedSpan(plan) => {
+            plan.validate()?;
+            Some(plan.modules())
+        }
+        RegionKind::PowerJump(plan) => {
+            plan.validate()?;
+            Some(plan.generated_modules())
+        }
+        _ => None,
+    };
+    if let Some(modules) = &planned {
+        let expected: BTreeSet<_> = modules
+            .iter()
             .map(|(name, _)| format!("{name}.lean"))
             .collect();
         let mut found = BTreeSet::new();
@@ -421,7 +751,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             if path.extension().is_some_and(|ext| ext == "lean") {
                 ensure!(
                     path.is_file(),
-                    "span module is not a file: {}",
+                    "planned proof module is not a file: {}",
                     path.display()
                 );
                 found.insert(
@@ -434,7 +764,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         }
         ensure!(
             found == expected,
-            "span generated module set differs from the complete proof plan"
+            "generated module set differs from the complete proof plan"
         );
     }
 
@@ -447,11 +777,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             path.display()
         );
     }
-    let root = env::var_os("EVM_GOLF_UPSTREAM")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join(".tools/upstream"))
-        .canonicalize()
-        .context("upstream toolchain unavailable; run scripts/setup-upstream.sh")?;
+    let root = upstream_root()?;
     let lean = root
         .join("lean/bin/lean")
         .canonicalize()
@@ -490,45 +816,77 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         paths.push(checkout.join(".lake/build/lib/lean"));
         packages.push(json!({"name": package.name, "revision": package.rev, "checkout": checkout}));
     }
-    paths.push(
-        semantics
-            .join(".lake/build/lib/lean")
-            .canonicalize()
-            .context("missing upstream semantics build; run scripts/setup-upstream.sh")?,
-    );
-    paths.push(
-        root.join("lean/lib/lean")
-            .canonicalize()
-            .context("missing pinned Lean standard library")?,
-    );
+    let checked_profile = if matches!(kind, RegionKind::PowerJump(_)) {
+        let profile = check_scanner_profile(&root, &lean, &semantics, &out)?;
+        paths = vec![out.clone()];
+        paths.extend(env::split_paths(
+            profile["inputs"]["lean_path"]
+                .as_str()
+                .context("checked scanner lookup path missing")?,
+        ));
+        Some(profile)
+    } else {
+        paths.push(
+            semantics
+                .join(".lake/build/lib/lean")
+                .canonicalize()
+                .context("missing upstream semantics build; run scripts/setup-upstream.sh")?,
+        );
+        None
+    };
+    if checked_profile.is_none() {
+        paths.push(
+            root.join("lean/lib/lean")
+                .canonicalize()
+                .context("missing pinned Lean standard library")?,
+        );
+    }
     let search_path = env::join_paths(&paths)?;
+    let mut environment = json!({
+        "lean_version": version.trim(), "lean": lean, "upstream_revision": REVISION,
+        "semantics": semantics, "packages": packages, "lean_path": paths,
+        "module_timeout_seconds": MODULE_TIMEOUT.as_secs(),
+        "claim_scope": "internal region boundary and residual canonical X calls; no whole-contract equivalence",
+        "trust": "installed Lean and pinned upstream/dependency build artifacts are trusted; local certificate support modules are rebuilt from embedded sources"
+    });
+    if let Some(profile) = &checked_profile {
+        environment["semantics_profile"] = json!({
+            "identity": "evm-golf-checked-scanner",
+            "base_revision": REVISION,
+            "overlay_sha256": profile["inputs"]["overlay_sha256"],
+            "revised_source_sha256": profile["inputs"]["revised_source_sha256"],
+            "semantics_object_sha256": profile["build"]["object_sha256"],
+            "manifest": root.join("checked-scanner/manifest.json"),
+            "original_opaque_scanner_equality_proved": false
+        });
+    }
     fs::write(
         out.join("environment.json"),
-        serde_json::to_vec_pretty(&json!({
-            "lean_version": version.trim(), "lean": lean, "upstream_revision": REVISION,
-            "semantics": semantics, "packages": packages, "lean_path": paths,
-            "module_timeout_seconds": MODULE_TIMEOUT.as_secs(),
-            "claim_scope": "internal region boundary and residual canonical X calls; no whole-contract equivalence",
-            "trust": "installed Lean and pinned upstream/dependency build artifacts are trusted; local certificate support modules are rebuilt from embedded sources"
-        }))?,
+        serde_json::to_vec_pretty(&environment)?,
     )?;
     let additional = match kind {
-        RegionKind::Power => POWER_MODULES,
+        RegionKind::Power | RegionKind::PowerJump(_) => POWER_MODULES,
         RegionKind::Mask | RegionKind::ChunkedSpan(_) => MASK_MODULES,
     };
     let composition = match kind {
         RegionKind::ChunkedSpan(_) => SPAN_MODULES,
-        RegionKind::Power | RegionKind::Mask => &[],
+        RegionKind::Power | RegionKind::PowerJump(_) | RegionKind::Mask => &[],
     };
     let chunks = match kind {
         RegionKind::ChunkedSpan(_) => CHUNK_MODULES,
         _ => &[],
+    };
+    let jump_modules = if matches!(kind, RegionKind::PowerJump(_)) {
+        JUMP_MODULES
+    } else {
+        &[]
     };
     for (name, source, _) in MODULES
         .iter()
         .chain(additional)
         .chain(composition)
         .chain(chunks)
+        .chain(jump_modules)
     {
         let path = out.join(format!("{name}.lean"));
         ensure!(
@@ -539,7 +897,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         fs::write(path, source)?;
     }
     let region_roots: &[&str] = match kind {
-        RegionKind::Power => &[
+        RegionKind::Power | RegionKind::PowerJump(_) => &[
             "GolfCertificates.Region.compilerTrace",
             "GolfCertificates.Region.compiler_region_boundary",
         ],
@@ -564,7 +922,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         "GolfCertificates.candidateWindowFetch",
     ];
     let generated: &[(&str, &[&str])] = match kind {
-        RegionKind::ChunkedSpan(_) => &[],
+        RegionKind::ChunkedSpan(_) | RegionKind::PowerJump(_) => &[],
         RegionKind::Power | RegionKind::Mask => &[
             ("Images", image_roots),
             ("Decode", &[]),
@@ -573,6 +931,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     };
     let generated = match kind {
         RegionKind::ChunkedSpan(plan) => plan.modules(),
+        RegionKind::PowerJump(plan) => plan.generated_modules(),
         _ => generated
             .iter()
             .map(|(name, roots)| {
@@ -584,7 +943,8 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             .collect(),
     };
     // Diagnostic measurements never substitute for compilation and the axiom audit.
-    let mut measurements = if matches!(kind, RegionKind::ChunkedSpan(_)) {
+    let mut measurements = if matches!(kind, RegionKind::ChunkedSpan(_) | RegionKind::PowerJump(_))
+    {
         Some(
             fs::OpenOptions::new()
                 .write(true)
@@ -599,6 +959,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         .chain(additional)
         .chain(composition)
         .chain(chunks)
+        .chain(jump_modules)
         .map(|(name, _, roots)| {
             (
                 (*name).to_owned(),
@@ -645,6 +1006,53 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         checked?;
     }
     Ok(version.trim().to_owned())
+}
+
+fn check_scanner_profile(
+    root: &Path,
+    lean: &Path,
+    semantics: &Path,
+    out: &Path,
+) -> Result<serde_json::Value> {
+    let trusted = out.join(".checked-scanner-validation");
+    fs::create_dir(&trusted)?;
+    fs::create_dir(trusted.join("scripts"))?;
+    fs::create_dir_all(trusted.join("lean/checked-scanner"))?;
+    let script = trusted.join("scripts/setup-checked-scanner.py");
+    fs::write(
+        &script,
+        include_str!("../../scripts/setup-checked-scanner.py"),
+    )?;
+    fs::write(
+        trusted.join("lean/checked-scanner/overlay.json"),
+        include_str!("../../lean/checked-scanner/overlay.json"),
+    )?;
+    let installation = root.join("checked-scanner");
+    let mut command = Command::new("python3");
+    sanitize(&mut command);
+    command
+        .arg(script)
+        .arg("--semantics")
+        .arg(semantics)
+        .arg("--lean")
+        .arg(lean)
+        .arg("--out")
+        .arg(&installation)
+        .arg("--check");
+    capture(&mut command, &out.join("environment-checked-scanner.log")).context(
+        "checked scanner unavailable or changed; run scripts/setup-upstream.sh --checked-scanner",
+    )?;
+    let profile: serde_json::Value =
+        serde_json::from_slice(&fs::read(installation.join("manifest.json"))?)?;
+    ensure!(
+        profile["inputs"]["base_revision"] == REVISION
+            && profile["inputs"]["overlay_sha256"]
+                == "b3c6fd1b1aea261f00fc7a6306581bc0bbcb922c87f09ced26e2eb219a6dd9d8"
+            && profile["inputs"]["revised_source_sha256"]
+                == "3d94b61e0b1354a6b7d2992f17e8599a311ae5e5a9feb1d62596dfeadbd0a336",
+        "unexpected checked-scanner semantics identity"
+    );
+    Ok(profile)
 }
 
 fn validate_manifest(manifest: &Manifest) -> Result<()> {
@@ -719,8 +1127,132 @@ fn check_checkout(path: &Path, revision: &str, out: &Path, name: &str) -> Result
 
 #[cfg(test)]
 mod tests {
-    use super::{Manifest, RegionKind, SpanNode, SpanPlan, validate_manifest, verify_region};
+    use super::{
+        JumpPlan, Manifest, RegionKind, SpanNode, SpanPlan, check_output_separation,
+        validate_manifest, verify_region,
+    };
     use std::fs;
+
+    #[test]
+    fn jump_output_cannot_write_into_the_checked_installation() {
+        let temp = tempfile::tempdir().unwrap();
+        let installation = temp.path().join("checked-scanner");
+        fs::create_dir(&installation).unwrap();
+        fs::write(installation.join("manifest.json"), "unchanged").unwrap();
+        assert!(check_output_separation(&installation.join("run"), &installation).is_err());
+        assert!(
+            check_output_separation(&installation.join("missing/nested/run"), &installation)
+                .is_err()
+        );
+        assert!(
+            check_output_separation(
+                &installation.join("missing/../../outside/run"),
+                &installation
+            )
+            .is_err()
+        );
+        assert!(!installation.join("missing").exists());
+        check_output_separation(&temp.path().join("new/nested/run"), &installation).unwrap();
+        assert!(!temp.path().join("new").exists());
+        assert!(check_output_separation(&installation, &installation).is_err());
+        check_output_separation(&temp.path().join("checked-scanner-output"), &installation)
+            .unwrap();
+        #[cfg(unix)]
+        {
+            let alias = temp.path().join("alias");
+            std::os::unix::fs::symlink(&installation, &alias).unwrap();
+            assert!(check_output_separation(&alias.join("run"), &installation).is_err());
+            assert!(
+                check_output_separation(&alias.join("missing/nested/run"), &installation).is_err()
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(installation.join("manifest.json")).unwrap(),
+            "unchanged"
+        );
+        assert_eq!(fs::read_dir(&installation).unwrap().count(), 1);
+    }
+
+    fn jump_plan() -> JumpPlan {
+        let mut modules = Vec::new();
+        for (index, side) in ["Original", "Candidate"].iter().enumerate() {
+            let name = format!("JumpChunk{index}");
+            modules.push((
+                name.clone(),
+                ["size", "complete", "route"]
+                    .map(|suffix| format!("GolfCertificates.JumpMembership.{name}_{suffix}"))
+                    .to_vec(),
+            ));
+            let lower = side.to_lowercase();
+            modules.push((
+                format!("Jump{side}"),
+                ["byte", "membership"]
+                    .map(|suffix| format!("GolfCertificates.JumpMembership.{lower}_{suffix}"))
+                    .to_vec(),
+            ));
+        }
+        modules.push((
+            "JumpMembership".to_owned(),
+            ["original", "candidate"]
+                .map(|side| format!("GolfCertificates.JumpMembership.{side}_membership"))
+                .to_vec(),
+        ));
+        modules.push((
+            "JumpRegionProof".to_owned(),
+            ["source_count", "source_gas", "compiler_jump_boundary"]
+                .map(|name| format!("GolfCertificates.Jump.{name}"))
+                .to_vec(),
+        ));
+        JumpPlan { modules }
+    }
+
+    #[test]
+    fn jump_plan_rejects_missing_duplicate_reordered_and_unexpected_roots() {
+        jump_plan().validate().unwrap();
+        for mutation in ["missing", "duplicate", "reordered", "root", "gap"] {
+            let mut plan = jump_plan();
+            match mutation {
+                "missing" => {
+                    plan.modules.pop();
+                }
+                "duplicate" => plan.modules.insert(1, plan.modules[0].clone()),
+                "reordered" => plan.modules.swap(1, 3),
+                "root" => plan.modules[0].1[0] = "Untrusted.root".to_owned(),
+                "gap" => plan.modules[0].0 = "JumpChunk99".to_owned(),
+                _ => unreachable!(),
+            }
+            assert!(plan.validate().is_err(), "accepted {mutation}: {plan:?}");
+        }
+    }
+
+    #[test]
+    fn jump_module_closure_rejects_partial_extra_and_cached_artifacts_before_setup() {
+        let plan = jump_plan();
+        for mutation in ["missing", "extra", "cached"] {
+            let out = tempfile::tempdir().unwrap();
+            for (name, _) in plan.generated_modules() {
+                fs::write(out.path().join(format!("{name}.lean")), "").unwrap();
+            }
+            match mutation {
+                "missing" => fs::remove_file(out.path().join("JumpMembership.lean")).unwrap(),
+                "extra" => fs::write(out.path().join("Unplanned.lean"), "").unwrap(),
+                "cached" => fs::write(out.path().join("Images.olean"), "").unwrap(),
+                _ => unreachable!(),
+            }
+            let error = verify_region(out.path(), RegionKind::PowerJump(&plan))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(if mutation == "cached" {
+                    "cached Lean artifacts"
+                } else {
+                    "module set differs"
+                }),
+                "{error}"
+            );
+            assert!(!out.path().join("environment.json").exists());
+        }
+    }
 
     #[test]
     fn span_plan_rejects_missing_reused_reordered_and_forward_children() {

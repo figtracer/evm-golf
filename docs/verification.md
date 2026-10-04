@@ -106,8 +106,10 @@ arbitrary Solidity contract.
 
 The opt-in [internal-region checker](regions.md) uses a separate pinned upstream
 interpreter and proves reductions to related boundary states under explicit gas,
-stack and deployed-code conditions. It stops before JUMP and does not establish
-entry reachability, suffix outcomes or correspondence with revm.
+stack and deployed-code conditions. The power prefix stops before JUMP by default;
+`--through-jump` checks and executes that jump using a separately identified scanner
+overlay. Neither mode establishes entry reachability, suffix outcomes or correspondence
+with revm.
 
 The CLI is a local developer tool, not a sandbox for public code execution.
 Submissions contain expression strings, not arbitrary Lean programs or bytecode.

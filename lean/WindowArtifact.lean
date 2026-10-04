@@ -145,12 +145,10 @@ inductive CertifiedWindowSites : List Site → Prop where
  | reuse {site : Site} {sites : List Site} :
      ReuseEquivalent site → CertifiedWindowSites sites → CertifiedWindowSites (site::sites)
 
-abbrev Row := Nat × Nat × Bool
 def interior (site : Site) (pc : Nat) : Bool := site.pc < pc && pc < site.pc+site.before.length
 def inMask (sites : List Site) (pc : Nat) : Bool :=
  sites.any (fun site => windowShape site && site.pc ≤ pc && pc < site.pc+site.before.length)
 def exterior (sites : List Site) (rows : List Row) := rows.filter (fun row => !inMask sites row.1)
-def jumpTargets (rows : List Row) := (rows.filter (fun row => row.2.2)).map (fun row => row.1)
 def noInteriorJump (sites : List Site) (rows : List Row) : Bool :=
  rows.all (fun row => !row.2.2 || sites.all (fun site => !windowShape site || !interior site row.1))
 def disjoint (start size otherStart otherSize : Nat) : Bool :=
