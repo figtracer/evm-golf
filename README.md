@@ -10,22 +10,13 @@
 
 ---
 
-EVM Golf optimizes expressions and supported contract runtimes, checks local
-rewrites with Lean, and measures bytecode with revm. Expression equality is proved
-once and reused to certify expression bytecode. Fixed-layout runtime certificates
-check rewrite sites together, bind them to emitted bytes, and prove stack-limit
-behavior in complete instruction contexts within the Lean model. Batch proofs reuse
-certified scans of unchanged byte ranges. Account fixtures
-replay constructor-initialized state, helper-routed transactions and guarded external
-calls in fixed-layout mode, including constant own-code reads with certified byte preservation.
-Rewrites include power-of-two multiplication, constant folds, known-zero
-duplication chains, and certified mask elimination and reuse with unchanged jump destinations
-and surrounding offsets. Agents select built-in rewrites with [hash-bound plans](docs/runtime.md#select-rewrite-sites)
-or [discover and propose byte pairs](docs/runtime.md#discover-byte-pairs), including stack permutations and neutral arithmetic,
-individually or in disjoint batches,
-for generated proofs and guarded replay of the final candidate. An opt-in
-[region checker](docs/regions.md) also certifies supported power and mask regions
-against pinned upstream EVM semantics.
+EVM Golf optimizes EVM expressions and supported runtime bytecode using e-graphs,
+Lean proofs, and revm execution checks. Agents can propose rewrites, verify
+candidates, and compete on fixed expression puzzles.
+
+For contract bytecode, see the [runtime guide](docs/runtime.md). The optional
+[region checker](docs/regions.md) verifies supported internal prefixes against
+pinned upstream EVM semantics.
 
 - **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
 - **Verify** — Check expression equivalence and emitted bytecode against a Lean model.
@@ -70,7 +61,7 @@ cargo run --locked -- submit double '(shl1 x)' --author your-name --out runs/sub
 ```
 
 Use a new output directory for each run. See the [command reference](docs/cli.md)
-for verification, leaderboards, and batch experiments.
+for verification, leaderboards, and batch submissions.
 
 ## Status
 

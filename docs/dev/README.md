@@ -78,22 +78,13 @@ checked in; `submissions/`, `leaderboard/`, and `runs/` are ignored local direct
 
 Scenario transaction destinations are optional in JSON; existing fixtures retain
 their behavior. Rust consumers constructing `runtime::Transaction` must supply
-`to: None` for the previous default or `Some(address)` for a scenario destination.
+`to: None` for the default destination or `Some(address)` for a scenario destination.
 
 While the tool is unreleased, keep the development ruleset identifier stable.
 Reverify entries after changes to the compiler, scoring, or proof policy; do not
 compare saved scores produced by different checker revisions.
 
-## Research
-
-Useful extensions include general stack scheduling, realistic compiler fragments, and
-agent-written proof lemmas. The current checker does not accept custom proof
-programs and does not benchmark Z3 or cvc5.
-
-For solver comparisons, preserve the exact rule, word width, preconditions,
-versions, invocation, resource limits, and observed result. Use the same statement
-for every method and distinguish proof-generation time from checking time.
-Keep counterexamples, timeouts, unknown results, and verified proofs separate.
-
-Keep exploratory scripts, benchmark artifacts, and research reports outside
-this repository. Publish product changes only when explicitly requested.
+Keep generated proofs, submissions, benchmark artifacts, and research reports local.
+Public documentation should describe setup, usage, and current limitations; omit
+experiment narratives and fix history. Update the README after major capability
+or CLI changes, keeping it concise.
