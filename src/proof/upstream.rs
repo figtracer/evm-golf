@@ -259,6 +259,7 @@ const SPAN_MODULES: &[(&str, &str, &[&str])] = &[
         &[
             "GolfComposition.offset_step_transport",
             "GolfComposition.offset_extended_transport",
+            "GolfComposition.offset_extra_transport",
         ],
     ),
     (
@@ -339,6 +340,12 @@ const CHUNK_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfPureBounds.canonical_step_dup1",
             "GolfPureBounds.remaining_enough",
             "GolfPureBounds.remaining_sub",
+            "GolfPureBounds.bounds_sub",
+            "GolfPureBounds.bounds_and",
+            "GolfPureBounds.bounds_not",
+            "GolfPureBounds.canonical_step_sub",
+            "GolfPureBounds.canonical_step_and",
+            "GolfPureBounds.canonical_step_not",
         ],
     ),
     (
@@ -353,6 +360,7 @@ const CHUNK_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfChunk.power",
             "GolfChunk.same",
             "GolfChunk.extended",
+            "GolfChunk.extra",
         ],
     ),
     (

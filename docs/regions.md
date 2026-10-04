@@ -106,7 +106,7 @@ cargo run --locked -- certify-runtime-region \
 
 Choose instruction boundaries in both images. A span may combine the mask pair
 above with same-width `PUSHn 2^k; MUL` → `PUSHn k; SHL` rewrites (`k < 256`).
-Unchanged `PUSH1`–`PUSH32`, `PUSH0`, `MUL`, `SHL`, `ADD`, `SWAP1`, and `DUP1`
+Unchanged `PUSH1`–`PUSH32`, `PUSH0`, `MUL`, `SHL`, `ADD`, `SUB`, `AND`, `NOT`, `SWAP1`, and `DUP1`
 instructions may appear between them. Other instructions are rejected; the
 instruction at the end offset is not executed.
 

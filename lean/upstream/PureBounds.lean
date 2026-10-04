@@ -1,4 +1,4 @@
-import Driver
+import CountOffset
 
 /-! Abstract-state bounds and canonical-cost steps for supported pure operations. -/
 set_option Elab.async false
@@ -111,6 +111,42 @@ theorem remaining_sub (initial current : UInt256) (spent cost total : Nat)
     (remaining_enough initial.toNat current.toNat spent cost total within funded balance), balance]
   omega
 
+theorem bounds_sub (s : EVM.State)
+    (gas : 3 ≤ s.gasAvailable.toNat) (inputs : 2 ≤ s.stack.length)
+    (outputs : s.stack.length - 2 + 1 ≤ 1024) : FullXBounds s .SUB :=
+  ⟨gas, inputs, outputs⟩
+
+theorem canonical_step_sub (s : EVM.State) (fuel : Nat)
+    (arg : Option (UInt256 × Nat))
+    (a b : UInt256) (tail : List UInt256) (stack : s.stack = b :: a :: tail) :
+    EVM.step (fuel + 1) (C' s .SUB) (some (.SUB, arg)) s =
+      .ok (binaryPost s (UInt256.sub b a) tail 3) := by
+  exact GolfCountOffset.step_sub s fuel 3 arg a b tail stack
+
+theorem bounds_and (s : EVM.State)
+    (gas : 3 ≤ s.gasAvailable.toNat) (inputs : 2 ≤ s.stack.length)
+    (outputs : s.stack.length - 2 + 1 ≤ 1024) : FullXBounds s .AND :=
+  ⟨gas, inputs, outputs⟩
+
+theorem canonical_step_and (s : EVM.State) (fuel : Nat)
+    (arg : Option (UInt256 × Nat))
+    (a b : UInt256) (tail : List UInt256) (stack : s.stack = b :: a :: tail) :
+    EVM.step (fuel + 1) (C' s .AND) (some (.AND, arg)) s =
+      .ok (binaryPost s (b &&& a) tail 3) := by
+  exact GolfCountOffset.step_and s fuel 3 arg a b tail stack
+
+theorem bounds_not (s : EVM.State)
+    (gas : 3 ≤ s.gasAvailable.toNat) (inputs : 1 ≤ s.stack.length)
+    (outputs : s.stack.length - 1 + 1 ≤ 1024) : FullXBounds s .NOT :=
+  ⟨gas, inputs, outputs⟩
+
+theorem canonical_step_not (s : EVM.State) (fuel : Nat)
+    (arg : Option (UInt256 × Nat))
+    (a : UInt256) (tail : List UInt256) (stack : s.stack = a :: tail) :
+    EVM.step (fuel + 1) (C' s .NOT) (some (.NOT, arg)) s =
+      .ok (binaryPost s (UInt256.lnot a) tail 3) := by
+  exact GolfCountOffset.step_not s fuel 3 arg a tail stack
+
 end GolfPureBounds
 
 #print axioms GolfPureBounds.bounds_push
@@ -130,3 +166,10 @@ end GolfPureBounds
 
 #print axioms GolfPureBounds.remaining_enough
 #print axioms GolfPureBounds.remaining_sub
+
+#print axioms GolfPureBounds.bounds_sub
+#print axioms GolfPureBounds.bounds_and
+#print axioms GolfPureBounds.bounds_not
+#print axioms GolfPureBounds.canonical_step_sub
+#print axioms GolfPureBounds.canonical_step_and
+#print axioms GolfPureBounds.canonical_step_not

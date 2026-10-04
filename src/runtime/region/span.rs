@@ -152,7 +152,10 @@ impl Span {
                 }
             }
             ensure!(
-                matches!(op, 0x01 | 0x02 | 0x1b | 0x5f..=0x7f | 0x80 | 0x90),
+                matches!(
+                    op,
+                    0x01 | 0x02 | 0x03 | 0x16 | 0x19 | 0x1b | 0x5f..=0x7f | 0x80 | 0x90
+                ),
                 "unsupported canonical span opcode 0x{op:02x} at PC {pc}"
             );
             ensure!(
@@ -488,12 +491,22 @@ impl Span {
                             1,
                         )
                     }
+                    0x19 => {
+                        let a = words.remove(0);
+                        let result = format!("UInt256.lnot ({a})");
+                        let body =
+                            format!("binaryPost ({prev}) ({result}) ({}) 3", lean_stack(&words));
+                        words.insert(0, format!("({result})"));
+                        (body, 3, 1, 1)
+                    }
                     _ => {
                         let a = words.remove(0);
                         let b = words.remove(0);
                         let result = match op {
                             0x01 => format!("UInt256.add ({a}) ({b})"),
                             0x02 => format!("UInt256.mul ({a}) ({b})"),
+                            0x03 => format!("UInt256.sub ({a}) ({b})"),
+                            0x16 => format!("({a}) &&& ({b})"),
                             0x1b => format!("UInt256.shiftLeft ({b}) ({a})"),
                             _ => unreachable!(),
                         };
@@ -605,6 +618,9 @@ impl Span {
                         let (name, constructor) = match op {
                             1 => ("add", "extended"),
                             2 => ("mul", "same"),
+                            3 => ("sub", "extra"),
+                            0x16 => ("and", "extra"),
+                            0x19 => ("not", "extra"),
                             0x1b => ("shl", "same"),
                             0x5f => ("push0", "extended"),
                             0x80 => ("dup1", "extended"),
@@ -613,7 +629,7 @@ impl Span {
                         };
                         let args = match op {
                             0x5f => String::new(),
-                            0x80 => format!(
+                            0x19 | 0x80 => format!(
                                 " ({}) ({}) stack{i}",
                                 initial_words[0],
                                 lean_stack(&initial_words[1..])
@@ -647,6 +663,9 @@ impl Span {
                             0x90 => "swap1",
                             1 => "add",
                             2 => "mul",
+                            3 => "sub",
+                            0x16 => "and",
+                            0x19 => "not",
                             0x1b => "shl",
                             _ => unreachable!(),
                         };
@@ -931,6 +950,32 @@ mod tests {
             ),
             (4, 1024, -3, 11)
         );
+    }
+
+    #[test]
+    fn extra_operations_preserve_unary_and_binary_stack_requirements() {
+        for (code, expected) in [
+            (vec![0x19], (1, 1024, 0, 3)),
+            (vec![0x03, 0x16, 0x19], (3, 1024, -2, 9)),
+            (
+                vec![0x60, 7, 0x60, 2, 0x03, 0x19, 0x60, 15, 0x16],
+                (0, 1022, 1, 18),
+            ),
+        ] {
+            let span = Span::select(&code, &code, 0, code.len()).unwrap();
+            assert_eq!(
+                (
+                    span.required,
+                    span.maximum,
+                    span.source.delta,
+                    span.source.gas
+                ),
+                expected
+            );
+            assert_eq!(span.powers, 0);
+            assert_eq!(span.masks, 0);
+        }
+        assert!(Span::select(&[0x19], &[0x16], 0, 1).is_err());
     }
 
     #[test]

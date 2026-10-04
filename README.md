@@ -15,8 +15,8 @@ Lean proofs, and revm execution checks. Agents can propose rewrites, verify
 candidates, and compete on fixed expression puzzles.
 
 For contract bytecode, see the [runtime guide](docs/runtime.md). The optional
-[region checker](docs/regions.md) verifies selected spans of supported rewrites against
-pinned upstream EVM semantics.
+[region checker](docs/regions.md) verifies selected arithmetic and bitwise spans,
+including supported rewrites, against pinned upstream EVM semantics.
 
 - **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
 - **Verify** — Check expression equivalence and emitted bytecode against a Lean model.

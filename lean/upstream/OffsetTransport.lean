@@ -1,4 +1,5 @@
 import OffsetPower
+import MaskSupport
 set_option Elab.async false
 set_option maxRecDepth 4096
 set_option maxHeartbeats 2000000
@@ -169,6 +170,69 @@ theorem offset_extended_transport (s c next : EVM.State) (fuel candidateFuel sur
     · exact step_dup1 c candidateFuel 3 arg a tail (stackEq.symm.trans stack)
     · exact binary_preserves frame _ (a :: tail) 3 (by decide) bounds.gas
 
+theorem offset_extra_transport (s c next : EVM.State) (fuel candidateFuel surplus skipped : Nat)
+    (owner : AccountAddress) (old new : ByteArray)
+    (op : Operation .EVM) (arg : Option (UInt256 × Nat))
+    (allowed : CanonicalMaskWindow.ExtraOp op) (bounds : FullXBounds s op)
+    (frame : DeployedOffset owner old new surplus skipped s c)
+    (canonical : EVM.step (fuel+1) (C' s op) (some (op,arg)) s = .ok next) :
+    ∃ cn : EVM.State,
+      FullXBounds c op ∧
+      EVM.step (candidateFuel+1) (C' c op) (some (op,arg)) c = .ok cn ∧
+      DeployedOffset owner old new surplus skipped next cn ∧
+      next.executionEnv.code = s.executionEnv.code ∧
+      cn.executionEnv.code = c.executionEnv.code := by
+  have stackEq := offset_stack frame
+  have costs : C' c op = C' s op := by cases allowed <;> rfl
+  have cb : FullXBounds c op := {
+    gas := by rw [costs]; have := bounds.gas; have := frame.gas; omega
+    inputs := by rw [←stackEq]; exact bounds.inputs
+    outputs := by rw [←stackEq]; exact bounds.outputs }
+  cases allowed with
+  | sub =>
+    have two : 2 ≤ s.stack.length := bounds.inputs
+    obtain ⟨b,a,tail,stack⟩ : ∃ b a tail, s.stack = b :: a :: tail := by
+      cases hs : s.stack with
+      | nil => simp [hs] at two
+      | cons b xs =>
+        cases xs with
+        | nil => simp [hs] at two
+        | cons a tail => exact ⟨b,a,tail,rfl⟩
+    rw [(show C' s .SUB = 3 from rfl), step_sub s fuel 3 arg a b tail stack] at canonical
+    have post : next = binaryPost s (UInt256.sub b a) tail 3 := (Except.ok.inj canonical).symm
+    subst next
+    refine ⟨binaryPost c (UInt256.sub b a) tail 3, cb, ?_, ?_, rfl, rfl⟩
+    · exact step_sub c candidateFuel 3 arg a b tail (stackEq.symm.trans stack)
+    · exact binary_preserves frame _ tail 3 (by decide) bounds.gas
+  | and =>
+    have two : 2 ≤ s.stack.length := bounds.inputs
+    obtain ⟨b,a,tail,stack⟩ : ∃ b a tail, s.stack = b :: a :: tail := by
+      cases hs : s.stack with
+      | nil => simp [hs] at two
+      | cons b xs =>
+        cases xs with
+        | nil => simp [hs] at two
+        | cons a tail => exact ⟨b,a,tail,rfl⟩
+    rw [(show C' s .AND = 3 from rfl), step_and s fuel 3 arg a b tail stack] at canonical
+    have post : next = binaryPost s (b &&& a) tail 3 := (Except.ok.inj canonical).symm
+    subst next
+    refine ⟨binaryPost c (b &&& a) tail 3, cb, ?_, ?_, rfl, rfl⟩
+    · exact step_and c candidateFuel 3 arg a b tail (stackEq.symm.trans stack)
+    · exact binary_preserves frame _ tail 3 (by decide) bounds.gas
+  | not =>
+    have one : 1 ≤ s.stack.length := bounds.inputs
+    obtain ⟨a,tail,stack⟩ : ∃ a tail, s.stack = a :: tail := by
+      cases hs : s.stack with
+      | nil => simp [hs] at one
+      | cons a tail => exact ⟨a,tail,rfl⟩
+    rw [(show C' s .NOT = 3 from rfl), step_not s fuel 3 arg a tail stack] at canonical
+    have post : next = binaryPost s (UInt256.lnot a) tail 3 := (Except.ok.inj canonical).symm
+    subst next
+    refine ⟨binaryPost c (UInt256.lnot a) tail 3, cb, ?_, ?_, rfl, rfl⟩
+    · exact step_not c candidateFuel 3 arg a tail (stackEq.symm.trans stack)
+    · exact binary_preserves frame _ tail 3 (by decide) bounds.gas
+
 #print axioms offset_step_transport
 #print axioms offset_extended_transport
+#print axioms offset_extra_transport
 end GolfComposition

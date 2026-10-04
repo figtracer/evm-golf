@@ -59,6 +59,15 @@ inductive MixedTrace (old new : ByteArray) (residualFuel : Nat) :
    (canonical : EVM.step (sourceFuel+1) (C' s op) (some (op,arg)) s = .ok next)
    (rest : MixedTrace old new residualFuel (sourceFuel+1) (targetFuel+1) powers masks next final) :
    MixedTrace old new residualFuel (sourceFuel+2) (targetFuel+2) powers masks s final
+ | extra (s next final : EVM.State) (sourceFuel targetFuel powers masks : Nat)
+   (op : Operation .EVM) (arg : Option (UInt256 × Nat))
+   (allowed : ExtraOp op)
+   (oldDecode : decode old s.pc = some (op,arg))
+   (newDecode : decode new s.pc = some (op,arg))
+   (bounds : FullXBounds s op)
+   (canonical : EVM.step (sourceFuel+1) (C' s op) (some (op,arg)) s = .ok next)
+   (rest : MixedTrace old new residualFuel (sourceFuel+1) (targetFuel+1) powers masks next final) :
+   MixedTrace old new residualFuel (sourceFuel+2) (targetFuel+2) powers masks s final
  | mask (s final : EVM.State) (sourceFuel targetFuel powers masks : Nat)
    (a : UInt256) (tail : List UInt256)
    (oldDecoded : BeforeDecoded (withCode s old))
@@ -121,6 +130,17 @@ theorem mixed_simulation {owner old new residualFuel sourceFuel targetFuel power
    obtain ⟨cf,sourceRun,targetRun,finalRelated⟩ := ih cn surplus skipped nextRelated
    exact ⟨cf,(X_next_extended s next sf oldJumps op arg allowed sourceDecode bounds canonical).trans sourceRun,
      (X_next_extended candidate cn tf newJumps op arg allowed targetDecode cb cstep).trans targetRun,finalRelated⟩
+ | extra s next final sf tf powers masks op arg allowed oldDecode newDecode bounds canonical rest ih =>
+   obtain ⟨cn,cb,cstep,nextRelated,_,_⟩ :=
+     offset_extra_transport s candidate next sf tf surplus skipped owner old new
+       op arg allowed bounds related canonical
+   have sourceDecode : decode s.executionEnv.code s.pc = some (op,arg) := by
+     rw [related.maps.2.2.1.2.1]; exact oldDecode
+   have targetDecode : decode candidate.executionEnv.code candidate.pc = some (op,arg) := by
+     rw [related.maps.2.2.2.2.1,←offset_pc related]; exact newDecode
+   obtain ⟨cf,sourceRun,targetRun,finalRelated⟩ := ih cn surplus skipped nextRelated
+   exact ⟨cf,(X_next_extra s next sf oldJumps op arg allowed sourceDecode bounds canonical).trans sourceRun,
+     (X_next_extra candidate cn tf newJumps op arg allowed targetDecode cb cstep).trans targetRun,finalRelated⟩
  | mask s final sf tf powers masks a tail oldDecoded newDecoded stack gas height rest ih =>
    have sourceDecoded : BeforeDecoded s := before_decoded_transfer oldDecoded related.maps.2.2.1.2.1 rfl
    have targetDecoded : AfterDecoded candidate := after_decoded_transfer newDecoded related.maps.2.2.2.2.1 (offset_pc related).symm

@@ -88,6 +88,19 @@ theorem extended {old new : ByteArray} (s next : EVM.State)
     newDecoded bounds (canonical sf) rest
   convert h using 1 <;> omega
 
+theorem extra {old new : ByteArray} (s next : EVM.State)
+    (op : Operation .EVM) (arg : Option (UInt256 × Nat))
+    (allowed : ExtraOp op)
+    (oldDecoded : decode old s.pc = some (op,arg))
+    (newDecoded : decode new s.pc = some (op,arg))
+    (bounds : FullXBounds s op)
+    (canonical : ∀ fuel, EVM.step (fuel+1) (C' s op) (some (op,arg)) s = .ok next) :
+    TraceChunk old new 1 1 0 0 s next := by
+  intro residual sf tf p m final rest
+  have h := MixedTrace.extra s next final sf tf p m op arg allowed oldDecoded
+    newDecoded bounds (canonical sf) rest
+  convert h using 1 <;> omega
+
 #print axioms identity
 #print axioms append
 #print axioms recover
@@ -96,4 +109,5 @@ theorem extended {old new : ByteArray} (s next : EVM.State)
 #print axioms power
 #print axioms same
 #print axioms extended
+#print axioms extra
 end GolfChunk

@@ -159,4 +159,28 @@ assert report["maximum_input_stack_words"] == 1021
 assert report["output_stack_delta"] == 1
 PY_UNCHANGED
 
+# Exercise SUB operand order, unary NOT, and AND with an arbitrary input tail.
+printf '%s\n' 600760020319600f16 > "$work/extra-span.hex"
+if ! cargo run --locked -- certify-runtime-region \
+  --original "$work/extra-span.hex" --candidate "$work/extra-span.hex" \
+  --entry-pc 0 --exit-pc 9 --out "$work/extra-span-accepted"; then
+  cat "$work/extra-span-accepted"/*.log 2>/dev/null || true
+  echo "Failed arithmetic span certificate evidence: $work" >&2
+  exit 1
+fi
+python3 - "$work/extra-span-accepted/result.json" <<'PY_EXTRA'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    report = json.load(handle)
+assert report["entry_pc"] == 0 and report["exit_pc"] == 9
+assert report["source_instruction_count"] == report["candidate_instruction_count"] == 6
+assert report["source_gas_minimum"] == report["candidate_gas_cost"] == 18
+assert report["gas_surplus_increase"] == report["execution_count_offset_increase"] == 0
+assert report["required_input_stack_words"] == 0
+assert report["maximum_input_stack_words"] == 1022
+assert report["output_stack_delta"] == 1
+PY_EXTRA
+
 echo "Upstream region checks passed. Local evidence: $work"
