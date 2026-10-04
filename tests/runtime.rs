@@ -510,6 +510,7 @@ fn runtime_library_entry_points_bound_work_before_creating_evidence() {
         storage: Default::default(),
         transactions: (0..11)
             .map(|_| Transaction {
+                to: None,
                 calldata: String::new(),
                 gas_limit: 30_000_000,
                 value: String::new(),
@@ -530,6 +531,7 @@ fn runtime_library_entry_points_bound_work_before_creating_evidence() {
         accounts: Default::default(),
         environment: Default::default(),
         transactions: vec![Transaction {
+            to: None,
             calldata: String::new(),
             gas_limit: excessive,
             value: String::new(),

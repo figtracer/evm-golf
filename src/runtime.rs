@@ -88,10 +88,13 @@ pub struct Case {
     pub storage: BTreeMap<String, String>,
 }
 
-/// One transaction in a sequence; storage is initialized once by `Sequence`.
+/// One transaction. Explicit destinations are supported only by account scenarios.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Transaction {
+    /// Defaults to the optimized account; requires an explicit account fixture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
     pub calldata: String,
     pub gas_limit: u64,
     #[serde(default)]
@@ -846,6 +849,10 @@ fn compare_sequence(
         .enumerate()
         .map(|(i, tx)| {
             (|| {
+                ensure!(
+                    tx.to.is_none(),
+                    "transaction destinations require account scenarios"
+                );
                 compare_results(
                     execute_transaction(&mut left, &tx.calldata, tx.gas_limit, &tx.value)?,
                     execute_transaction(&mut right, &tx.calldata, tx.gas_limit, &tx.value)?,
@@ -1079,6 +1086,30 @@ mod tests {
     }
 
     #[test]
+    fn sequences_reject_scenario_only_destinations() {
+        let original = [0x00];
+        for destination in ["", "0x2222222222222222222222222222222222222222"] {
+            let sequence = Sequence {
+                storage: Default::default(),
+                transactions: vec![Transaction {
+                    to: Some(destination.into()),
+                    calldata: String::new(),
+                    gas_limit: 100_000,
+                    value: String::new(),
+                }],
+            };
+            let error = compare_sequence(&original, &original, &sequence).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("transaction destinations require account scenarios")
+            );
+        }
+        let legacy = r#"{"calldata":"","gas_limit":100000,"value":""}"#;
+        let transaction: Transaction = serde_json::from_str(legacy).unwrap();
+        assert!(transaction.to.is_none());
+        assert_eq!(serde_json::to_string(&transaction).unwrap(), legacy);
+    }
+
+    #[test]
     fn compact_ecrecover_requires_constant_callee_on_every_path() {
         for code in [
             "5f5f5f5f60015afa5000",   // direct literal
@@ -1117,6 +1148,7 @@ mod tests {
             storage: BTreeMap::new(),
             transactions: (0..2)
                 .map(|_| Transaction {
+                    to: None,
                     calldata: one.clone(),
                     gas_limit: 200_000,
                     value: String::new(),

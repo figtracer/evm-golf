@@ -75,6 +75,10 @@ Preserve accepted evidence when generating new output: use a fresh directory,
 then review the regenerated leaderboard. Entries and generated results are not
 checked in; `submissions/`, `leaderboard/`, and `runs/` are ignored local directories.
 
+Scenario transaction destinations are optional in JSON; existing fixtures retain
+their behavior. Rust consumers constructing `runtime::Transaction` must supply
+`to: None` for the previous default or `Some(address)` for a scenario destination.
+
 While the tool is unreleased, keep the development ruleset identifier stable.
 Reverify entries after changes to the compiler, scoring, or proof policy; do not
 compare saved scores produced by different checker revisions.

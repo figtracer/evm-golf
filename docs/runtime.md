@@ -363,6 +363,13 @@ cannot be the substituted target. The caller is funded only by the fixture.
 Unspecified accounts are absent; no chain state is fetched. Numeric/address aliases
 that duplicate keys are rejected. Total fixture balance must fit in a 256-bit word.
 
+Transactions default to `target`. An optional `"to": "0x…"` selects another
+explicit fixture account, allowing the funded caller to enter a helper that calls
+the optimized contract and handles its callbacks. The optimized `target` and
+caller stay fixed; all call and code-observation guards still apply. A helper-only
+transaction does not establish coverage of the optimized contract. `to` is supported
+only by account scenarios; `--sequences` rejects explicit destinations.
+
 Optional environment fields are `number`, `timestamp`, `gas_limit`, `beneficiary`,
 `prevrandao`, `chain_id`, `blob_excess_gas`, and `block_hashes`. Block fields stay
 fixed throughout a sequence. Missing fields use revm defaults, with Cancun blob

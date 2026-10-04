@@ -281,9 +281,20 @@ pub(super) fn replay(
                     right.load_account(caller)?.info.nonce == nonce,
                     "caller nonce diverged before transaction"
                 );
+                let destination = transaction
+                    .to
+                    .as_deref()
+                    .map(str::parse::<Address>)
+                    .transpose()
+                    .context("invalid transaction destination")?
+                    .unwrap_or(target);
+                ensure!(
+                    addresses.contains(&destination),
+                    "transaction destination account is missing from fixture"
+                );
                 let tx = TxEnv::builder()
                     .caller(caller)
-                    .kind(TxKind::Call(target))
+                    .kind(TxKind::Call(destination))
                     .nonce(nonce)
                     .chain_id(Some(chain_id))
                     .gas_limit(transaction.gas_limit)
@@ -383,6 +394,7 @@ mod tests {
                 ),
             ]),
             transactions: vec![Transaction {
+                to: None,
                 calldata: String::new(),
                 gas_limit: 500_000,
                 value: String::new(),
@@ -790,6 +802,7 @@ mod tests {
         ] {
             let mut scenario = fixture();
             scenario.transactions.push(Transaction {
+                to: None,
                 calldata: String::new(),
                 value: String::new(),
                 gas_limit: 500_000,
@@ -946,5 +959,209 @@ mod tests {
                 Some("call, storage-write or log observations diverged"),
             );
         }
+    }
+
+    #[test]
+    fn transaction_destination_defaults_and_validation() {
+        let mut scenario = fixture();
+        let original = from_hex("60015f5260205ff3").unwrap();
+        let implicit = replay(&original, &original, &scenario, ReplayPolicy::Transactions).unwrap();
+        scenario.transactions[0].to = Some(scenario.target.clone());
+        let explicit = replay(&original, &original, &scenario, ReplayPolicy::Transactions).unwrap();
+        assert_eq!(
+            serde_json::to_value(implicit).unwrap(),
+            serde_json::to_value(explicit).unwrap()
+        );
+        for destination in [
+            "not-an-address".to_owned(),
+            Address::repeat_byte(0x44).to_string(),
+        ] {
+            scenario.transactions[0].to = Some(destination);
+            assert!(replay(&original, &original, &scenario, ReplayPolicy::Transactions).is_err());
+        }
+        let helper = Address::repeat_byte(0x33).to_string();
+        scenario.accounts.insert(
+            helper.clone(),
+            Account {
+                code: "00".into(),
+                ..Account::default()
+            },
+        );
+        scenario.transactions[0].to = Some(helper);
+        // A helper-only transaction is allowed, without asserting target coverage.
+        replay(&original, &original, &scenario, ReplayPolicy::Transactions).unwrap();
+        scenario.accounts.get_mut(&scenario.caller).unwrap().code = "00".into();
+        assert!(replay(&original, &original, &scenario, ReplayPolicy::Transactions).is_err());
+    }
+
+    fn callback_programs(revert_outer: bool) -> (Vec<u8>, Vec<u8>) {
+        let target = Address::repeat_byte(0x22);
+        let helper = Address::repeat_byte(0x33);
+        let mut router = from_hex(&format!("3373{}14600057", hex::encode(target))).unwrap();
+        let label_byte = router.len() - 2;
+        router.extend(
+            from_hex(&format!(
+                "60205f5f5f600373{}5af15060205f{}",
+                hex::encode(target),
+                if revert_outer { "fd" } else { "f3" }
+            ))
+            .unwrap(),
+        );
+        router[label_byte] = u8::try_from(router.len()).unwrap();
+        // Callback: store and log 9, return its full word.
+        router.extend(from_hex("5b60095f5560095f5260205fa060205ff3").unwrap());
+        let root = from_hex(&format!(
+            "60015f5560205f5f5f600173{}5af15060205ff3",
+            hex::encode(helper)
+        ))
+        .unwrap();
+        (root, router)
+    }
+
+    #[test]
+    fn helper_destination_callbacks_preserve_effects_and_rollback() {
+        let caller = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x22);
+        let helper = Address::repeat_byte(0x33);
+        for reverted in [false, true] {
+            let (root, router) = callback_programs(reverted);
+            let mut scenario = fixture();
+            scenario.accounts.get_mut(&scenario.target).unwrap().balance = "7".into();
+            scenario.accounts.insert(
+                helper.to_string(),
+                Account {
+                    code: hex::encode(&router),
+                    balance: "3".into(),
+                    ..Account::default()
+                },
+            );
+            scenario.transactions[0].to = Some(helper.to_string());
+            scenario.transactions[0].value = "5".into();
+            let evidence = tempdir().unwrap();
+            replay(
+                &root,
+                &root,
+                &scenario,
+                ReplayPolicy::GuardedCalls(&evidence.path().join("replay")),
+            )
+            .unwrap();
+            let mut db = world(&root, &router);
+            let helper_hash = db.load_account(helper).unwrap().info.code_hash;
+            let accounts = BTreeSet::from([caller, target, helper]);
+            let mut guard = Calls::record(
+                &evidence.path().join("state.trace"),
+                target,
+                &accounts,
+                &root,
+                &[],
+            )
+            .unwrap();
+            let tx = TxEnv::builder()
+                .caller(caller)
+                .kind(TxKind::Call(helper))
+                .nonce(0)
+                .gas_limit(500_000)
+                .gas_price(0)
+                .value(U256::from(5))
+                .build()
+                .unwrap();
+            let execution = execute_env(
+                &mut db,
+                tx,
+                BlockEnv::default(),
+                1,
+                target,
+                ReplayPolicy::GuardedCalls(evidence.path()),
+                Some(&mut guard),
+            )
+            .unwrap();
+            guard.finish().unwrap();
+            assert_eq!(execution.result.is_success(), !reverted);
+            assert_eq!(
+                U256::from_be_slice(execution.result.output().unwrap()),
+                U256::from(9)
+            );
+            assert_eq!(execution.result.logs().len(), usize::from(!reverted));
+            assert_eq!(execution.state[&caller].nonce, 1);
+            assert_eq!(
+                execution.state[&caller].balance,
+                U256::from(if reverted { 1_000_000 } else { 999_995 })
+            );
+            assert_eq!(
+                execution.state[&target].balance,
+                U256::from(if reverted { 7 } else { 9 })
+            );
+            assert_eq!(
+                execution.state[&helper].balance,
+                U256::from(if reverted { 3 } else { 6 })
+            );
+            assert_eq!(
+                execution.state[&target].storage[&U256::ZERO],
+                U256::from(if reverted { 9 } else { 1 })
+            );
+            assert_eq!(
+                execution.state[&helper].storage[&U256::ZERO],
+                U256::from(if reverted { 7 } else { 9 })
+            );
+            assert_eq!(execution.state[&target].code_hash, B256::ZERO);
+            assert_eq!(execution.state[&helper].code_hash, helper_hash);
+            // Same returned word cannot conceal removal of the callback and its effects,
+            // even when the outer transaction rolls them back.
+            let pure = from_hex("60095f5260205ff3").unwrap();
+            let error = replay(
+                &root,
+                &pure,
+                &scenario,
+                ReplayPolicy::GuardedCalls(&evidence.path().join("changed")),
+            )
+            .unwrap_err();
+            assert!(format!("{error:#}").contains("external-call guard"));
+        }
+    }
+
+    #[test]
+    fn helper_destination_keeps_target_code_observation_guards() {
+        let target = Address::repeat_byte(0x22);
+        let helper = Address::repeat_byte(0x33);
+        let mut scenario = fixture();
+        scenario.transactions[0].to = Some(helper.to_string());
+        scenario.accounts.insert(
+            helper.to_string(),
+            Account {
+                code: hex::encode(guarded_call(target, 0xf1, 0)),
+                ..Account::default()
+            },
+        );
+        let dir = tempdir().unwrap();
+        // Nested target CODECOPY is checked against the fixed optimized target.
+        let copied = from_hex("600160085f390000ab").unwrap();
+        replay(
+            &copied,
+            &copied,
+            &scenario,
+            ReplayPolicy::GuardedCalls(&dir.path().join("copy")),
+        )
+        .unwrap();
+        let mut changed = copied.clone();
+        changed[8] = 0xcd;
+        assert!(
+            replay(
+                &copied,
+                &changed,
+                &scenario,
+                ReplayPolicy::GuardedCalls(&dir.path().join("changed-copy"))
+            )
+            .is_err()
+        );
+        scenario.accounts.get_mut(&helper.to_string()).unwrap().code =
+            format!("73{}3f5000", hex::encode(target));
+        let error = replay(
+            &[0],
+            &[0],
+            &scenario,
+            ReplayPolicy::GuardedCalls(&dir.path().join("hash")),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("unsupported gas, code or call observation"));
     }
 }

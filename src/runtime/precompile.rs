@@ -239,6 +239,7 @@ mod tests {
                 ),
             ]),
             transactions: vec![crate::runtime::Transaction {
+                to: None,
                 calldata: SIGNATURE.into(),
                 gas_limit: 200_000,
                 value: String::new(),
