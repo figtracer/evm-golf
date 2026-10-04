@@ -241,3 +241,152 @@ fn kernel_checks_stack_aliases_neutral_addition_and_wrapping_addition() {
         );
     }
 }
+
+struct PermutationCase {
+    before: &'static str,
+    after: &'static str,
+    required: usize,
+    peak: usize,
+    saving: u64,
+    destination: u64,
+    surviving_inputs: &'static [usize],
+}
+
+const PERMUTATIONS: &[PermutationCase] = &[
+    PermutationCase {
+        before: "9092509050612270",
+        after: "9150915062002270",
+        required: 4,
+        peak: 0,
+        saving: 3,
+        destination: 0x2270,
+        surviving_inputs: &[0, 1],
+    },
+    PermutationCase {
+        before: "9095509050611616",
+        after: "9150945062001616",
+        required: 7,
+        peak: 0,
+        saving: 3,
+        destination: 0x1616,
+        surviving_inputs: &[0, 3, 4, 5, 1],
+    },
+    PermutationCase {
+        before: "939092909190614acf",
+        after: "939190926300004acf",
+        required: 5,
+        peak: 1,
+        saving: 6,
+        destination: 0x4acf,
+        surviving_inputs: &[3, 2, 4, 1, 0],
+    },
+];
+
+#[test]
+fn permutation_proposals_preserve_full_stack_and_fault_boundaries() {
+    let mut words = vec![U256::MAX, U256::ZERO, U256::from(1) << 255];
+    words.extend((0..7).map(|i| U256::from(i + 17)));
+    for case in PERMUTATIONS {
+        let before = from_hex(case.before).unwrap();
+        let after = from_hex(case.after).unwrap();
+        let local = certificate(&before, &after).unwrap();
+        let delta = case.surviving_inputs.len() as isize + 1 - case.required as isize;
+        assert_eq!(
+            (local.required, local.delta, local.peak),
+            (case.required, delta, case.peak)
+        );
+        let expected: Vec<u8> = std::iter::once(U256::from(case.destination))
+            .chain(case.surviving_inputs.iter().map(|&i| words[i]))
+            .chain(words[case.required..].iter().copied())
+            .flat_map(|word| word.to_be_bytes::<32>())
+            .collect();
+        for fragment in [&before, &after] {
+            let mut code: Vec<u8> = words.iter().rev().copied().flat_map(word_push).collect();
+            code.extend(fragment);
+            for i in 0..expected.len() / 32 {
+                code.extend(word_push(U256::from(i * 32)));
+                code.push(0x52);
+            }
+            code.extend(word_push(U256::from(expected.len())));
+            code.extend([0x5f, 0xf3]);
+            let result = run(&code);
+            assert!(result.is_success());
+            assert_eq!(result.output().unwrap().as_ref(), expected.as_slice());
+        }
+        for height in (0..=case.required + 1).chain([1022, 1023, 1024]) {
+            let prefix = vec![0x5f; height];
+            let left = run(&[prefix.as_slice(), &before, &[0]].concat());
+            let right = run(&[prefix.as_slice(), &after, &[0]].concat());
+            assert_eq!(
+                left.is_halt(),
+                height < case.required || height + case.peak > 1024
+            );
+            if left.is_halt() {
+                assert_eq!(left, right);
+            } else {
+                assert!(right.is_success());
+                assert_eq!(left.tx_gas_used() - right.tx_gas_used(), case.saving);
+            }
+        }
+    }
+    // Same profile and cost do not establish the same surviving aliases.
+    let before = from_hex(PERMUTATIONS[0].before).unwrap();
+    let wrong_alias = from_hex("9050915062002270").unwrap();
+    let (_, before_profile) = super::inspect(&before).unwrap();
+    let (_, wrong_profile) = super::inspect(&wrong_alias).unwrap();
+    assert_eq!(
+        (
+            before_profile.required,
+            before_profile.delta,
+            before_profile.peak
+        ),
+        (
+            wrong_profile.required,
+            wrong_profile.delta,
+            wrong_profile.peak
+        )
+    );
+    assert!(
+        certificate(&before, &wrong_alias)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("symbolic output equality")
+    );
+    // A straight SWAP8 requires nine inputs, beyond the existing window bound.
+    assert!(certificate(&from_hex("975f01").unwrap(), &from_hex("975f50").unwrap()).is_err());
+    // SWAP underflow must not be confused with missing-input DUP overflow.
+    assert_ne!(
+        super::fault(&super::decode(&[0x90]), 1),
+        super::fault(&super::decode(&[0x80]), 0)
+    );
+}
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn kernel_checks_exact_stack_permutation_artifacts() {
+    let directory = tempdir().unwrap();
+    for (index, case) in PERMUTATIONS.iter().enumerate() {
+        let before = from_hex(case.before).unwrap();
+        let after = from_hex(case.after).unwrap();
+        let local = certificate(&before, &after).unwrap();
+        let rewrite = Rewrite {
+            original_pc: 1,
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: local.required,
+        };
+        let original = [vec![0x5b], before, vec![0]].concat();
+        let candidate = [vec![0x5b], after, vec![0]].concat();
+        let (source, names) =
+            artifact::proposal_certificate(&original, &candidate, &rewrite, &[], local).unwrap();
+        let path = directory.path().join(format!("Permutation{index}.lean"));
+        fs::write(&path, source).unwrap();
+        let result = proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational);
+        assert!(
+            result.is_ok(),
+            "{result:?}\n{}",
+            fs::read_to_string(path.with_extension("log")).unwrap_or_default()
+        );
+    }
+}

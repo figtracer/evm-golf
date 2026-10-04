@@ -285,8 +285,9 @@ fn inspect(code: &[u8]) -> Result<(Vec<Instruction>, Profile)> {
             0x01 | 0x03 | 0x16 | 0x1b => (2, -1, 3),
             0x50 => (1, -1, 2),
             0x80..=0x8f => (isize::from(op - 0x7f), 1, 3),
+            0x90..=0x9f => (isize::from(op - 0x8e), 0, 3),
             _ => bail!(
-                "unsupported proposal opcode 0x{op:02x}; expected PUSH/AND/POP/SUB/SHL/DUP/ADD"
+                "unsupported proposal opcode 0x{op:02x}; expected PUSH/AND/POP/SUB/SHL/DUP/ADD/SWAP"
             ),
         };
         required = required.max((need - height).max(0) as usize);
@@ -330,6 +331,11 @@ fn fault(ops: &[Instruction], mut height: usize) -> u8 {
                 }
                 height += 1;
             }
+            0x90..=0x9f => {
+                if height < usize::from(instruction.bytes[0] - 0x8e) {
+                    return 1;
+                }
+            }
             0x50 => {
                 if height < 1 {
                     return 1;
@@ -354,6 +360,13 @@ fn trace(ops: &[Instruction], input: &[Word]) -> (Vec<Step>, bool) {
                     return (steps, true);
                 };
                 stack.insert(0, word);
+            }
+            0x90..=0x9f => {
+                let index = usize::from(instruction.bytes[0] - 0x8f);
+                if index >= stack.len() {
+                    return (steps, true);
+                }
+                stack.swap(0, index);
             }
             0x50 => {
                 if stack.is_empty() {

@@ -9,7 +9,7 @@ def supportedAux : Nat → List Nat → Bool
      let width := op-95
      width ≤ rest.length && supportedAux fuel (rest.drop width)
    else (op == 1 || op == 3 || op == 22 || op == 27 || op == 80 ||
-     (128 ≤ op && op ≤ 143)) && supportedAux fuel rest
+     (128 ≤ op && op ≤ 159)) && supportedAux fuel rest
 
 def supported (code : List Nat) : Bool := supportedAux (code.length+1) code
 
@@ -34,6 +34,8 @@ def profileAux : Nat → List Nat → Int → Nat → Nat → Option (Nat × Int
      let next := height+1
      profileAux fuel rest next (max required (Int.ofNat (op-127)-height).toNat)
        (max peak next.toNat)
+   else if 144 ≤ op ∧ op ≤ 159 then
+     profileAux fuel rest height (max required (Int.ofNat (op-142)-height).toNat) peak
    else none
 
 def profile (code : List Nat) : Option (Nat × Int × Nat) :=
