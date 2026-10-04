@@ -440,6 +440,38 @@ pub(super) fn transform_selected(
     Ok((candidate, rewrites))
 }
 
+/// Construct one proposed patch; certification remains a separate mandatory gate.
+pub(super) fn transform_proposal(analysis: &LayoutAnalysis, rewrite: &Rewrite) -> Result<Vec<u8>> {
+    let original: Vec<_> = analysis
+        .instructions
+        .iter()
+        .flat_map(|op| op.bytes.iter().copied())
+        .collect();
+    let before = hex::decode(&rewrite.before)?;
+    let after = hex::decode(&rewrite.after)?;
+    let start = rewrite.original_pc;
+    let end = start
+        .checked_add(before.len())
+        .context("rewrite PC overflow")?;
+    ensure!(
+        analysis.reachable.contains(&start),
+        "proposal site is not a reachable instruction"
+    );
+    ensure!(
+        !before.is_empty() && before.len() == after.len(),
+        "proposal changes byte length"
+    );
+    ensure!(
+        original.get(start..end) == Some(before.as_slice()),
+        "proposal does not match baseline bytes"
+    );
+    let mut candidate = original.clone();
+    candidate[start..end].copy_from_slice(&after);
+    validate_catalog(&original, &candidate, std::slice::from_ref(rewrite))?;
+    validate_windows(analysis, &candidate, &[rewrite])?;
+    Ok(candidate)
+}
+
 fn validate_catalog(original: &[u8], candidate: &[u8], rewrites: &[Rewrite]) -> Result<()> {
     let mut reconstructed = original.to_vec();
     let mut previous_end = 0;
@@ -487,12 +519,16 @@ fn validate_window_layout(
     if masks.is_empty() {
         return validate_layout(analysis, candidate);
     }
+    validate_windows(analysis, candidate, &masks)
+}
+
+fn validate_windows(analysis: &LayoutAnalysis, candidate: &[u8], masks: &[&Rewrite]) -> Result<()> {
     ensure!(
         candidate.len() == analysis.runtime_bytes,
         "window rewrite changes bytecode length"
     );
     let decoded = decode(candidate);
-    for site in &masks {
+    for site in masks {
         let end = site.original_pc + site.before.len() / 2;
         for ops in [&analysis.instructions, &decoded] {
             ensure!(

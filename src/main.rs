@@ -76,6 +76,9 @@ enum Action {
         /// JSON baseline hash and selected PCs from runtime-opportunities.
         #[arg(long, requires_all = ["preserve_layout", "scenarios"])]
         plan: Option<PathBuf>,
+        /// JSON hash-bound byte pair; the checker generates the local proof.
+        #[arg(long, requires_all = ["preserve_layout", "scenarios"], conflicts_with = "plan")]
+        proposal: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -192,6 +195,7 @@ fn main() -> Result<()> {
             scenarios,
             preserve_layout,
             plan,
+            proposal,
             out,
         } => {
             let code = runtime::input::read_bytecode(&bytecode)?;
@@ -222,6 +226,10 @@ fn main() -> Result<()> {
                     let plan: runtime::RewritePlan =
                         serde_json::from_str(&runtime::input::read_json(&plan)?)?;
                     runtime::optimize_scenarios_with_plan(&code, &scenarios, &out, &plan)?
+                } else if let Some(proposal) = proposal {
+                    let proposal: runtime::RewriteProposal =
+                        serde_json::from_str(&runtime::input::read_json(&proposal)?)?;
+                    runtime::optimize_scenarios_with_proposal(&code, &scenarios, &out, &proposal)?
                 } else {
                     runtime::optimize_scenarios(&code, &scenarios, &out, mode)?
                 }

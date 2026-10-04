@@ -29,6 +29,7 @@ mod layout;
 mod precompile;
 pub mod region;
 pub mod scenario;
+mod window_proposal;
 pub use layout::LayoutAnalysis;
 
 use precompile::EcrecoverTrace;
@@ -44,6 +45,7 @@ pub enum RuntimeMode {
 enum RewriteSelection<'a> {
     All(RuntimeMode),
     Plan(&'a RewritePlan),
+    Proposal(&'a RewriteProposal),
 }
 
 // EIP-170 maximum deployed runtime size. Creation bytecode is not accepted here.
@@ -128,6 +130,17 @@ pub struct Rewrite {
 pub struct RewritePlan {
     pub original_keccak256: String,
     pub selected_pcs: Vec<usize>,
+}
+
+/// An exact local byte-pair proposal bound to one immutable runtime image.
+/// The checker derives the stack requirements and generates its own Lean proof.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RewriteProposal {
+    pub original_keccak256: String,
+    pub original_pc: usize,
+    pub before: String,
+    pub after: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -470,6 +483,18 @@ pub fn optimize_scenarios_with_plan(
     optimize_scenarios_selected(code, scenarios, out, RewriteSelection::Plan(plan))
 }
 
+/// Prove a supplied byte pair and replay it through the guarded fixture path.
+/// Only the generator's documented instruction subset can be proposed.
+pub fn optimize_scenarios_with_proposal(
+    code: &[u8],
+    scenarios: &[scenario::Scenario],
+    out: &Path,
+    proposal: &RewriteProposal,
+) -> Result<Report> {
+    input::validate(proposal, std::iter::empty())?;
+    optimize_scenarios_selected(code, scenarios, out, RewriteSelection::Proposal(proposal))
+}
+
 fn optimize_scenarios_selected(
     code: &[u8],
     scenarios: &[scenario::Scenario],
@@ -531,8 +556,9 @@ fn optimize_checked(
 ) -> Result<Report> {
     let mode = match selection {
         RewriteSelection::All(mode) => mode,
-        RewriteSelection::Plan(_) => RuntimeMode::PreserveLayout,
+        RewriteSelection::Plan(_) | RewriteSelection::Proposal(_) => RuntimeMode::PreserveLayout,
     };
+    let mut proposed_proof = None;
     let (candidate, rewrites, copies) = match selection {
         RewriteSelection::All(RuntimeMode::Compact) => {
             let (candidate, rewrites) = transform(&analyze(code)?)?;
@@ -556,6 +582,30 @@ fn optimize_checked(
             let (candidate, rewrites) = layout::transform_selected(&analysis, &plan.selected_pcs)?;
             (candidate, rewrites, analysis.copies)
         }
+        RewriteSelection::Proposal(proposal) => {
+            ensure!(guard_calls, "rewrite proposals require account scenarios");
+            ensure!(
+                proposal
+                    .original_keccak256
+                    .parse::<B256>()
+                    .context("invalid proposal baseline hash")?
+                    == keccak256(code),
+                "rewrite proposal baseline hash does not match runtime bytecode"
+            );
+            let before = from_hex(&proposal.before)?;
+            let after = from_hex(&proposal.after)?;
+            let local = window_proposal::certificate(&before, &after)?;
+            let rewrite = Rewrite {
+                original_pc: proposal.original_pc,
+                before: hex::encode(&before),
+                after: hex::encode(&after),
+                required_stack: local.required,
+            };
+            let analysis = layout::analyze(code, guard_calls)?;
+            let candidate = layout::transform_proposal(&analysis, &rewrite)?;
+            proposed_proof = Some(local);
+            (candidate, vec![rewrite], analysis.copies)
+        }
     };
     let verification = match mode {
         RuntimeMode::Compact => verification,
@@ -571,6 +621,12 @@ fn optimize_checked(
         fs::write(
             out.join("plan.json"),
             serde_json::to_string_pretty(plan)? + "\n",
+        )?;
+    }
+    if let RewriteSelection::Proposal(proposal) = selection {
+        fs::write(
+            out.join("proposal.json"),
+            serde_json::to_string_pretty(proposal)? + "\n",
         )?;
     }
     fs::write(out.join("original.hex"), hex::encode(code) + "\n")?;
@@ -595,7 +651,11 @@ fn optimize_checked(
         let (source, names) = match mode {
             RuntimeMode::Compact => certificates(&rewrites)?,
             RuntimeMode::PreserveLayout => {
-                artifact::certificate(code, &candidate, &rewrites, &copies)?
+                if let Some(local) = proposed_proof {
+                    artifact::proposal_certificate(code, &candidate, &rewrites[0], &copies, local)?
+                } else {
+                    artifact::certificate(code, &candidate, &rewrites, &copies)?
+                }
             }
         };
         fs::write(&path, source)?;

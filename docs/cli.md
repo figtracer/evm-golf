@@ -129,6 +129,14 @@ not discard the campaign report. See the report and exit status.
 Replay makes no model API calls. Proposal generation takes place in the agent
 host. Keep proposal batches and run artifacts local.
 
+## Runtime byte proposals
+
+Runtime agents can submit a hash-bound local byte pair with
+`optimize-runtime --preserve-layout --scenarios <fixtures.json> --proposal <proposal.json>`.
+See [byte-pair proposals](runtime.md#propose-a-byte-pair) for the schema, supported
+instructions and verification boundary. This is separate from expression submissions
+and does not create a leaderboard entry.
+
 ## Rule verification
 
 ```sh

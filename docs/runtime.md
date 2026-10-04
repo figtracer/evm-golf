@@ -60,6 +60,42 @@ proofs and fixture checks as other fixed-layout runs; no whole-contract or all-i
 equivalence is established. This supports external proposal search, but does not
 launch agents, schedule a campaign or resume interrupted runs.
 
+## Propose a byte pair
+
+Agents can propose one new local rewrite within a full runtime. Pass a JSON object
+with `original_keccak256`, `original_pc`, `before` and `after`; byte strings are hex.
+The hash binds the proposal to the original runtime, and `before` must match the
+exact bytes at the supplied instruction boundary. No caller-supplied Lean is accepted.
+
+```sh
+cargo run --locked -- optimize-runtime --bytecode runs/runtime.hex \
+  --preserve-layout --scenarios runs/scenarios.json --proposal runs/proposal.json \
+  --out runs/proposed-1
+```
+
+`--proposal` requires fixed layout and account scenarios and conflicts with `--plan`.
+Only that proposed site is changed; built-in rewrites are not also applied. Existing
+plan and automatic optimization behavior is unchanged. Each attempt uses a fresh
+output directory and retains the input proposal with its evidence.
+
+The initial generator supports PUSH0–PUSH32, AND and POP. Both fragments must have
+equal byte length, identical stack requirements, growth and peak, and lower static
+opcode gas in the candidate. Each is limited to 64 bytes and 16 instructions, with
+at most eight required input words and two extra peak stack slots. These bounds
+limit generated proof size and case analysis; they do not restrict existing built-in
+rules. Other instructions and unsupported algebra are rejected.
+
+The trusted generator proves the exact decoded fragments, complete returned stacks,
+matching failures outside the valid stack-height range, and contextual substitution
+in the bounded model. A separate singleton artifact binds those proofs to the two
+complete runtime images, unchanged exterior instruction boundaries, jump destinations
+and protected code reads. Its finite height-only fault check is an abstraction,
+not a proof of revm correspondence or out-of-gas behavior. The same guarded replay
+and non-increasing transaction-gas requirements as other fixture runs still apply.
+No candidate or score is accepted until both Lean and all supplied transactions pass.
+This is a proposal interface for external agents, not a built-in model swarm or a
+whole-contract equivalence proof. Keep proposals, proofs and results local.
+
 ## Run
 
 Save runtime bytecode as hexadecimal in `runs/runtime.hex` (an optional `0x`
