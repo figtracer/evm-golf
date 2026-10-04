@@ -8,6 +8,9 @@ use std::{collections::BTreeSet, fmt::Write as _};
 
 use super::{Instruction, certificates, decode, push_value};
 
+#[cfg(test)]
+mod regression;
+
 // Bound generated source independently of the existing admitted rule families.
 const MAX_BYTES: usize = 64;
 const MAX_OPS: usize = 16;
@@ -32,6 +35,8 @@ enum Word {
     Constant(U256),
     Input(usize),
     And(Box<Self>, Box<Self>),
+    Sub(Box<Self>, Box<Self>),
+    Shl(Box<Self>, Box<Self>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +58,28 @@ impl Word {
             Self::Constant(value) => format!("(BitVec.ofNat 256 {value})"),
             Self::Input(index) => format!("a{index}"),
             Self::And(left, right) => format!("({} &&& {})", left.lean(), right.lean()),
+            Self::Sub(top, next) => format!("({} - {})", top.lean(), next.lean()),
+            Self::Shl(value, shift) => format!("({} <<< ({}).toNat)", value.lean(), shift.lean()),
+        }
+    }
+
+    fn folded(&self) -> Option<U256> {
+        match self {
+            Self::Sub(top, next) => match (&**top, &**next) {
+                (Self::Constant(a), Self::Constant(b)) => Some(a.wrapping_sub(*b)),
+                _ => None,
+            },
+            Self::Shl(value, shift) => match (&**value, &**shift) {
+                (Self::Constant(value), Self::Constant(shift)) => {
+                    Some(if *shift >= U256::from(256) {
+                        U256::ZERO
+                    } else {
+                        *value << shift.to::<usize>()
+                    })
+                }
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -68,12 +95,28 @@ impl Word {
                 }
             }
         }
-        let mut terms = BTreeSet::new();
-        collect(self, &mut terms);
-        terms
-            .into_iter()
-            .reduce(|a, b| Self::And(Box::new(a), Box::new(b)))
-            .unwrap()
+        match self {
+            Self::Constant(_) | Self::Input(_) => self.clone(),
+            Self::Sub(top, next) | Self::Shl(top, next) => {
+                let a = Box::new(top.normalize());
+                let b = Box::new(next.normalize());
+                let node = if matches!(self, Self::Sub(..)) {
+                    Self::Sub(a, b)
+                } else {
+                    Self::Shl(a, b)
+                };
+                node.folded().map(Self::Constant).unwrap_or(node)
+            }
+            Self::And(left, right) => {
+                let mut terms = BTreeSet::new();
+                collect(&left.normalize(), &mut terms);
+                collect(&right.normalize(), &mut terms);
+                terms
+                    .into_iter()
+                    .reduce(|a, b| Self::And(Box::new(a), Box::new(b)))
+                    .unwrap()
+            }
+        }
     }
 }
 
@@ -118,12 +161,14 @@ pub(super) fn certificate(before: &[u8], after: &[u8]) -> Result<WindowProof> {
         include_str!("../../lean/Stack.lean"),
         include_str!("../../lean/Composition.lean"),
         include_str!("../../lean/Layout.lean"),
+        include_str!("../../lean/GenericWindowProfile.lean"),
     ] {
         writeln!(source, "\n{text}").unwrap();
     }
     source.push_str("\nnamespace GolfGenerated\ntheorem and_left_comm (a b c : Golf.Word) : a &&& (b &&& c) = b &&& (a &&& c) := by\n rw [← BitVec.and_assoc, BitVec.and_comm a b, BitVec.and_assoc]\n");
-    emit_side(&mut source, "before", before, &old, a, &old_steps);
-    emit_side(&mut source, "after", after, &new, b, &new_steps);
+    let folds = emit_folds(&mut source, old_steps.iter().chain(&new_steps));
+    emit_side(&mut source, "before", before, &old, a, &old_steps, &folds);
+    emit_side(&mut source, "after", after, &new, b, &new_steps, &folds);
     emit_equal(&mut source, a);
     emit_wrappers(&mut source, a, output);
     source.push_str("end GolfGenerated\n");
@@ -178,9 +223,9 @@ fn inspect(code: &[u8]) -> Result<(Vec<Instruction>, Profile)> {
                 ensure!(push_value(&instruction.bytes).is_some(), "truncated PUSH");
                 (0, 1, if op == 0x5f { 2 } else { 3 })
             }
-            0x16 => (2, -1, 3),
+            0x03 | 0x16 | 0x1b => (2, -1, 3),
             0x50 => (1, -1, 2),
-            _ => bail!("unsupported proposal opcode 0x{op:02x}; expected PUSH/AND/POP"),
+            _ => bail!("unsupported proposal opcode 0x{op:02x}; expected PUSH/AND/POP/SUB/SHL"),
         };
         required = required.max((need - height).max(0) as usize);
         height += delta;
@@ -209,7 +254,7 @@ fn fault(ops: &[Instruction], mut height: usize) -> u8 {
                 }
                 height += 1;
             }
-            0x16 => {
+            0x03 | 0x16 | 0x1b => {
                 if height < 2 {
                     return 1;
                 }
@@ -239,13 +284,20 @@ fn trace(ops: &[Instruction], input: &[Word]) -> (Vec<Step>, bool) {
                 }
                 stack.remove(0);
             }
-            0x16 => {
+            0x03 | 0x16 | 0x1b => {
                 if stack.len() < 2 {
                     return (steps, true);
                 }
                 let a = stack.remove(0);
                 let b = stack.remove(0);
-                stack.insert(0, Word::And(Box::new(a), Box::new(b)));
+                stack.insert(
+                    0,
+                    match instruction.bytes[0] {
+                        0x03 => Word::Sub(Box::new(a), Box::new(b)),
+                        0x1b => Word::Shl(Box::new(b), Box::new(a)),
+                        _ => Word::And(Box::new(a), Box::new(b)),
+                    },
+                );
             }
             _ => unreachable!("inspect rejects unsupported instructions"),
         }
@@ -259,6 +311,48 @@ fn trace(ops: &[Instruction], input: &[Word]) -> (Vec<Step>, bool) {
     (steps, false)
 }
 
+// Exact closed arithmetic equalities are checked by the kernel, not trusted as
+// results of host arithmetic. Numeric names and terms are generated from bytes.
+fn emit_folds<'a>(out: &mut String, steps: impl Iterator<Item = &'a Step>) -> String {
+    fn collect(word: &Word, nodes: &mut BTreeSet<Word>) {
+        if word.folded().is_some() {
+            nodes.insert(word.clone());
+        }
+        match word {
+            Word::And(a, b) | Word::Sub(a, b) | Word::Shl(a, b) => {
+                collect(a, nodes);
+                collect(b, nodes);
+            }
+            _ => {}
+        }
+    }
+    let mut nodes = BTreeSet::new();
+    for step in steps {
+        for word in &step.raw {
+            collect(word, &mut nodes);
+        }
+    }
+    let mut names = String::new();
+    for (index, node) in nodes.iter().enumerate() {
+        let value = node.folded().unwrap();
+        writeln!(
+            out,
+            "theorem constant_{index} : {} = (BitVec.ofNat 256 {value}) := by",
+            node.lean()
+        )
+        .unwrap();
+        if matches!(node,Word::Shl(_,shift) if matches!(&**shift,Word::Constant(n) if *n >= U256::from(256)))
+        {
+            // Avoid evaluating 2^shift when the exact 256-bit shift is enormous.
+            out.push_str(" apply BitVec.shiftLeft_eq_zero\n decide +kernel\n");
+        } else {
+            out.push_str(" decide +kernel\n");
+        }
+        write!(names, ", constant_{index}").unwrap();
+    }
+    names
+}
+
 fn stack(words: &[Word], tail: &str) -> String {
     let mut parts: Vec<_> = words.iter().map(Word::lean).collect();
     parts.push(tail.into());
@@ -270,12 +364,12 @@ fn parameters(count: usize) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-fn step_proof(step: &Step, tail: &str) -> String {
+fn step_proof(step: &Step, tail: &str, folds: &str) -> String {
     if step.raw == step.normalized {
         "rfl".into()
     } else {
         format!(
-            "change some {} = some {}; simp only [{ALGEBRA}]",
+            "change some {} = some {}; simp only [{ALGEBRA}{folds}]",
             stack(&step.raw, tail),
             stack(&step.normalized, tail)
         )
@@ -292,6 +386,7 @@ fn emit_side(
     ops: &[Instruction],
     profile: Profile,
     steps: &[Step],
+    folds: &str,
 ) {
     let n = profile.required;
     let peak = profile.peak;
@@ -299,10 +394,10 @@ fn emit_side(
     let input: Vec<_> = (0..n).map(Word::Input).collect();
     let bound = STACK_LIMIT - peak - n;
     let fuel = code.len() + 1;
-    writeln!(out,"def {label} : List Nat := {code:?}\ntheorem {label}_bytes : {label}.all (fun b => b < 256) = true := by decide +kernel\ntheorem {label}_complete : GolfComposition.Complete {label} {} := by\n exact {}\ntheorem {label}_profile : GolfLayout.profile {label} = some ({n},{},{peak}) := by decide +kernel",ops.len(),complete(ops),profile.delta).unwrap();
+    writeln!(out,"def {label} : List Nat := {code:?}\ntheorem {label}_bytes : {label}.all (fun b => b < 256) = true := by decide +kernel\ntheorem {label}_complete : GolfComposition.Complete {label} {} := by\n exact {}\ntheorem {label}_profile : GolfGenericWindow.profile {label} = some ({n},{},{peak}) := by decide +kernel",ops.len(),complete(ops),profile.delta).unwrap();
     writeln!(out,"theorem {label}_success ({params} x y : Golf.Word) (tail : List Golf.Word) (height : tail.length ≤ {bound}) :\n GolfBounded.run {fuel} {label} {} x y = some {} := by\n unfold {label}",stack(&input,"tail"),stack(&steps.last().unwrap().normalized,"tail")).unwrap();
     for step in steps {
-        writeln!(out," apply GolfBounded.step_success (next := {}) (height := by (try simp only [List.length_cons]) <;> omega) (step := by {})",stack(&step.normalized,"tail"),step_proof(step,"tail")).unwrap();
+        writeln!(out," apply GolfBounded.step_success (next := {}) (height := by (try simp only [List.length_cons]) <;> omega) (step := by {})",stack(&step.normalized,"tail"),step_proof(step,"tail",folds)).unwrap();
     }
     out.push_str(" apply GolfBounded.empty_success\n try simp only [List.length_cons]\n omega\n");
     for height in 0..n {
@@ -315,7 +410,7 @@ fn emit_side(
                 out,
                 " apply GolfBounded.step_failure (next := {}) (step := by {})",
                 stack(&step.normalized, "[]"),
-                step_proof(&step, "[]")
+                step_proof(&step, "[]", folds)
             )
             .unwrap();
         }
@@ -328,7 +423,7 @@ fn emit_side(
                 out,
                 " apply GolfBounded.step_failure (next := {}) (step := by {})",
                 stack(&step.normalized, "tail"),
-                step_proof(step, "tail")
+                step_proof(step, "tail", folds)
             )
             .unwrap();
             if step.normalized.len() as isize - n as isize == peak as isize {
@@ -442,7 +537,7 @@ def run : Nat → List Nat → Nat → Result
        let width := op-95
        if width > rest.length then .unsupported
        else if height ≥ 1024 then .overflow else run fuel (rest.drop width) (height+1)
-     else if op = 22 then
+     else if op = 3 ∨ op = 22 ∨ op = 27 then
        if height < 2 then .underflow else run fuel rest (height-1)
      else if op = 80 then
        if height < 1 then .underflow else run fuel rest (height-1)
@@ -465,6 +560,8 @@ mod tests {
             ("600116600116", "610001165f50", 1, 0, 1),
             ("600150600250", "630000000050", 0, 0, 1),
             ("60ff1660ff16", "6100ff165f50", 1, 0, 1),
+            ("600160081b", "6101005f50", 0, 1, 2),
+            ("6001600203", "6100015f50", 0, 1, 2),
             ("6001506002501616", "6300000000501616", 3, -2, 1),
             ("600160025050600350", "6400000000005f5050", 0, 0, 2),
         ] {

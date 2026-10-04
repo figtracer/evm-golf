@@ -3,18 +3,7 @@
 namespace GolfGenericWindow
 open GolfLayout
 
--- Complete first-slice grammar, independently evaluated on exact byte lists.
-def supportedAux : Nat → List Nat → Bool
- | 0, _ => false
- | _+1, [] => true
- | fuel+1, op::rest =>
-   if 95 ≤ op ∧ op ≤ 127 then
-     let width := op-95
-     width ≤ rest.length && supportedAux fuel (rest.drop width)
-   else (op == 22 || op == 80) && supportedAux fuel rest
-
-def supported (code : List Nat) : Bool := supportedAux (code.length+1) code
-
+-- Proposal grammar/profile are owned by GenericWindowProfile.
 structure GenericLocal (site : Site) (required : Nat) (delta : Int)
  (peak beforeOps afterOps : Nat) where
  requiredExact : site.requiredStack = required
@@ -28,8 +17,8 @@ structure GenericLocal (site : Site) (required : Nat) (delta : Int)
  afterSupported : supported site.after = true
  beforeComplete : GolfComposition.Complete site.before beforeOps
  afterComplete : GolfComposition.Complete site.after afterOps
- beforeProfile : profile site.before = some (required,delta,peak)
- afterProfile : profile site.after = some (required,delta,peak)
+ beforeProfile : GolfGenericWindow.profile site.before = some (required,delta,peak)
+ afterProfile : GolfGenericWindow.profile site.after = some (required,delta,peak)
  -- Complete returned stack, not merely one arithmetic expression.
  output : List Golf.Word → Golf.Word → Golf.Word → List Golf.Word
  success : ∀ stack x y, required ≤ stack.length → stack.length + peak ≤ 1024 →

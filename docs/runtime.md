@@ -78,12 +78,15 @@ Only that proposed site is changed; built-in rewrites are not also applied. Exis
 plan and automatic optimization behavior is unchanged. Each attempt uses a fresh
 output directory and retains the input proposal with its evidence.
 
-The initial generator supports PUSH0–PUSH32, AND and POP. Both fragments must have
+The initial generator supports PUSH0–PUSH32, AND, POP, SHL and SUB. Both fragments must have
 equal byte length, identical stack requirements, growth and peak, and lower static
 opcode gas in the candidate. Each is limited to 64 bytes and 16 instructions, with
 at most eight required input words and two extra peak stack slots. These bounds
 limit generated proof size and case analysis; they do not restrict existing built-in
-rules. Other instructions and unsupported algebra are rejected.
+rules. SHL uses the full 256-bit shift amount (amounts of 256 or more produce zero);
+SUB wraps modulo 2²⁵⁶ and subtracts the next word from the top word. Closed
+arithmetic is kernel-checked; symbolic shifts and subtractions retain their operand
+order. Other instructions and unsupported algebra are rejected.
 
 The trusted generator proves the exact decoded fragments, complete returned stacks,
 matching failures outside the valid stack-height range, and contextual substitution
