@@ -11,6 +11,17 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::{Instruction, MAX_RUNTIME_BYTES, Rewrite, allowed, decode, push_value, replacement};
 
+const MASK_WINDOWS: [(&str, &str); 2] = [
+    (
+        "6001600160e01b03166001600160e01b0319",
+        "6001600160e01b03166400ffffffff60e01b",
+    ),
+    (
+        "6001600160a01b03166001600160a01b0316",
+        "6800000000000000000161000160a01b0316",
+    ),
+];
+
 /// Conservative instruction reachability without stack-height or label proofs.
 #[derive(Debug, Serialize)]
 pub struct LayoutAnalysis {
@@ -170,35 +181,37 @@ fn is_direct_ecrecover(instructions: &[Instruction], i: usize) -> bool {
 
 pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewrite>)> {
     let (mut candidate, mut rewrites) = transform_aligned(analysis)?;
-    let before = hex::decode("6001600160e01b03166001600160e01b0319")?;
-    let after = hex::decode("6001600160e01b03166400ffffffff60e01b")?;
     let original: Vec<_> = analysis
         .instructions
         .iter()
         .flat_map(|op| op.bytes.iter().copied())
         .collect();
-    for op in &analysis.instructions {
-        let start = op.pc;
-        let end = start + before.len();
-        if original.get(start..end) != Some(before.as_slice())
-            || !analysis.reachable.contains(&start)
-            || rewrites.iter().any(|site| {
-                start < site.original_pc + site.before.len() / 2 && site.original_pc < end
-            })
-            || analysis.copies.iter().any(|copy| {
-                (copy.len != 0 && start < copy.source + copy.len && copy.source < end)
-                    || (start < copy.pc + 1 && copy.prefix_start < end)
-            })
-        {
-            continue;
+    for (before_hex, after_hex) in MASK_WINDOWS {
+        let before = hex::decode(before_hex)?;
+        let after = hex::decode(after_hex)?;
+        for op in &analysis.instructions {
+            let start = op.pc;
+            let end = start + before.len();
+            if original.get(start..end) != Some(before.as_slice())
+                || !analysis.reachable.contains(&start)
+                || rewrites.iter().any(|site| {
+                    start < site.original_pc + site.before.len() / 2 && site.original_pc < end
+                })
+                || analysis.copies.iter().any(|copy| {
+                    (copy.len != 0 && start < copy.source + copy.len && copy.source < end)
+                        || (start < copy.pc + 1 && copy.prefix_start < end)
+                })
+            {
+                continue;
+            }
+            candidate[start..end].copy_from_slice(&after);
+            rewrites.push(Rewrite {
+                original_pc: start,
+                before: hex::encode(&before),
+                after: hex::encode(&after),
+                required_stack: 1,
+            });
         }
-        candidate[start..end].copy_from_slice(&after);
-        rewrites.push(Rewrite {
-            original_pc: start,
-            before: hex::encode(&before),
-            after: hex::encode(&after),
-            required_stack: 1,
-        });
     }
     rewrites.sort_by_key(|site| site.original_pc);
     validate_catalog(&original, &candidate, &rewrites)?;
@@ -208,8 +221,9 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
 
 pub(super) fn is_mask(site: &Rewrite) -> bool {
     site.required_stack == 1
-        && site.before == "6001600160e01b03166001600160e01b0319"
-        && site.after == "6001600160e01b03166400ffffffff60e01b"
+        && MASK_WINDOWS
+            .iter()
+            .any(|(before, after)| site.before == *before && site.after == *after)
 }
 
 fn transform_aligned(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewrite>)> {
@@ -611,6 +625,58 @@ mod tests {
             candidate,
             bytes(&format!("6007{replacement}6000600260003900"))
         );
+    }
+
+    #[test]
+    fn idempotent_mask_windows_preserve_selection_and_stack_limits() {
+        let before = "6001600160a01b03166001600160a01b0316";
+        let after = "6800000000000000000161000160a01b0316";
+        let original = bytes(&format!("6007{before}{before}00"));
+        let analysis = analyze(&original, false).unwrap();
+        let (candidate, sites) = transform(&analysis).unwrap();
+        assert_eq!(candidate, bytes(&format!("6007{after}{after}00")));
+        assert_eq!(
+            sites
+                .iter()
+                .map(|site| site.original_pc)
+                .collect::<Vec<_>>(),
+            [2, 20]
+        );
+        assert!(sites.iter().all(is_mask));
+        assert_eq!(stack_signature(&bytes(before)).unwrap(), (1, 0, 3));
+        assert_eq!(stack_signature(&bytes(after)).unwrap(), (1, 0, 3));
+        assert_eq!(
+            transform_selected(&analysis, &[20]).unwrap().0,
+            bytes(&format!("6007{before}{after}00"))
+        );
+        let embedded = bytes(&format!("7f{before}{}00", "00".repeat(14)));
+        assert!(
+            transform(&analyze(&embedded, false).unwrap())
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        let copied = bytes(&format!("6007{before}6012600260003900"));
+        assert_eq!(
+            transform(&analyze(&copied, true).unwrap()).unwrap().0,
+            copied
+        );
+        for height in [0, 1, 1021, 1022, 1024] {
+            let prefix = "5f".repeat(height);
+            let left = execute(&bytes(&format!("{prefix}{before}00")), &case(""))
+                .unwrap()
+                .result;
+            let right = execute(&bytes(&format!("{prefix}{after}00")), &case(""))
+                .unwrap()
+                .result;
+            assert_eq!(left.is_halt(), height == 0 || height >= 1022);
+            assert_eq!(left.is_halt(), right.is_halt());
+            if left.is_halt() {
+                assert_eq!(left, right);
+            } else {
+                assert_eq!(left.tx_gas_used() - right.tx_gas_used(), 18);
+            }
+        }
     }
 
     #[test]

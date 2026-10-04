@@ -1,7 +1,7 @@
 namespace GolfWindowArtifact
 open GolfLayout
 
-def maskSites (sites : List Site) := sites.filter maskShape
+def maskSites (sites : List Site) := sites.filter windowShape
 def inRanges (sites : List Site) (pc : Nat) : Bool :=
  sites.any (fun site => site.pc ≤ pc && pc < site.pc+site.before.length)
 def exteriorFactored (sites : List Site) (rows : List Row) :=

@@ -10,6 +10,7 @@ const LITERAL_MODEL: &str = include_str!("../../lean/Literals.lean");
 const ZERO_CHAIN_MODEL: &str = include_str!("../../lean/ZeroChains.lean");
 const LOCAL_CERTIFICATES: &str = include_str!("../../lean/Certificates.lean");
 const MASK_MODEL: &str = include_str!("../../lean/MaskWindow.lean");
+const IDEMPOTENT_MASK_MODEL: &str = include_str!("../../lean/IdempotentMask.lean");
 const WINDOW_MODEL: &str = include_str!("../../lean/WindowArtifact.lean");
 const WINDOW_CHECKER: &str = include_str!("../../lean/WindowChecker.lean");
 const WINDOW_STRUCTURE: &str = include_str!("../../lean/WindowStructure.lean");
@@ -53,7 +54,7 @@ pub(super) fn certificate(
     if windows {
         writeln!(
             source,
-            "{MASK_MODEL}\n{WINDOW_MODEL}\n{WINDOW_CHECKER}\n{WINDOW_STRUCTURE}"
+            "{MASK_MODEL}\n{IDEMPOTENT_MASK_MODEL}\n{WINDOW_MODEL}\n{WINDOW_CHECKER}\n{WINDOW_STRUCTURE}"
         )
         .unwrap();
     }
@@ -178,6 +179,34 @@ mod tests {
         let mut wrong_mask = candidate;
         wrong_mask[16] = 0xfe;
         assert!(verify("WrongMask", &wrong_mask).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires Lean 4.34.0"]
+    fn binds_both_mask_families_and_rejects_wrong_idempotent_outputs() {
+        let dir = tempdir().unwrap();
+        let original = from_hex(
+            "60076001600160e01b03166001600160e01b03196001600160a01b03166001600160a01b031600",
+        )
+        .unwrap();
+        let (candidate, sites) =
+            layout::transform(&layout::analyze(&original, false).unwrap()).unwrap();
+        assert_eq!(sites.len(), 2);
+        let verify = |name: &str, candidate: &[u8], sites: &[Rewrite]| {
+            let (source, names) = certificate(&original, candidate, sites, &[]).unwrap();
+            assert_eq!(names, ["GolfArtifact.window_artifact"]);
+            let path = dir.path().join(format!("{name}.lean"));
+            fs::write(&path, source).unwrap();
+            proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational)
+        };
+        verify("BothFamilies", &candidate, &sites).unwrap();
+        // Alter the retained mask width and declare the altered bytes too: exact
+        // family admission must reject it, even when reconstruction matches.
+        let mut wrong = candidate.clone();
+        wrong[34] = 0x80;
+        let mut altered_sites = sites;
+        altered_sites[1].after = hex::encode(&wrong[20..38]);
+        assert!(verify("WrongIdempotent", &wrong, &altered_sites).is_err());
     }
 
     #[test]

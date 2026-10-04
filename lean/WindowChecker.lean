@@ -34,7 +34,15 @@ theorem checkMask_sound (site : Site) (h : maskShape site = true) : MaskEquivale
    subst required; subst before; subst after
    exact exact_mask pc
 
-def checkSite (site : Site) : Bool := maskShape site || checkOld site
+theorem checkIdempotent_sound (site : Site) (h : idempotentShape site = true) : IdempotentEquivalent site := by
+ cases site with
+ | mk pc before after required =>
+   simp only [idempotentShape, Bool.and_eq_true, beq_iff_eq] at h
+   rcases h with ⟨⟨requiredEq,beforeEq⟩,afterEq⟩
+   subst required; subst before; subst after
+   exact exact_idempotent pc
+
+def checkSite (site : Site) : Bool := maskShape site || (idempotentShape site || checkOld site)
 def checkSites (sites : List Site) : Bool := sites.all checkSite
 
 theorem checkSites_sound (sites : List Site) (h : checkSites sites = true) :
@@ -45,7 +53,8 @@ theorem checkSites_sound (sites : List Site) (h : checkSites sites = true) :
    simp only [checkSites,List.all_cons,Bool.and_eq_true] at h
    have checked := h.1
    simp only [checkSite,Bool.or_eq_true] at checked
-   rcases checked with mask | old
+   rcases checked with mask | idempotent | old
    · exact .mask (checkMask_sound site mask) (ih h.2)
+   · exact .idempotent (checkIdempotent_sound site idempotent) (ih h.2)
    · exact .old (checkOld_sound site old) (ih h.2)
 end GolfWindowArtifact

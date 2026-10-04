@@ -296,6 +296,11 @@ Literal folds use a separate proposition: success at heights 0–1,022 and overf
 from 1,023 upward. The emitted required-stack metadata selects the corresponding
 proof; matching stack profiles alone cannot certify a rewrite. These local properties do not establish the heights reached by the surrounding program.
 
+The [idempotent address-mask window](../lean/IdempotentMask.lean) removes a repeated
+160-bit mask, saving 18 opcode gas while retaining byte length and the original
+stack peak. Its certificate proves the successful output and matching underflow
+and overflow behavior.
+
 The exact mask window in [lean/MaskWindow.lean](../lean/MaskWindow.lean) replaces
 repeated 224-bit mask construction with a shifted literal, saving nine opcode
 gas while retaining both outputs and the untouched stack tail. Its separate
