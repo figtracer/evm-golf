@@ -121,6 +121,44 @@ impl Word {
 }
 
 pub(super) fn certificate(before: &[u8], after: &[u8]) -> Result<WindowProof> {
+    certificate_in(before, after, None)
+}
+
+// The only selectable namespace component is a trusted numeric dedup index.
+pub(super) fn certificate_for_pair(
+    before: &[u8],
+    after: &[u8],
+    index: usize,
+) -> Result<WindowProof> {
+    certificate_in(before, after, Some(index))
+}
+
+pub(super) fn batch_prelude() -> Result<String> {
+    let mut source = prelude()?;
+    source.push_str("\nnamespace GolfGenerated\n");
+    source.push_str(AND_COMMUTATION);
+    source.push_str("end GolfGenerated\n");
+    source.push_str(FAULT_MODEL);
+    Ok(source)
+}
+
+fn prelude() -> Result<String> {
+    let (mut source, _) = certificates(&[])?;
+    for text in [
+        include_str!("../../lean/Fragment.lean"),
+        include_str!("../../lean/Stack.lean"),
+        include_str!("../../lean/Composition.lean"),
+        include_str!("../../lean/Layout.lean"),
+        include_str!("../../lean/GenericWindowProfile.lean"),
+    ] {
+        writeln!(source, "\n{text}").unwrap();
+    }
+    Ok(source)
+}
+
+const AND_COMMUTATION: &str = "theorem and_left_comm (a b c : Golf.Word) : a &&& (b &&& c) = b &&& (a &&& c) := by\n rw [← BitVec.and_assoc, BitVec.and_comm a b, BitVec.and_assoc]\n";
+
+fn certificate_in(before: &[u8], after: &[u8], index: Option<usize>) -> Result<WindowProof> {
     ensure!(before.len() == after.len(), "proposal changes byte length");
     let (old, a) = inspect(before)?;
     let (new, b) = inspect(after)?;
@@ -155,25 +193,29 @@ pub(super) fn certificate(before: &[u8], after: &[u8]) -> Result<WindowProof> {
         *output == new_steps.last().unwrap().normalized,
         "unsupported symbolic output equality"
     );
-    let (mut source, _) = certificates(&[])?;
-    for text in [
-        include_str!("../../lean/Fragment.lean"),
-        include_str!("../../lean/Stack.lean"),
-        include_str!("../../lean/Composition.lean"),
-        include_str!("../../lean/Layout.lean"),
-        include_str!("../../lean/GenericWindowProfile.lean"),
-    ] {
-        writeln!(source, "\n{text}").unwrap();
+    let namespace = index.map_or_else(
+        || "GolfGenerated".to_owned(),
+        |index| format!("GolfGenerated.Pair{index}"),
+    );
+    let mut source = if index.is_none() {
+        prelude()?
+    } else {
+        String::new()
+    };
+    writeln!(source, "\nnamespace {namespace}").unwrap();
+    if index.is_none() {
+        source.push_str(AND_COMMUTATION);
     }
-    source.push_str("\nnamespace GolfGenerated\ntheorem and_left_comm (a b c : Golf.Word) : a &&& (b &&& c) = b &&& (a &&& c) := by\n rw [← BitVec.and_assoc, BitVec.and_comm a b, BitVec.and_assoc]\n");
     let folds = emit_folds(&mut source, old_steps.iter().chain(&new_steps));
     emit_side(&mut source, "before", before, &old, a, &old_steps, &folds);
     emit_side(&mut source, "after", after, &new, b, &new_steps, &folds);
     emit_equal(&mut source, a);
     emit_wrappers(&mut source, a, output);
-    source.push_str("end GolfGenerated\n");
-    source.push_str(FAULT_MODEL);
-    source.push_str("\nnamespace GolfGenerated\ntheorem fault_classes : (List.range 1025).all (fun h => decide (GolfGeneratedFault.run (before.length+1) before h = GolfGeneratedFault.run (after.length+1) after h)) = true := by decide +kernel\nend GolfGenerated\n");
+    writeln!(source, "end {namespace}").unwrap();
+    if index.is_none() {
+        source.push_str(FAULT_MODEL);
+    }
+    writeln!(source,"\nnamespace {namespace}\ntheorem fault_classes : (List.range 1025).all (fun h => decide (GolfGeneratedFault.run (before.length+1) before h = GolfGeneratedFault.run (after.length+1) after h)) = true := by decide +kernel\nend {namespace}").unwrap();
     let names = [
         "before_profile",
         "after_profile",
@@ -186,7 +228,7 @@ pub(super) fn certificate(before: &[u8], after: &[u8]) -> Result<WindowProof> {
         "underflow",
         "overflow",
     ]
-    .map(|name| format!("GolfGenerated.{name}"))
+    .map(|name| format!("{namespace}.{name}"))
     .to_vec();
     for name in &names {
         writeln!(source, "#print axioms {name}").unwrap();

@@ -45,7 +45,9 @@ local stack proofs and supplied transaction tests; `--preserve-layout` supports
 dynamic jumps without moving byte offsets and binds local proofs to the complete
 output artifact in Lean. Use `--scenarios` for explicit deployed-account state.
 `--proposal` accepts a hash-bound local PUSH/AND/POP/SHL/SUB byte pair with generated Lean
-proofs and guarded scenario replay; read docs/runtime.md for its bounds. This is
+proofs and guarded scenario replay. Use `--proposals` to verify up to 32 disjoint
+pairs against one original image as an all-or-nothing batch; read docs/runtime.md
+for the bounds. This is
 separate from expression leaderboard submissions.
 `check-runtime` instead compares arbitrary proposed runtimes using account fixtures and has no Lean proof gate.
 Neither establishes whole-contract equivalence or produces expression leaderboard

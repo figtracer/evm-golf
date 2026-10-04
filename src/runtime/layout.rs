@@ -440,35 +440,44 @@ pub(super) fn transform_selected(
     Ok((candidate, rewrites))
 }
 
-/// Construct one proposed patch; certification remains a separate mandatory gate.
+/// Construct proposed patches; certification remains a separate mandatory gate.
 pub(super) fn transform_proposal(analysis: &LayoutAnalysis, rewrite: &Rewrite) -> Result<Vec<u8>> {
+    transform_proposals(analysis, std::slice::from_ref(rewrite))
+}
+
+pub(super) fn transform_proposals(
+    analysis: &LayoutAnalysis,
+    rewrites: &[Rewrite],
+) -> Result<Vec<u8>> {
     let original: Vec<_> = analysis
         .instructions
         .iter()
         .flat_map(|op| op.bytes.iter().copied())
         .collect();
-    let before = hex::decode(&rewrite.before)?;
-    let after = hex::decode(&rewrite.after)?;
-    let start = rewrite.original_pc;
-    let end = start
-        .checked_add(before.len())
-        .context("rewrite PC overflow")?;
-    ensure!(
-        analysis.reachable.contains(&start),
-        "proposal site is not a reachable instruction"
-    );
-    ensure!(
-        !before.is_empty() && before.len() == after.len(),
-        "proposal changes byte length"
-    );
-    ensure!(
-        original.get(start..end) == Some(before.as_slice()),
-        "proposal does not match baseline bytes"
-    );
     let mut candidate = original.clone();
-    candidate[start..end].copy_from_slice(&after);
-    validate_catalog(&original, &candidate, std::slice::from_ref(rewrite))?;
-    validate_windows(analysis, &candidate, &[rewrite])?;
+    for rewrite in rewrites {
+        let before = hex::decode(&rewrite.before)?;
+        let after = hex::decode(&rewrite.after)?;
+        let start = rewrite.original_pc;
+        let end = start
+            .checked_add(before.len())
+            .context("rewrite PC overflow")?;
+        ensure!(
+            analysis.reachable.contains(&start),
+            "proposal site is not a reachable instruction"
+        );
+        ensure!(
+            !before.is_empty() && before.len() == after.len(),
+            "proposal changes byte length"
+        );
+        ensure!(
+            original.get(start..end) == Some(before.as_slice()),
+            "proposal does not match baseline bytes"
+        );
+        candidate[start..end].copy_from_slice(&after);
+    }
+    validate_catalog(&original, &candidate, rewrites)?;
+    validate_windows(analysis, &candidate, &rewrites.iter().collect::<Vec<_>>())?;
     Ok(candidate)
 }
 

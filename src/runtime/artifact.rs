@@ -1,10 +1,11 @@
 //! Bind local layout certificates to the complete emitted byte arrays.
 
 use anyhow::{Result, ensure};
-use std::fmt::Write as _;
+use std::{collections::BTreeMap, fmt::Write as _};
 
 use super::{
-    MAX_RUNTIME_BYTES, Rewrite, certificates, from_hex, layout, window_proposal::WindowProof,
+    MAX_PROPOSAL_SITES, MAX_RUNTIME_BYTES, Rewrite, certificates, from_hex, layout,
+    window_proposal::{self, WindowProof},
 };
 
 const FRAGMENT_MODEL: &str = include_str!("../../lean/Fragment.lean");
@@ -213,6 +214,138 @@ pub(super) fn proposal_certificate(
     Ok((source, names))
 }
 
+/// One fresh proof binds every disjoint proposal to the immutable original.
+/// Identical byte pairs share local theorems, never site occurrences.
+pub(super) fn proposal_batch_certificate(
+    original: &[u8],
+    candidate: &[u8],
+    rewrites: &[Rewrite],
+    copies: &[layout::CodeCopy],
+) -> Result<(String, Vec<String>)> {
+    ensure!(
+        original.len() <= MAX_RUNTIME_BYTES && candidate.len() <= MAX_RUNTIME_BYTES,
+        "proposal batch artifact exceeds EIP-170 size limit"
+    );
+    ensure!(
+        !rewrites.is_empty() && rewrites.len() <= MAX_PROPOSAL_SITES,
+        "proposal batch requires 1..={MAX_PROPOSAL_SITES} sites"
+    );
+    let mut unique = BTreeMap::new();
+    let mut proofs: Vec<(Vec<u8>, Vec<u8>, WindowProof)> = Vec::new();
+    let mut indexes = Vec::with_capacity(rewrites.len());
+    let mut previous_end = 0;
+    for rewrite in rewrites {
+        let before = from_hex(&rewrite.before)?;
+        let after = from_hex(&rewrite.after)?;
+        let end = rewrite
+            .original_pc
+            .checked_add(before.len())
+            .ok_or_else(|| anyhow::anyhow!("proposal site range overflow"))?;
+        ensure!(
+            rewrite.original_pc >= previous_end && end <= original.len(),
+            "proposal sites must be sorted, disjoint and inside the original"
+        );
+        ensure!(
+            original[rewrite.original_pc..end] == before,
+            "proposal bytes do not match immutable original"
+        );
+        let key = (before.clone(), after.clone());
+        let index = if let Some(&index) = unique.get(&key) {
+            index
+        } else {
+            let index = proofs.len();
+            let local = window_proposal::certificate_for_pair(&before, &after, index)?;
+            proofs.push((before, after, local));
+            unique.insert(key, index);
+            index
+        };
+        ensure!(
+            rewrite.required_stack == proofs[index].2.required,
+            "proposal stack metadata mismatch"
+        );
+        indexes.push(index);
+        previous_end = end;
+    }
+    let mut source = window_proposal::batch_prelude()?;
+    let mut names = Vec::new();
+    for (_, _, proof) in &proofs {
+        source.push_str(&proof.source);
+        names.extend(proof.names.iter().cloned());
+    }
+    writeln!(source,"\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\n{}\n{}",
+        include_str!("../../lean/GenericWindowArtifact.lean"),include_str!("../../lean/GenericWindowBatch.lean")).unwrap();
+    source.push_str("\nnamespace GolfProposedBatch\nopen GolfLayout GolfGenericWindow\n");
+    for (index, (before, after, proof)) in proofs.iter().enumerate() {
+        let namespace = format!("GolfGenerated.Pair{index}");
+        writeln!(source,"def certificate_{index} (pc : Nat) : GenericLocal ⟨pc,{before:?},{after:?},{}⟩ {} ({}) {} {} {} where
+ requiredExact := rfl
+ feasible := by decide
+ nonemptyBefore := by change ({before:?} : List Nat) ≠ []; decide +kernel
+ nonemptyAfter := by change ({after:?} : List Nat) ≠ []; decide +kernel
+ sameLength := by change ({before:?} : List Nat).length = ({after:?} : List Nat).length; decide +kernel
+ beforeBytes := {namespace}.before_bytes
+ afterBytes := {namespace}.after_bytes
+ beforeSupported := by change GolfGenericWindow.supported ({before:?} : List Nat) = true; decide +kernel
+ afterSupported := by change GolfGenericWindow.supported ({after:?} : List Nat) = true; decide +kernel
+ beforeComplete := {namespace}.before_complete
+ afterComplete := {namespace}.after_complete
+ beforeProfile := {namespace}.before_profile
+ afterProfile := {namespace}.after_profile
+ output := {namespace}.output
+ success := {namespace}.success
+ underflow := {namespace}.underflow
+ overflow := {namespace}.overflow
+ allHeight := {namespace}.all_height
+ context := {namespace}.context
+ faultClasses := {namespace}.fault_classes",proof.required,proof.required,proof.delta,proof.peak,proof.before_ops,proof.after_ops).unwrap();
+    }
+    for (site, (rewrite, &index)) in rewrites.iter().zip(&indexes).enumerate() {
+        let (before, after, proof) = &proofs[index];
+        writeln!(
+            source,
+            "def site_{site} : Site := ⟨{}, {before:?}, {after:?}, {}⟩",
+            rewrite.original_pc, proof.required
+        )
+        .unwrap();
+    }
+    let sites = (0..rewrites.len())
+        .map(|i| format!("site_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(source,"def sites : List Site := [{sites}]\ndef locals : GolfGenericWindowBatch.CertifiedLocals sites :=").unwrap();
+    for (rewrite, index) in rewrites.iter().zip(&indexes) {
+        writeln!(
+            source,
+            " GolfGenericWindowBatch.CertifiedLocals.cons (certificate_{index} {}) (",
+            rewrite.original_pc
+        )
+        .unwrap();
+    }
+    source.push_str(" GolfGenericWindowBatch.CertifiedLocals.nil");
+    for _ in rewrites {
+        source.push(')');
+    }
+    source.push('\n');
+    // Both complete arrays are independent inputs, not an application-defined candidate.
+    writeln!(source,"def original : List Nat := {original:?}\ndef candidate : List Nat := {candidate:?}\ndef copies : List GolfLayout.CodeCopy := [").unwrap();
+    for (i, copy) in copies.iter().enumerate() {
+        writeln!(
+            source,
+            " ⟨{}, {}, {}, {}, {}⟩{}",
+            copy.pc,
+            copy.prefix_start,
+            copy.source,
+            copy.len,
+            copy.destination,
+            if i + 1 == copies.len() { "" } else { "," }
+        )
+        .unwrap();
+    }
+    source.push_str("]\ndef artifact : GolfGenericWindowBatch.Artifact original candidate sites copies :=\n GolfGenericWindowBatch.certify locals (by decide +kernel)\nend GolfProposedBatch\n#print axioms GolfProposedBatch.artifact\n");
+    names.push("GolfProposedBatch.artifact".into());
+    Ok((source, names))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,6 +353,51 @@ mod tests {
     use revm::primitives::{U256, hex};
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn proposal_batches_share_proofs_without_dropping_sites() {
+        let before = from_hex("600116600116").unwrap();
+        let after = from_hex("630000000116").unwrap();
+        let original = [before.clone(), before.clone(), vec![0]].concat();
+        let candidate = [after.clone(), after.clone(), vec![0]].concat();
+        let rows: Vec<_> = [0, 6]
+            .into_iter()
+            .map(|pc| Rewrite {
+                original_pc: pc,
+                before: hex::encode(&before),
+                after: hex::encode(&after),
+                required_stack: 1,
+            })
+            .collect();
+        let (source, names) =
+            proposal_batch_certificate(&original, &candidate, &rows, &[]).unwrap();
+        assert_eq!(names.len(), 11);
+        assert_eq!(source.matches("namespace Golf\n").count(), 1);
+        assert_eq!(source.matches("namespace GolfGeneratedFault\n").count(), 1);
+        assert!(!source.contains("namespace GolfGenerated.Pair1"));
+        assert!(source.contains("certificate_0 0"));
+        assert!(source.contains("certificate_0 6"));
+        assert!(source.contains("def sites : List Site := [site_0, site_1]"));
+        assert_eq!(names.last().unwrap(), "GolfProposedBatch.artifact");
+    }
+
+    #[test]
+    fn proposal_batches_reject_invalid_shape_before_proof_emission() {
+        let before = from_hex("600116600116").unwrap();
+        let after = from_hex("630000000116").unwrap();
+        let row = |pc, required| Rewrite {
+            original_pc: pc,
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: required,
+        };
+        assert!(proposal_batch_certificate(&before, &after, &[], &[]).is_err());
+        assert!(proposal_batch_certificate(&before, &after, &[row(0, 0)], &[]).is_err());
+        assert!(proposal_batch_certificate(&before, &after, &[row(usize::MAX, 1)], &[]).is_err());
+        assert!(proposal_batch_certificate(&before, &after, &[row(0, 1), row(0, 1)], &[]).is_err());
+        let rows: Vec<_> = (0..33).map(|_| row(0, 1)).collect();
+        assert!(proposal_batch_certificate(&before, &after, &rows, &[]).is_err());
+    }
 
     #[test]
     #[ignore = "requires Lean 4.34.0"]

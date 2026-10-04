@@ -79,6 +79,9 @@ enum Action {
         /// JSON hash-bound byte pair; the checker generates the local proof.
         #[arg(long, requires_all = ["preserve_layout", "scenarios"], conflicts_with = "plan")]
         proposal: Option<PathBuf>,
+        /// JSON disjoint byte pairs against one immutable baseline; accepted as one batch.
+        #[arg(long, requires_all = ["preserve_layout", "scenarios"], conflicts_with_all = ["plan", "proposal"])]
+        proposals: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -196,6 +199,7 @@ fn main() -> Result<()> {
             preserve_layout,
             plan,
             proposal,
+            proposals,
             out,
         } => {
             let code = runtime::input::read_bytecode(&bytecode)?;
@@ -230,6 +234,10 @@ fn main() -> Result<()> {
                     let proposal: runtime::RewriteProposal =
                         serde_json::from_str(&runtime::input::read_json(&proposal)?)?;
                     runtime::optimize_scenarios_with_proposal(&code, &scenarios, &out, &proposal)?
+                } else if let Some(proposals) = proposals {
+                    let proposals: runtime::RewriteProposalBatch =
+                        serde_json::from_str(&runtime::input::read_json(&proposals)?)?;
+                    runtime::optimize_scenarios_with_proposals(&code, &scenarios, &out, &proposals)?
                 } else {
                     runtime::optimize_scenarios(&code, &scenarios, &out, mode)?
                 }

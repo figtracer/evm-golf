@@ -46,11 +46,14 @@ enum RewriteSelection<'a> {
     All(RuntimeMode),
     Plan(&'a RewritePlan),
     Proposal(&'a RewriteProposal),
+    Proposals(&'a RewriteProposalBatch),
 }
 
 // EIP-170 maximum deployed runtime size. Creation bytecode is not accepted here.
 const MAX_RUNTIME_BYTES: usize = 24_576;
 const MAX_STACK: usize = 1024;
+// Bound aggregate proof generation and site checks under the shared proof deadline.
+const MAX_PROPOSAL_SITES: usize = 32;
 // Exact provenance states can grow combinatorially at joins. Fail closed after
 // 64K retained states or 1M compact stack cells (~2 MiB payload plus containers).
 // Queued states share their storage with the retained set through Rc.
@@ -138,6 +141,23 @@ pub struct RewritePlan {
 #[serde(deny_unknown_fields)]
 pub struct RewriteProposal {
     pub original_keccak256: String,
+    pub original_pc: usize,
+    pub before: String,
+    pub after: String,
+}
+
+/// Disjoint byte-pair proposals, all bound to the same immutable runtime.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RewriteProposalBatch {
+    pub original_keccak256: String,
+    pub sites: Vec<RewriteProposalSite>,
+}
+
+/// One original-image interval in a proposal batch. Metadata is checker-derived.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RewriteProposalSite {
     pub original_pc: usize,
     pub before: String,
     pub after: String,
@@ -495,6 +515,22 @@ pub fn optimize_scenarios_with_proposal(
     optimize_scenarios_selected(code, scenarios, out, RewriteSelection::Proposal(proposal))
 }
 
+/// Prove disjoint original-image proposals together and replay the final candidate.
+/// One invalid site, aggregate proof or supplied transaction rejects the entire batch.
+pub fn optimize_scenarios_with_proposals(
+    code: &[u8],
+    scenarios: &[scenario::Scenario],
+    out: &Path,
+    proposals: &RewriteProposalBatch,
+) -> Result<Report> {
+    ensure!(
+        !proposals.sites.is_empty() && proposals.sites.len() <= MAX_PROPOSAL_SITES,
+        "proposal batch requires 1..={MAX_PROPOSAL_SITES} sites"
+    );
+    input::validate(proposals, std::iter::empty())?;
+    optimize_scenarios_selected(code, scenarios, out, RewriteSelection::Proposals(proposals))
+}
+
 fn optimize_scenarios_selected(
     code: &[u8],
     scenarios: &[scenario::Scenario],
@@ -556,7 +592,9 @@ fn optimize_checked(
 ) -> Result<Report> {
     let mode = match selection {
         RewriteSelection::All(mode) => mode,
-        RewriteSelection::Plan(_) | RewriteSelection::Proposal(_) => RuntimeMode::PreserveLayout,
+        RewriteSelection::Plan(_)
+        | RewriteSelection::Proposal(_)
+        | RewriteSelection::Proposals(_) => RuntimeMode::PreserveLayout,
     };
     let mut proposed_proof = None;
     let (candidate, rewrites, copies) = match selection {
@@ -606,6 +644,37 @@ fn optimize_checked(
             proposed_proof = Some(local);
             (candidate, vec![rewrite], analysis.copies)
         }
+        RewriteSelection::Proposals(proposals) => {
+            ensure!(guard_calls, "rewrite proposals require account scenarios");
+            ensure!(
+                proposals
+                    .original_keccak256
+                    .parse::<B256>()
+                    .context("invalid proposal baseline hash")?
+                    == keccak256(code),
+                "rewrite proposal baseline hash does not match runtime bytecode"
+            );
+            let mut rewrites = proposals
+                .sites
+                .iter()
+                .map(|site| {
+                    let before = from_hex(&site.before)?;
+                    let after = from_hex(&site.after)?;
+                    let local = window_proposal::certificate(&before, &after)
+                        .with_context(|| format!("proposal at PC {}", site.original_pc))?;
+                    Ok(Rewrite {
+                        original_pc: site.original_pc,
+                        before: hex::encode(&before),
+                        after: hex::encode(&after),
+                        required_stack: local.required,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            rewrites.sort_by_key(|site| site.original_pc);
+            let analysis = layout::analyze(code, guard_calls)?;
+            let candidate = layout::transform_proposals(&analysis, &rewrites)?;
+            (candidate, rewrites, analysis.copies)
+        }
     };
     let verification = match mode {
         RuntimeMode::Compact => verification,
@@ -627,6 +696,12 @@ fn optimize_checked(
         fs::write(
             out.join("proposal.json"),
             serde_json::to_string_pretty(proposal)? + "\n",
+        )?;
+    }
+    if let RewriteSelection::Proposals(proposals) = selection {
+        fs::write(
+            out.join("proposals.json"),
+            serde_json::to_string_pretty(proposals)? + "\n",
         )?;
     }
     fs::write(out.join("original.hex"), hex::encode(code) + "\n")?;
@@ -653,6 +728,8 @@ fn optimize_checked(
             RuntimeMode::PreserveLayout => {
                 if let Some(local) = proposed_proof {
                     artifact::proposal_certificate(code, &candidate, &rewrites[0], &copies, local)?
+                } else if matches!(selection, RewriteSelection::Proposals(_)) {
+                    artifact::proposal_batch_certificate(code, &candidate, &rewrites, &copies)?
                 } else {
                     artifact::certificate(code, &candidate, &rewrites, &copies)?
                 }

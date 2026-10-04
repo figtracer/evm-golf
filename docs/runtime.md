@@ -88,6 +88,31 @@ SUB wraps modulo 2²⁵⁶ and subtracts the next word from the top word. Closed
 arithmetic is kernel-checked; symbolic shifts and subtractions retain their operand
 order. Other instructions and unsupported algebra are rejected.
 
+For several disjoint replacements, use `--proposals batch.json` with the same
+`--preserve-layout --scenarios` flags:
+
+```json
+{
+  "original_keccak256": "0x<hash of original runtime>",
+  "sites": [
+    {"original_pc": 4, "before": "600150600250", "after": "630000000050"},
+    {"original_pc": 10, "before": "600150600250", "after": "630000000050"}
+  ]
+}
+```
+
+Every site refers to the original image. The checker sorts sites by PC, rejects
+empty batches, overlaps and duplicate sites, and accepts at most 32 sites to bound
+aggregate proof generation. The per-window limits above still apply. Identical
+byte pairs share a generated local proof, but every actual site is separately
+bound in one aggregate artifact under the existing 60-second proof deadline.
+The final candidate is replayed directly against the original: independently
+passing proposals do not imply their combination passes. One invalid site,
+failed proof or replay mismatch rejects the entire batch. Input order does not
+change the resulting candidate. `--proposals`, `--proposal` and `--plan` are
+mutually exclusive; their existing singleton and plan formats are unchanged.
+The submitted batch is retained in `proposals.json`; results remain local.
+
 The trusted generator proves the exact decoded fragments, complete returned stacks,
 matching failures outside the valid stack-height range, and contextual substitution
 in the bounded model. A separate singleton artifact binds those proofs to the two
