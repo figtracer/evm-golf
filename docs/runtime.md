@@ -147,6 +147,12 @@ change the resulting candidate. `--proposals`, `--proposal` and `--plan` are
 mutually exclusive; their existing singleton and plan formats are unchanged.
 The submitted batch is retained in `proposals.json`; results remain local.
 
+Batch certificates prove instruction-aligned boundaries around every replacement
+and share instruction scans for unchanged byte ranges between rewrites.
+Lean checks every split, complete segment decoding, both full byte arrays and
+protected code reads. The final unchanged range may contain a truncated PUSH;
+host-generated scan data is never accepted without a kernel proof.
+
 The trusted generator proves the exact decoded fragments, complete returned stacks,
 matching failures outside the valid stack-height range, and contextual substitution
 in the bounded model. A separate singleton artifact binds those proofs to the two

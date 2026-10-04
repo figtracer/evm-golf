@@ -4,7 +4,7 @@ use anyhow::{Result, ensure};
 use std::{collections::BTreeMap, fmt::Write as _};
 
 use super::{
-    MAX_PROPOSAL_SITES, MAX_RUNTIME_BYTES, Rewrite, certificates, from_hex, layout,
+    MAX_PROPOSAL_SITES, MAX_RUNTIME_BYTES, Rewrite, certificates, decode, from_hex, layout,
     window_proposal::{self, WindowProof},
 };
 
@@ -274,7 +274,7 @@ pub(super) fn proposal_batch_certificate(
     }
     writeln!(source,"\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\n{}\n{}\n{}",
         include_str!("../../lean/GenericWindowArtifact.lean"),include_str!("../../lean/GenericWindowBatch.lean"),
-        include_str!("../../lean/GenericWindowBatchIndex.lean")).unwrap();
+        include_str!("../../lean/GenericWindowScan.lean")).unwrap();
     source.push_str("\nnamespace GolfProposedBatch\nopen GolfLayout GolfGenericWindow\n");
     for (index, (before, after, proof)) in proofs.iter().enumerate() {
         let namespace = format!("GolfGenerated.Pair{index}");
@@ -342,39 +342,304 @@ pub(super) fn proposal_batch_certificate(
         )
         .unwrap();
     }
-    writeln!(
-        source,
-        "]\ndef tree : GolfBatchIntervals.Tree := {}",
-        proposal_tree(0, rewrites.len())
-    )
-    .unwrap();
-    source.push_str("def artifact : GolfGenericWindowBatch.Artifact original candidate sites copies :=\n ⟨locals, GolfGenericWindowBatch.fast_sound (tree := tree) (by decide +kernel) (by decide +kernel) (by decide +kernel)⟩\nend GolfProposedBatch\n#print axioms GolfProposedBatch.artifact\n");
+    source.push_str("]\n");
+    // Full independent arrays stay above. Complete unchanged gaps are shared
+    // symbolically; every rendered split and local row list is kernel checked.
+    ensure!(
+        original.len() == candidate.len(),
+        "proposal candidate must preserve the original length"
+    );
+    let mut old_chunks = Vec::new();
+    let mut new_chunks = Vec::new();
+    let mut old_rows = Vec::new();
+    let mut new_rows = Vec::new();
+    let mut gap_start = 0;
+    let count = rewrites.len();
+    for site in 0..=count {
+        let end = rewrites
+            .get(site)
+            .map_or(original.len(), |rewrite| rewrite.original_pc);
+        let gap = &original[gap_start..end];
+        ensure!(
+            gap == &candidate[gap_start..end],
+            "proposal candidate changes an unchanged gap"
+        );
+        let instructions = decode(gap);
+        let fuel = if site < count {
+            ensure!(
+                instructions.iter().all(|instruction| {
+                    let op = instruction.bytes[0];
+                    instruction.bytes.len()
+                        == if (0x60..=0x7f).contains(&op) {
+                            usize::from(op - 0x5f) + 1
+                        } else {
+                            1
+                        }
+                }),
+                "proposal boundary truncates a PUSH instruction"
+            );
+            instructions.len()
+        } else {
+            // The final gap may contain a truncated PUSH, like canonical scan.
+            gap.len()
+        };
+        writeln!(source, "def gap_{site} : List Nat := {gap:?}\ntheorem gap_{site}_length : gap_{site}.length = {} := by decide +kernel", gap.len()).unwrap();
+        if site < count {
+            writeln!(source, "theorem gap_{site}_complete : CompleteScanPrefix gap_{site} {fuel} := completeCount_sound (gap_{site}.length+1) gap_{site} {fuel} (by decide +kernel)\ndef gapChunk_{site} : CompleteChunk := ⟨gap_{site}, {fuel}, gap_{site}_complete⟩").unwrap();
+        }
+        writeln!(source, "def gapRows_{site} : List GolfGenericWindow.Row := scanAux {fuel} {gap_start} gap_{site}
+theorem gapBounds_{site} (row : GolfGenericWindow.Row) (member : row ∈ gapRows_{site}) :
+ {gap_start} ≤ row.1 ∧ row.1 < {end} := by
+ refine ⟨scanAux_lower {fuel} {gap_start} gap_{site} row member, ?_⟩
+ simpa only [gap_{site}_length, Nat.reduceAdd] using scanAux_upper {fuel} {gap_start} gap_{site} row member
+theorem gapDisjoint_{site} : ∀ site ∈ sites,
+ {end} ≤ site.pc ∨ site.pc+site.before.length ≤ {gap_start} := by
+ have checked : sites.all (fun site => decide ({end} ≤ site.pc ∨ site.pc+site.before.length ≤ {gap_start})) = true := by decide +kernel
+ intro site member
+ exact of_decide_eq_true (List.all_eq_true.mp checked site member)
+theorem gapExterior_{site} : GolfGenericWindowBatch.exterior sites gapRows_{site} = gapRows_{site} :=
+ GolfSharedSuffix.exterior_gap sites gapRows_{site} {gap_start} {end} gapBounds_{site} gapDisjoint_{site}
+theorem gapNoInterior_{site} (site : Site) (member : site ∈ sites) : noInterior site gapRows_{site} = true :=
+ GolfSharedSuffix.noInterior_gap site gapRows_{site} {gap_start} {end} gapBounds_{site} (gapDisjoint_{site} site member)").unwrap();
+        if site == count {
+            break;
+        }
+        let rewrite = &rewrites[site];
+        let (before, after, _) = &proofs[indexes[site]];
+        gap_start = rewrite.original_pc + before.len();
+        for (side, code, chunks, rows) in [
+            ("old", before, &mut old_chunks, &mut old_rows),
+            ("new", after, &mut new_chunks, &mut new_rows),
+        ] {
+            let instructions = decode(code);
+            let operations = instructions.len();
+            writeln!(source, "def {side}Chunk_{site} : CompleteChunk := ⟨{code:?}, {operations}, completeCount_sound ({}+1) {code:?} {operations} (by decide +kernel)⟩", code.len()).unwrap();
+            write!(
+                source,
+                "def {side}Rows_{site} : List GolfGenericWindow.Row := ["
+            )
+            .unwrap();
+            for (index, instruction) in instructions.iter().enumerate() {
+                write!(
+                    source,
+                    "{}({}, {}, {})",
+                    if index == 0 { "" } else { ", " },
+                    rewrite.original_pc + instruction.pc,
+                    instruction.bytes.len(),
+                    instruction.bytes[0] == 0x5b
+                )
+                .unwrap();
+            }
+            writeln!(source, "]\ntheorem {side}Rows_{site}_exact : scanAux {operations} {} {code:?} = {side}Rows_{site} := by decide +kernel\ntheorem {side}Exterior_{site} : GolfGenericWindowBatch.exterior sites {side}Rows_{site} = [] := by decide +kernel\ntheorem {side}Jumps_{site} : jumps {side}Rows_{site} = [] := by decide +kernel\ntheorem {side}NoInterior_{site} : sites.all (fun site => noInterior site {side}Rows_{site}) = true := by decide +kernel", rewrite.original_pc).unwrap();
+            chunks.extend([format!("gapChunk_{site}"), format!("{side}Chunk_{site}")]);
+            rows.extend([format!("gapRows_{site}"), format!("{side}Rows_{site}")]);
+        }
+    }
+    for (side, chunks, rows, image) in [
+        ("old", old_chunks, &mut old_rows, "original"),
+        ("new", new_chunks, &mut new_rows, "candidate"),
+    ] {
+        writeln!(source, "def {side}Chunks : List CompleteChunk := [{}]\ntheorem {image}_split : {image} = chunkBytes {side}Chunks ++ gap_{count} := by decide +kernel\ntheorem {side}Chunks_length : (chunkBytes {side}Chunks).length = {previous_end} := by decide +kernel", chunks.join(", ")).unwrap();
+        let mut definitions = vec![format!("{side}Chunks"), "chunkRows".into()];
+        definitions.extend((0..count).map(|i| format!("gapChunk_{i}")));
+        definitions.extend((0..count).map(|i| format!("{side}Chunk_{i}")));
+        definitions.extend((0..count).map(|i| format!("gap_{i}_length")));
+        definitions.extend((0..count).map(|i| format!("{side}Rows_{i}_exact")));
+        definitions.extend(
+            [
+                "List.length_cons",
+                "List.length_nil",
+                "Nat.reduceAdd",
+                "List.append_nil",
+                "List.append_assoc",
+            ]
+            .map(str::to_owned),
+        );
+        // Associativity must be proved symbolically: rfl alone can normalize the
+        // entire shared scan to reconcile differently associated append trees.
+        writeln!(source, "theorem {side}Chunks_rows : chunkRows 0 {side}Chunks = {} := by\n simp only [{}] <;> rfl", rows.join(" ++ "), definitions.join(", ")).unwrap();
+        rows.push(format!("gapRows_{count}"));
+        writeln!(source, "theorem {image}Shared : scan {image} = {} := by\n rw [{image}_split, scan_complete_chunks, {side}Chunks_length, {side}Chunks_rows]\n simp only [gap_{count}_length, List.append_assoc] <;> rfl", rows.join(" ++ ")).unwrap();
+    }
+    source.push_str("theorem exterior_append (sites : List Site) (left right : List GolfGenericWindow.Row) :\n GolfGenericWindowBatch.exterior sites (left ++ right) =\n GolfGenericWindowBatch.exterior sites left ++ GolfGenericWindowBatch.exterior sites right := List.filter_append ..\ntheorem jumps_append (left right : List GolfGenericWindow.Row) :\n jumps (left ++ right) = jumps left ++ jumps right := by\n simp only [jumps, List.filter_append, List.map_append]\n");
+    for (theorem, function, distribution, property) in [
+        (
+            "exteriorShared",
+            "GolfGenericWindowBatch.exterior sites",
+            "exterior_append",
+            "Exterior",
+        ),
+        ("jumpsShared", "jumps", "jumps_append", "Jumps"),
+    ] {
+        let mut lemmas = vec![
+            "originalShared".to_owned(),
+            "candidateShared".to_owned(),
+            distribution.to_owned(),
+        ];
+        for side in ["old", "new"] {
+            lemmas.extend((0..count).map(|i| format!("{side}{property}_{i}")));
+        }
+        lemmas.extend(["List.nil_append".to_owned(), "List.append_nil".to_owned()]);
+        if property == "Exterior" {
+            lemmas.extend((0..=count).map(|i| format!("gapExterior_{i}")));
+        }
+        writeln!(source, "theorem {theorem} : {function} (scan original) = {function} (scan candidate) := by\n simp only [{}]", lemmas.join(", ")).unwrap();
+    }
+    for (side, image, rows) in [
+        ("old", "original", old_rows),
+        ("new", "candidate", new_rows),
+    ] {
+        writeln!(source, "theorem {side}NoInterior : sites.all (fun site => noInterior site (scan {image})) = true := by\n rw [{image}Shared]\n apply List.all_eq_true.mpr\n intro site member").unwrap();
+        for i in 0..count {
+            writeln!(source, " have h{i} : noInterior site {side}Rows_{i} = true := List.all_eq_true.mp {side}NoInterior_{i} site member").unwrap();
+        }
+        let terms = rows
+            .iter()
+            .map(|row| format!("noInterior site {row}"))
+            .collect::<Vec<_>>()
+            .join(" && ");
+        let lemmas = (0..=count)
+            .map(|i| format!("gapNoInterior_{i} site member"))
+            .chain((0..count).map(|i| format!("h{i}")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(source, " simp only [noInterior, List.all_append]\n change ({terms}) = true\n rw [{lemmas}]\n rfl").unwrap();
+    }
+    source.push_str("def artifact : GolfGenericWindowBatch.Artifact original candidate sites copies := by\n refine ⟨locals, ?_⟩\n exact ⟨by decide +kernel, by decide +kernel, by decide +kernel,\n   by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel,\n   exteriorShared,jumpsShared,oldNoInterior,newNoInterior,\n   by decide +kernel,by decide +kernel,by decide +kernel,by decide +kernel⟩\nend GolfProposedBatch\n#print axioms GolfProposedBatch.artifact\n");
     names.push("GolfProposedBatch.artifact".into());
     Ok((source, names))
-}
-
-// The kernel checks this index's ordering and exact coverage of the site list.
-// Balancing affects lookup cost only; it cannot authorize an omitted range.
-fn proposal_tree(start: usize, end: usize) -> String {
-    if start == end {
-        "GolfBatchIntervals.Tree.empty".into()
-    } else {
-        let middle = start + (end - start) / 2;
-        format!(
-            "(GolfBatchIntervals.Tree.node {} site_{middle} {})",
-            proposal_tree(start, middle),
-            proposal_tree(middle + 1, end)
-        )
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{proof, runtime::decode};
+    use crate::proof;
     use revm::primitives::{U256, hex};
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn proposal_batch_rejects_unbound_gaps_and_incomplete_boundaries() {
+        let before = from_hex("600150600250").unwrap();
+        let after = from_hex("630000000050").unwrap();
+        let rewrite = Rewrite {
+            original_pc: 0,
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: 0,
+        };
+        let original = [before.clone(), vec![0x5b, 0]].concat();
+        let changed_suffix = [after.clone(), vec![0x5a, 0]].concat();
+        assert!(proposal_batch_certificate(&original, &changed_suffix, &[rewrite], &[]).is_err());
+
+        let original = [vec![0x5b], before.clone()].concat();
+        let candidate = [vec![0x5a], after.clone()].concat();
+        let rewrite = Rewrite {
+            original_pc: 1,
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: 0,
+        };
+        assert!(proposal_batch_certificate(&original, &candidate, &[rewrite], &[]).is_err());
+
+        // The proposed interval is embedded in an outer PUSH8's immediate.
+        // Its endpoint therefore cannot certify a complete decoded prefix.
+        let original = [vec![0x67], before, vec![0, 0]].concat();
+        let candidate = [vec![0x67], after, vec![0, 0]].concat();
+        let rewrite = Rewrite {
+            original_pc: 1,
+            before: "600150600250".into(),
+            after: "630000000050".into(),
+            required_stack: 0,
+        };
+        assert!(proposal_batch_certificate(&original, &candidate, &[rewrite], &[]).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires Lean 4.34.0"]
+    fn proposal_batch_shared_gaps_are_kernel_bound() {
+        let before = from_hex("605b50600150").unwrap();
+        let after = from_hex("630000000050").unwrap();
+        let rewrite = Rewrite {
+            original_pc: 1,
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: 0,
+        };
+        let directory = tempdir().unwrap();
+        for (index, suffix) in [vec![0, 0x61, 0xff], vec![]].into_iter().enumerate() {
+            // JUMPDEST inside the PUSH immediate is data; a truncated final PUSH
+            // in the unchanged suffix is still represented by canonical scan.
+            let original = [vec![0x5b], before.clone(), suffix.clone()].concat();
+            let candidate = [vec![0x5b], after.clone(), suffix].concat();
+            let (source, names) = proposal_batch_certificate(
+                &original,
+                &candidate,
+                std::slice::from_ref(&rewrite),
+                &[],
+            )
+            .unwrap();
+            let path = directory.path().join(format!("Shared{index}.lean"));
+            fs::write(&path, &source).unwrap();
+            let checked = proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational);
+            assert!(
+                checked.is_ok(),
+                "{checked:?}\n{}",
+                fs::read_to_string(path.with_extension("log")).unwrap_or_default()
+            );
+            if index == 0 {
+                for (label, correct, wrong) in [
+                    (
+                        "Suffix",
+                        "def gap_1 : List Nat := [0, 97, 255]",
+                        "def gap_1 : List Nat := [0, 97, 254]",
+                    ),
+                    ("Pc", "scanAux 3 7 gap_1", "scanAux 3 8 gap_1"),
+                    (
+                        "Count",
+                        "gap_0 1 (by decide +kernel)",
+                        "gap_0 0 (by decide +kernel)",
+                    ),
+                ] {
+                    let changed = source.replacen(correct, wrong, 1);
+                    assert_ne!(source, changed, "missing mutation {label}");
+                    let path = directory.path().join(format!("Wrong{label}.lean"));
+                    fs::write(&path, changed).unwrap();
+                    assert!(
+                        proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational)
+                            .is_err(),
+                        "accepted {label} corruption"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Lean 4.34.0"]
+    fn proposal_batch_adjacent_sites_have_empty_shared_gaps() {
+        let before = from_hex("600150600250").unwrap();
+        let after = from_hex("630000000050").unwrap();
+        let original = [before.clone(), before.clone()].concat();
+        let candidate = [after.clone(), after.clone()].concat();
+        let rewrites = [0, before.len()].map(|original_pc| Rewrite {
+            original_pc,
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: 0,
+        });
+        let (source, names) =
+            proposal_batch_certificate(&original, &candidate, &rewrites, &[]).unwrap();
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("Adjacent.lean");
+        fs::write(&path, source).unwrap();
+        let checked = proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational);
+        assert!(
+            checked.is_ok(),
+            "{checked:?}\n{}",
+            fs::read_to_string(path.with_extension("log")).unwrap_or_default()
+        );
+    }
 
     #[test]
     fn proposal_batches_share_proofs_without_dropping_sites() {
