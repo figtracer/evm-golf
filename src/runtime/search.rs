@@ -227,7 +227,7 @@ fn search_with(
         }
         report.candidate_keccak256 = keccak256(&candidate).to_string();
         // Do all proof/replay work before exposing the root candidate. As with
-        // optimize-runtime, an I/O error/crash can leave incomplete output.
+        // single-stage optimization, an I/O error/crash can leave incomplete output.
         let serialized = serde_json::to_vec_pretty(&report)?;
         fs::write(out.join("candidate.hex"), hex::encode(&candidate) + "\n")?;
         fs::write(out.join("result.json"), serialized)?;

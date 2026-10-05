@@ -14,7 +14,7 @@ use std::{
     path::Path,
 };
 
-// Match the existing campaign's 1 MiB input budget. Serialized library inputs
+// A 1 MiB input budget per file. Serialized library inputs
 // are counted too, so bypassing the CLI does not bypass the fixture limit.
 const MAX_INPUT_BYTES: usize = 1_048_576;
 const MAX_TRANSACTIONS: usize = 256;

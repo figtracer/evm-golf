@@ -1,4 +1,4 @@
-//! Separate pinned upstream semantics checker; never uses the expression toolchain.
+//! Separate pinned upstream semantics checker; never uses the runtime Lean toolchain.
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use serde_json::json;

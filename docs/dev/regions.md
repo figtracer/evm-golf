@@ -37,7 +37,7 @@ generated certificates. Each module has a 45-second wall-clock limit. Failure or
 timeout leaves diagnostics without an accepted `result.json`. Installed Lean and
 upstream/dependency compiled artifacts remain trusted, like the toolchain itself;
 source revision checks do not authenticate those compiled artifacts. The existing
-Lean 4.34 expression and runtime rewrite gates are unchanged.
+The Lean 4.34 runtime rewrite gates are unchanged.
 
 ## Through JUMP
 
@@ -99,8 +99,8 @@ calls have equal outcomes.
 
 The proof excludes entry reachability, jump execution, suffix behavior,
 whole-contract equivalence, and formal correspondence with revm. Concrete replay
-with `check-runtime` is separate evidence. Region certificates are not expression
-leaderboard entries and do not alter `optimize-runtime` acceptance.
+with `check-runtime` is separate evidence. Region certificates do not alter
+`optimize` or `verify` acceptance.
 
 The mask region is the following exact 18-byte pair:
 

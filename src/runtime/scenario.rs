@@ -77,7 +77,7 @@ pub struct ReplayReport {
 }
 
 /// Compare candidates only on supplied transactions. This is not a proof or an
-/// expression-leaderboard submission. Preserve proposed input on failure.
+/// optimization result. Preserve proposed input on failure.
 pub fn check(
     original: &[u8],
     candidate: &[u8],
