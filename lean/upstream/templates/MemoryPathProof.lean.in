@@ -1,0 +1,60 @@
+import $root_module
+set_option Elab.async false
+set_option maxRecDepth 4096
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream GolfCountOffset CanonicalMaskWindow GolfComposition GolfChunk GolfChunkSummary
+namespace GolfCertificates.Memory
+
+def sourceCost (s : EVM.State) : Nat := $root_summary.cost s
+
+def sourceExit (s : EVM.State) : EVM.State := $root_summary.post s
+
+def stackTransfer (xs : List UInt256) : List UInt256 := $root_summary.stackMap xs
+
+theorem source_gas (s : EVM.State)
+    (gas : sourceCost s ≤ s.gasAvailable.toNat) :
+    (sourceExit s).gasAvailable.toNat = s.gasAvailable.toNat - sourceCost s := by
+  exact $root_summary.gas_eq s gas
+
+theorem bound_trace (s : EVM.State) (xs : List UInt256) (fuel : Nat)
+    (pc : s.pc = UInt256.ofNat $entry_pc) (stack : s.stack = xs)
+    (gas : sourceCost s ≤ s.gasAvailable.toNat)
+    (low : $required ≤ xs.length) (height : xs.length ≤ $maximum) :
+    MixedTrace originalCode candidateCode (fuel+1) (fuel+($source_steps+1))
+      (fuel+($candidate_steps+1)) $powers $masks s (sourceExit s) := by
+  have trace := $root_summary.trace s pc (by simpa only [stack] using low)
+    (by simpa only [stack] using height) gas
+  convert GolfChunk.recover trace fuel using 1 <;> omega
+
+theorem source_stack (s : EVM.State) (xs : List UInt256) (stack : s.stack = xs) :
+    (sourceExit s).stack = stackTransfer xs := by
+  exact $root_summary.stack_eq s xs stack
+
+theorem source_count (s : EVM.State) :
+    (sourceExit s).execLength = s.execLength + $source_steps := by
+  exact $root_summary.count_eq s
+
+theorem source_pc (s : EVM.State) (pc : s.pc = UInt256.ofNat $entry_pc) :
+    (sourceExit s).pc = UInt256.ofNat $exit_pc := by
+  exact $root_summary.pc_eq s pc
+
+theorem memory_boundary {owner surplus skipped s t}
+    (related : DeployedOffset owner originalCode candidateCode surplus skipped s t)
+    (xs : List UInt256) (fuel : Nat) (oldJumps newJumps : Array UInt256)
+    (pc : s.pc = UInt256.ofNat $entry_pc) (stack : s.stack = xs)
+    (gas : sourceCost s ≤ s.gasAvailable.toNat)
+    (low : $required ≤ xs.length) (height : xs.length ≤ $maximum) :
+    ∃ ce,
+      X (fuel+($source_steps+1)) oldJumps s = X (fuel+1) oldJumps (sourceExit s) ∧
+      X (fuel+($candidate_steps+1)) newJumps t = X (fuel+1) newJumps ce ∧
+      DeployedOffset owner originalCode candidateCode (surplus+2*$powers+9*$masks)
+        (skipped+3*$masks) (sourceExit s) ce := by
+  exact mixed_simulation (bound_trace s xs fuel pc stack gas low height)
+    t surplus skipped oldJumps newJumps related
+
+#print axioms source_gas
+#print axioms source_count
+#print axioms source_pc
+#print axioms source_stack
+#print axioms memory_boundary
+end GolfCertificates.Memory

@@ -7,7 +7,10 @@ use std::{fmt::Write as _, fs, path::Path};
 
 mod jump;
 mod span;
-pub use span::{SpanCertificate, SpanJumpCertificate, certify_span, certify_span_through_jump};
+pub use span::{
+    MemorySpanCertificate, SelectedSpanCertificate, SpanCertificate, SpanJumpCertificate,
+    certify_selected_span, certify_span, certify_span_through_jump,
+};
 
 use super::MAX_RUNTIME_BYTES;
 use crate::proof;
@@ -599,6 +602,7 @@ fn decoded_operation(bytes: &[u8]) -> (String, String) {
             0x5f => "Operation.PUSH0",
             0x80 => "Operation.DUP1",
             0x56 => "Operation.JUMP",
+            0x52 => "Operation.MSTORE",
             0x1b => "Operation.SHL",
             0x03 => "Operation.SUB",
             0x16 => "Operation.AND",

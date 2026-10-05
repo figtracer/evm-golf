@@ -16,8 +16,12 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    # Include cold Rust/Lean downloads and compilation; bound stalled runs.
+    # Run independent suites separately so each bounds its own cold setup and checks.
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [core, regions, jumps]
     env:
       RUSTUP_TOOLCHAIN: 1.98.0
       CARGO_TERM_COLOR: always
@@ -27,18 +31,29 @@ jobs:
           persist-credentials: false
       - name: Install Rust
         run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
-      - name: Install Lean
+      - name: Install compression tools
         run: |
           if ! command -v zstd >/dev/null; then
             sudo apt-get update
             sudo apt-get install --yes zstd
           fi
-          bash scripts/setup-lean.sh
+      - name: Install Lean
+        if: matrix.suite == 'core'
+        run: bash scripts/setup-lean.sh
       - name: Check Rust and Lean proofs
+        if: matrix.suite == 'core'
         run: bash scripts/check.sh
       - name: Install pinned upstream semantics
-        run: bash scripts/setup-upstream.sh --checked-scanner
+        if: matrix.suite != 'core'
+        run: |
+          if [[ "${{ matrix.suite }}" == jumps ]]; then
+            bash scripts/setup-upstream.sh --checked-scanner
+          else
+            bash scripts/setup-upstream.sh
+          fi
       - name: Check upstream region certificate
+        if: matrix.suite == 'regions'
         run: bash scripts/check-upstream.sh
       - name: Check canonical static jumps
+        if: matrix.suite == 'jumps'
         run: bash scripts/check-checked-scanner.sh

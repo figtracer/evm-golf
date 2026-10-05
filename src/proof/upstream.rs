@@ -75,6 +75,7 @@ pub(crate) enum RegionKind<'a> {
     PowerJump(&'a JumpPlan),
     Mask,
     ChunkedSpan(&'a SpanPlan),
+    MemorySpan(&'a MemoryPlan),
     SpanJump(&'a SpanPlan, &'a JumpPlan),
 }
 
@@ -319,6 +320,84 @@ impl SpanPlan {
                 "span_boundary",
             ]
             .map(|name| format!("GolfCertificates.Span.{name}"))
+            .to_vec(),
+        ));
+        modules
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PathLeafKind {
+    Pure,
+    Store,
+}
+
+#[derive(Debug)]
+pub(crate) struct MemoryPlan {
+    pub(crate) leaves: Vec<PathLeafKind>,
+    pub(crate) compositions: Vec<(SpanNode, SpanNode)>,
+}
+
+impl MemoryPlan {
+    fn validate(&self) -> Result<()> {
+        SpanPlan {
+            leaf_count: self.leaves.len(),
+            compositions: self.compositions.clone(),
+        }
+        .validate()
+    }
+
+    fn modules(&self) -> Vec<(String, Vec<String>)> {
+        let mut modules = vec![(
+            "Images".to_owned(),
+            [
+                "originalRoundtrip",
+                "candidateRoundtrip",
+                "originalWindowFetch",
+                "candidateWindowFetch",
+            ]
+            .map(|name| format!("GolfCertificates.{name}"))
+            .to_vec(),
+        )];
+        for (leaf, kind) in self.leaves.iter().enumerate() {
+            if *kind == PathLeafKind::Pure {
+                modules.push((
+                    format!("TraceLeaf{leaf}"),
+                    vec![format!("GolfSpanTrace{leaf}.summary")],
+                ));
+                modules.push((
+                    format!("DecodeLeaf{leaf}"),
+                    vec![
+                        format!("GolfSpanDecode{leaf}.originalDecoded"),
+                        format!("GolfSpanDecode{leaf}.candidateDecoded"),
+                    ],
+                ));
+                modules.push((
+                    format!("BindLeaf{leaf}"),
+                    vec![format!("GolfSpanBind{leaf}.summary")],
+                ));
+            }
+            modules.push((
+                format!("PathLeaf{leaf}"),
+                vec![format!("GolfPathLeaf{leaf}.summary")],
+            ));
+        }
+        for node in 0..self.compositions.len() {
+            modules.push((
+                format!("PathCompose{node}"),
+                vec![format!("GolfPathCompose{node}.summary")],
+            ));
+        }
+        modules.push((
+            "MemoryRegionProof".to_owned(),
+            [
+                "source_gas",
+                "source_count",
+                "source_pc",
+                "source_stack",
+                "memory_boundary",
+            ]
+            .map(|name| format!("GolfCertificates.Memory.{name}"))
             .to_vec(),
         ));
         modules
@@ -606,6 +685,22 @@ const SPAN_MODULES: &[(&str, &str, &[&str])] = &[
         ],
     ),
     (
+        "MemorySupport",
+        include_str!("../../lean/upstream/MemorySupport.lean"),
+        &[
+            "CanonicalMemory.step_mstore",
+            "CanonicalMemory.charge_preserves",
+            "CanonicalMemory.expansion_equal",
+            "CanonicalMemory.store_preserves",
+            "CanonicalMemory.expansion_charge_bounds",
+        ],
+    ),
+    (
+        "MemoryDriver",
+        include_str!("../../lean/upstream/MemoryDriver.lean"),
+        &["CanonicalMemory.X_mstore", "CanonicalMemory.mstore_pair"],
+    ),
+    (
         "MixedTrace",
         include_str!("../../lean/upstream/MixedTrace.lean"),
         &[
@@ -714,6 +809,7 @@ const CHUNK_MODULES: &[(&str, &str, &[&str])] = &[
         "TraceChunk",
         include_str!("../../lean/upstream/TraceChunk.lean"),
         &[
+            "GolfChunk.mstore",
             "GolfChunk.identity",
             "GolfChunk.append",
             "GolfChunk.recover",
@@ -739,6 +835,17 @@ const CHUNK_MODULES: &[(&str, &str, &[&str])] = &[
         ],
     ),
 ];
+
+const MEMORY_MODULES: &[(&str, &str, &[&str])] = &[(
+    "PathSummary",
+    include_str!("../../lean/upstream/PathSummary.lean"),
+    &[
+        "GolfPathSummary.ofPure",
+        "GolfPathSummary.compose",
+        "GolfPathSummary.mstore_gas",
+        "GolfPathSummary.mstore",
+    ],
+)];
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -770,10 +877,19 @@ pub(crate) fn check_jump_output(out: &Path) -> Result<()> {
     check_output_separation(out, &upstream_root()?.join("checked-scanner"))
 }
 
+/// Protect the installed source and toolchain before creating memory-path output.
+pub(crate) fn check_region_output(out: &Path) -> Result<()> {
+    let root = upstream_root()?;
+    for installation in [&root, &root.join("semantics"), &root.join("lean")] {
+        check_output_separation(out, installation)?;
+    }
+    Ok(())
+}
+
 fn check_output_separation(out: &Path, installation: &Path) -> Result<()> {
     let installation = installation
         .canonicalize()
-        .context("checked scanner unavailable; run scripts/setup-upstream.sh --checked-scanner")?;
+        .with_context(|| format!("proof installation unavailable: {}", installation.display()))?;
     // Resolve the nearest existing parent before creating anything. Missing
     // components must be ordinary names: unresolved '..' could create an
     // installation-local directory before traversing back outside it.
@@ -814,7 +930,7 @@ fn check_output_separation(out: &Path, installation: &Path) -> Result<()> {
     );
     ensure!(
         !resolved.starts_with(&installation),
-        "certificate output must be outside the checked-scanner installation"
+        "certificate output must be outside the proof installation"
     );
     Ok(())
 }
@@ -824,6 +940,10 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     let out = out.canonicalize()?;
     let planned = match kind {
         RegionKind::ChunkedSpan(plan) => {
+            plan.validate()?;
+            Some(plan.modules())
+        }
+        RegionKind::MemorySpan(plan) => {
             plan.validate()?;
             Some(plan.modules())
         }
@@ -966,19 +1086,34 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     )?;
     let additional = match kind {
         RegionKind::Power | RegionKind::PowerJump(_) => POWER_MODULES,
-        RegionKind::Mask | RegionKind::ChunkedSpan(_) | RegionKind::SpanJump(_, _) => MASK_MODULES,
+        RegionKind::Mask
+        | RegionKind::ChunkedSpan(_)
+        | RegionKind::MemorySpan(_)
+        | RegionKind::SpanJump(_, _) => MASK_MODULES,
     };
     let composition = match kind {
-        RegionKind::ChunkedSpan(_) | RegionKind::SpanJump(_, _) => SPAN_MODULES,
+        RegionKind::ChunkedSpan(_) | RegionKind::MemorySpan(_) | RegionKind::SpanJump(_, _) => {
+            SPAN_MODULES
+        }
         RegionKind::Power | RegionKind::PowerJump(_) | RegionKind::Mask => &[],
     };
     let chunks = match kind {
-        RegionKind::ChunkedSpan(_) | RegionKind::SpanJump(_, _) => CHUNK_MODULES,
+        RegionKind::ChunkedSpan(_) | RegionKind::MemorySpan(_) | RegionKind::SpanJump(_, _) => {
+            CHUNK_MODULES
+        }
         _ => &[],
+    };
+    let memory = if matches!(kind, RegionKind::MemorySpan(_)) {
+        MEMORY_MODULES
+    } else {
+        &[]
     };
     let routing = if matches!(
         kind,
-        RegionKind::ChunkedSpan(_) | RegionKind::PowerJump(_) | RegionKind::SpanJump(_, _)
+        RegionKind::ChunkedSpan(_)
+            | RegionKind::MemorySpan(_)
+            | RegionKind::PowerJump(_)
+            | RegionKind::SpanJump(_, _)
     ) {
         ROUTING_MODULES
     } else {
@@ -1006,6 +1141,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         .chain(composition)
         .chain(routing)
         .chain(chunks)
+        .chain(memory)
         .chain(jump_modules)
         .chain(span_jump)
     {
@@ -1027,6 +1163,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             "GolfCertificates.Mask.afterDecoded",
             "GolfCertificates.Mask.compiler_mask_boundary",
         ],
+        RegionKind::MemorySpan(_) => &[],
         RegionKind::ChunkedSpan(_) | RegionKind::SpanJump(_, _) => &[
             "GolfCertificates.Span.source_gas",
             "GolfCertificates.Span.bound_trace",
@@ -1043,7 +1180,10 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         "GolfCertificates.candidateWindowFetch",
     ];
     let generated: &[(&str, &[&str])] = match kind {
-        RegionKind::ChunkedSpan(_) | RegionKind::PowerJump(_) | RegionKind::SpanJump(_, _) => &[],
+        RegionKind::ChunkedSpan(_)
+        | RegionKind::MemorySpan(_)
+        | RegionKind::PowerJump(_)
+        | RegionKind::SpanJump(_, _) => &[],
         RegionKind::Power | RegionKind::Mask => &[
             ("Images", image_roots),
             ("Decode", &[]),
@@ -1052,6 +1192,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     };
     let generated = match kind {
         RegionKind::ChunkedSpan(plan) => plan.modules(),
+        RegionKind::MemorySpan(plan) => plan.modules(),
         RegionKind::PowerJump(plan) => plan.generated_modules(),
         RegionKind::SpanJump(span, jump) => {
             let mut modules = span.modules();
@@ -1071,7 +1212,10 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     // Diagnostic measurements never substitute for compilation and the axiom audit.
     let mut measurements = if matches!(
         kind,
-        RegionKind::ChunkedSpan(_) | RegionKind::PowerJump(_) | RegionKind::SpanJump(_, _)
+        RegionKind::ChunkedSpan(_)
+            | RegionKind::MemorySpan(_)
+            | RegionKind::PowerJump(_)
+            | RegionKind::SpanJump(_, _)
     ) {
         Some(
             fs::OpenOptions::new()
@@ -1089,6 +1233,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         .chain(composition)
         .chain(routing)
         .chain(chunks)
+        .chain(memory)
         .chain(jump_modules)
         .chain(span_jump)
         .map(|(name, _, roots)| {
@@ -1259,8 +1404,8 @@ fn check_checkout(path: &Path, revision: &str, out: &Path, name: &str) -> Result
 #[cfg(test)]
 mod tests {
     use super::{
-        JumpPlan, Manifest, RegionKind, SpanNode, SpanPlan, check_output_separation,
-        validate_manifest, verify_region,
+        JumpPlan, Manifest, MemoryPlan, PathLeafKind, RegionKind, SpanNode, SpanPlan,
+        check_output_separation, validate_manifest, verify_region,
     };
     use std::fs;
 
@@ -1500,6 +1645,107 @@ mod tests {
                 _ => unreachable!(),
             }
             let error = verify_region(out.path(), RegionKind::ChunkedSpan(&plan))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(if mutation == "cached" {
+                    "cached Lean artifacts"
+                } else {
+                    "module set differs"
+                }),
+                "{error}"
+            );
+            assert!(!out.path().join("environment.json").exists());
+        }
+    }
+
+    #[test]
+    fn memory_plan_keeps_global_leaf_indexes_and_complete_ordered_tree() {
+        use PathLeafKind::{Pure, Store};
+        use SpanNode::{Compose, Leaf};
+        let plan = MemoryPlan {
+            leaves: vec![Pure, Store, Pure],
+            compositions: vec![(Leaf(0), Leaf(1)), (Compose(0), Leaf(2))],
+        };
+        plan.validate().unwrap();
+        let modules = plan.modules();
+        assert_eq!(
+            modules
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Images",
+                "TraceLeaf0",
+                "DecodeLeaf0",
+                "BindLeaf0",
+                "PathLeaf0",
+                "PathLeaf1",
+                "TraceLeaf2",
+                "DecodeLeaf2",
+                "BindLeaf2",
+                "PathLeaf2",
+                "PathCompose0",
+                "PathCompose1",
+                "MemoryRegionProof"
+            ]
+        );
+        assert_eq!(modules[5].1, ["GolfPathLeaf1.summary"]);
+        assert_eq!(modules[12].1.len(), 5);
+        MemoryPlan {
+            leaves: vec![Store],
+            compositions: vec![],
+        }
+        .validate()
+        .unwrap();
+        for plan in [
+            MemoryPlan {
+                leaves: vec![],
+                compositions: vec![],
+            },
+            MemoryPlan {
+                leaves: vec![Pure, Store],
+                compositions: vec![],
+            },
+            MemoryPlan {
+                leaves: vec![Pure, Store],
+                compositions: vec![(Leaf(1), Leaf(0))],
+            },
+            MemoryPlan {
+                leaves: vec![Pure, Store],
+                compositions: vec![(Leaf(0), Leaf(0))],
+            },
+            MemoryPlan {
+                leaves: vec![Pure, Store],
+                compositions: vec![(Leaf(0), Leaf(2))],
+            },
+        ] {
+            assert!(
+                plan.validate().is_err(),
+                "accepted invalid memory tree: {plan:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn memory_module_closure_rejects_missing_extra_and_cached_files_before_setup() {
+        let plan = MemoryPlan {
+            leaves: vec![PathLeafKind::Pure, PathLeafKind::Store],
+            compositions: vec![(SpanNode::Leaf(0), SpanNode::Leaf(1))],
+        };
+        for mutation in ["missing", "store-trace", "extra", "cached"] {
+            let out = tempfile::tempdir().unwrap();
+            for (name, _) in plan.modules() {
+                fs::write(out.path().join(format!("{name}.lean")), "").unwrap();
+            }
+            match mutation {
+                "missing" => fs::remove_file(out.path().join("PathLeaf1.lean")).unwrap(),
+                "store-trace" => fs::write(out.path().join("TraceLeaf1.lean"), "").unwrap(),
+                "extra" => fs::write(out.path().join("Unplanned.lean"), "").unwrap(),
+                "cached" => fs::write(out.path().join("MemoryRegionProof.olean"), "").unwrap(),
+                _ => unreachable!(),
+            }
+            let error = verify_region(out.path(), RegionKind::MemorySpan(&plan))
                 .unwrap_err()
                 .to_string();
             assert!(

@@ -22,7 +22,8 @@ use crate::{
 
 mod upstream;
 pub(crate) use upstream::{
-    JumpPlan, RegionKind, SpanNode, SpanPlan, check_jump_output, verify_region,
+    JumpPlan, MemoryPlan, PathLeafKind, RegionKind, SpanNode, SpanPlan, check_jump_output,
+    check_region_output, verify_region,
 };
 
 const MODEL: &str = include_str!("../lean/Model.lean");

@@ -133,8 +133,15 @@ cargo run --locked -- certify-runtime-region \
 Choose instruction boundaries in both images. A span may combine the mask pair
 above with same-width `PUSHn 2^k; MUL` → `PUSHn k; SHL` rewrites (`k < 256`).
 Unchanged `PUSH1`–`PUSH32`, `PUSH0`, `MUL`, `SHL`, `ADD`, `SUB`, `AND`, `OR`, `NOT`, `SWAP1`–`SWAP16`, and `DUP1`
-instructions may appear between them. Other instructions are rejected; the
-instruction at the end offset is not executed.
+instructions may appear between them. The instruction at the end offset is not executed.
+
+Spans may also contain unchanged, aligned `MSTORE` instructions, with supported
+rewrites before or after each store. Memory reports expose `source_base_gas` and
+`candidate_base_gas`, excluding expansion. The generated `sourceCost(initial state)`
+function gives the full source gas requirement, including canonical expansion at
+each store; base gas alone is insufficient. Memory equality is relative to the
+pinned semantics, whose byte serialization includes opaque foreign-function helpers.
+Other instructions are rejected.
 
 The result records the required input stack size, maximum input stack size,
 source gas requirement, and separate instruction counts. The proof permits
@@ -144,14 +151,15 @@ it does not establish whole-contract or all-gas equivalence. Unchanged supported
 spans are accepted with zero savings. Bytes outside the span remain independently
 bound, without certification of their behavior.
 
-Add `--through-jump` to execute the JUMP at `--exit-pc`. The selected span must
+For pure spans, add `--through-jump` to execute the JUMP at `--exit-pc`. The span must
 end in an unchanged literal `PUSH0`–`PUSH32`; the checker proves that its destination
 is valid in both full images. This requires the checked-scanner setup above.
 The result distinguishes `jump_pc` from the landing `exit_pc`, includes the JUMP’s
 gas and instruction count, and stops before executing the destination JUMPDEST.
 
 Rust callers can use `region::certify_span_through_jump` for this mode,
-`region::certify_span` for explicit spans,
+`region::certify_selected_span` for pure or memory spans,
+`region::certify_span` for pure spans,
 `region::certify_selected` for automatic pattern selection, or `region::certify`
 for the power compiler region.
 

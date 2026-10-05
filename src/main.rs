@@ -48,7 +48,7 @@ enum Action {
         out: PathBuf,
     },
     /// Certify a supported internal region with pinned upstream EVM semantics.
-    /// Supports power and mask regions; does not prove whole-contract equivalence.
+    /// Supports arithmetic, bitwise and memory spans; not whole-contract equivalence.
     CertifyRuntimeRegion {
         #[arg(long)]
         original: PathBuf,
@@ -224,7 +224,9 @@ fn main() -> Result<()> {
                     "Stops before executing the destination JUMPDEST",
                 )
             } else if let Some(exit_pc) = exit_pc {
-                runtime::region::certify_span(&original, &candidate, entry_pc, exit_pc, &out)?;
+                runtime::region::certify_selected_span(
+                    &original, &candidate, entry_pc, exit_pc, &out,
+                )?;
                 (exit_pc, "Stops at the selected exit PC")
             } else {
                 let report =

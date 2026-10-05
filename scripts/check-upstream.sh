@@ -203,4 +203,28 @@ assert report["output_stack_delta"] == -1
 assert report["gas_surplus_increase"] == report["execution_count_offset_increase"] == 0
 PY_SWAPS
 
+# Repeated memory writes followed by a rewrite with different instruction counts.
+printf '%s\n' 52526001600160e01b03166001600160e01b0319 > "$work/memory-original.hex"
+printf '%s\n' 52526001600160e01b03166400ffffffff60e01b > "$work/memory-candidate.hex"
+cargo run --locked -- certify-runtime-region \
+  --original "$work/memory-original.hex" --candidate "$work/memory-candidate.hex" \
+  --entry-pc 0 --exit-pc 20 --out "$work/memory-accepted"
+python3 - "$work/memory-accepted/result.json" <<'PY_MEMORY'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    report = json.load(handle)
+assert report["source_instruction_count"] == 14
+assert report["candidate_instruction_count"] == 11
+assert report["source_base_gas"] == 42 and report["candidate_base_gas"] == 33
+assert report["required_input_stack_words"] == 5
+assert report["maximum_input_stack_words"] == 1024
+assert report["memory_operations"] == 2 and report["output_stack_delta"] == -3
+assert report["gas_surplus_increase"] == 9
+assert report["execution_count_offset_increase"] == 3
+assert "source_gas_minimum" not in report
+assert "sourceCost" in report["gas_requirement"]
+PY_MEMORY
+
 echo "Upstream region checks passed. Local evidence: $work"

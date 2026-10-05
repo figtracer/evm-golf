@@ -1,5 +1,6 @@
 import OffsetTransport
 import CanonicalMask
+import MemoryDriver
 set_option Elab.async false
 set_option maxRecDepth 4096
 set_option maxHeartbeats 2000000
@@ -67,6 +68,16 @@ inductive MixedTrace (old new : ByteArray) (residualFuel : Nat) :
    (bounds : FullXBounds s op)
    (canonical : EVM.step (sourceFuel+1) (C' s op) (some (op,arg)) s = .ok next)
    (rest : MixedTrace old new residualFuel (sourceFuel+1) (targetFuel+1) powers masks next final) :
+   MixedTrace old new residualFuel (sourceFuel+2) (targetFuel+2) powers masks s final
+ | mstore (s final : EVM.State) (sourceFuel targetFuel powers masks : Nat)
+   (address value : UInt256) (tail : List UInt256)
+   (oldDecode : decode old s.pc = some (.MSTORE,none))
+   (newDecode : decode new s.pc = some (.MSTORE,none))
+   (stack : s.stack = address :: value :: tail)
+   (gas : memoryExpansionCost s .MSTORE + 3 ≤ s.gasAvailable.toNat)
+   (height : tail.length ≤ 1022)
+   (rest : MixedTrace old new residualFuel (sourceFuel+1) (targetFuel+1) powers masks
+     (CanonicalMemory.memoryPost s address value tail) final) :
    MixedTrace old new residualFuel (sourceFuel+2) (targetFuel+2) powers masks s final
  | mask (s final : EVM.State) (sourceFuel targetFuel powers masks : Nat)
    (a : UInt256) (tail : List UInt256)
@@ -141,6 +152,19 @@ theorem mixed_simulation {owner old new residualFuel sourceFuel targetFuel power
    obtain ⟨cf,sourceRun,targetRun,finalRelated⟩ := ih cn surplus skipped nextRelated
    exact ⟨cf,(X_next_extra s next sf oldJumps op arg allowed sourceDecode bounds canonical).trans sourceRun,
      (X_next_extra candidate cn tf newJumps op arg allowed targetDecode cb cstep).trans targetRun,finalRelated⟩
+ | mstore s final sf tf powers masks address value tail oldDecode newDecode stack gas height rest ih =>
+   have sourceDecode : decode s.executionEnv.code s.pc = some (.MSTORE,none) := by
+     rw [related.maps.2.2.1.2.1]
+     exact oldDecode
+   have targetDecode : decode candidate.executionEnv.code candidate.pc = some (.MSTORE,none) := by
+     rw [related.maps.2.2.2.2.1,←offset_pc related]
+     exact newDecode
+   obtain ⟨sourceStep,targetStep,nextRelated⟩ :=
+     CanonicalMemory.mstore_pair related address value tail sf tf oldJumps newJumps
+       sourceDecode targetDecode stack gas (by omega)
+   obtain ⟨cf,sourceRun,targetRun,finalRelated⟩ :=
+     ih (CanonicalMemory.memoryPost candidate address value tail) surplus skipped nextRelated
+   exact ⟨cf,sourceStep.trans sourceRun,targetStep.trans targetRun,finalRelated⟩
  | mask s final sf tf powers masks a tail oldDecoded newDecoded stack gas height rest ih =>
    have sourceDecoded : BeforeDecoded s := before_decoded_transfer oldDecoded related.maps.2.2.1.2.1 rfl
    have targetDecoded : AfterDecoded candidate := after_decoded_transfer newDecoded related.maps.2.2.2.2.1 (offset_pc related).symm

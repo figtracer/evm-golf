@@ -14,6 +14,9 @@ use crate::{
     runtime::{decode, push_value},
 };
 
+mod memory;
+pub use memory::{MemorySpanCertificate, SelectedSpanCertificate, certify_selected_span};
+
 // Canonical instruction count bounds per-leaf proof work; rewrite atoms stay whole.
 // Local mixed/swap checks fit the existing module cap at this representation size.
 const CHUNK_INSTRUCTIONS: usize = 32;
@@ -254,6 +257,55 @@ impl Span {
         Ok(chunks)
     }
 
+    fn leaf_sources(
+        &self,
+        original: &[u8],
+        candidate: &[u8],
+        index: usize,
+        image_leaves: &[super::ImageLeaf],
+    ) -> Vec<(String, String)> {
+        let mut sources = Vec::new();
+        let entry = self.entry;
+        let exit = self.exit;
+        sources.push((
+            format!("TraceLeaf{index}.lean"),
+            self.render_proof(original, candidate, index),
+        ));
+        let mut facts = routed_decoded_facts(original, candidate, entry, exit, image_leaves);
+        for (side, code) in [("original", original), ("candidate", candidate)] {
+            let names = decode(&code[entry..exit])
+                .iter()
+                .map(|instruction| format!("{side}At{}", entry + instruction.pc))
+                .collect::<Vec<_>>();
+            let proof = if names.len() == 1 {
+                names[0].clone()
+            } else {
+                format!("⟨{}⟩", names.join(", "))
+            };
+            let typ = if side == "original" {
+                "Original"
+            } else {
+                "Candidate"
+            };
+            writeln!(facts,"theorem {side}Decoded : GolfSpanTrace{index}.{typ}Decoded {side}Code := {proof}\n#print axioms {side}Decoded").unwrap();
+        }
+        let decoded = format!(
+            "import TraceLeaf{index}\nimport OpcodeDecode\n{}",
+            DECODE
+                .replace("$image_module", "Images")
+                .replace("$namespace", &format!("GolfSpanDecode{index}"))
+                .replace("$decoded_facts", &facts)
+        );
+        sources.push((format!("DecodeLeaf{index}.lean"), decoded));
+        let bound = include_str!("../../../lean/upstream/templates/ChunkBind.lean.in")
+            .replace("$decode_module", &format!("DecodeLeaf{index}"))
+            .replace("$namespace", &format!("GolfSpanBind{index}"))
+            .replace("$trace_namespace", &format!("GolfSpanTrace{index}"))
+            .replace("$decode_namespace", &format!("GolfSpanDecode{index}"));
+        sources.push((format!("BindLeaf{index}.lean"), bound));
+        sources
+    }
+
     fn chunk_sources(
         &self,
         original: &[u8],
@@ -268,45 +320,7 @@ impl Span {
             .into_iter()
             .enumerate()
         {
-            let entry = leaf.entry;
-            let exit = leaf.exit;
-            sources.push((
-                format!("TraceLeaf{index}.lean"),
-                leaf.render_proof(original, candidate, index),
-            ));
-            let mut facts =
-                routed_decoded_facts(original, candidate, entry, exit, &rendered.leaves);
-            for (side, code) in [("original", original), ("candidate", candidate)] {
-                let names = decode(&code[entry..exit])
-                    .iter()
-                    .map(|instruction| format!("{side}At{}", entry + instruction.pc))
-                    .collect::<Vec<_>>();
-                let proof = if names.len() == 1 {
-                    names[0].clone()
-                } else {
-                    format!("⟨{}⟩", names.join(", "))
-                };
-                let typ = if side == "original" {
-                    "Original"
-                } else {
-                    "Candidate"
-                };
-                writeln!(facts,"theorem {side}Decoded : GolfSpanTrace{index}.{typ}Decoded {side}Code := {proof}\n#print axioms {side}Decoded").unwrap();
-            }
-            let decoded = format!(
-                "import TraceLeaf{index}\nimport OpcodeDecode\n{}",
-                DECODE
-                    .replace("$image_module", "Images")
-                    .replace("$namespace", &format!("GolfSpanDecode{index}"))
-                    .replace("$decoded_facts", &facts)
-            );
-            sources.push((format!("DecodeLeaf{index}.lean"), decoded));
-            let bound = include_str!("../../../lean/upstream/templates/ChunkBind.lean.in")
-                .replace("$decode_module", &format!("DecodeLeaf{index}"))
-                .replace("$namespace", &format!("GolfSpanBind{index}"))
-                .replace("$trace_namespace", &format!("GolfSpanTrace{index}"))
-                .replace("$decode_namespace", &format!("GolfSpanDecode{index}"));
-            sources.push((format!("BindLeaf{index}.lean"), bound));
+            sources.extend(leaf.leaf_sources(original, candidate, index, &rendered.leaves));
             leaves.push(proof::SpanNode::Leaf(index));
         }
         let mut plan = proof::SpanPlan {
@@ -1050,6 +1064,7 @@ fn profile(code: &[u8]) -> Result<Profile> {
             }
             1 | 3 | 0x16 | 0x17 | 0x1b => (2, -1, 3),
             2 => (2, -1, 5),
+            0x52 => (2, -2, 3),
             0x19 => (1, 0, 3),
             0x80 => (1, 1, 3),
             0x90..=0x9f => (isize::from(op - 0x8f) + 1, 0, 3),

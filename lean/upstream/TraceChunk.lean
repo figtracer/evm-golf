@@ -101,6 +101,20 @@ theorem extra {old new : ByteArray} (s next : EVM.State)
     newDecoded bounds (canonical sf) rest
   convert h using 1 <;> omega
 
+theorem mstore {old new : ByteArray} (s : EVM.State)
+    (address value : UInt256) (tail : List UInt256)
+    (oldDecoded : decode old s.pc = some (.MSTORE,none))
+    (newDecoded : decode new s.pc = some (.MSTORE,none))
+    (stack : s.stack = address :: value :: tail)
+    (gas : memoryExpansionCost s .MSTORE + 3 ≤ s.gasAvailable.toNat)
+    (height : tail.length ≤ 1022) :
+    TraceChunk old new 1 1 0 0 s (CanonicalMemory.memoryPost s address value tail) := by
+  intro residual sf tf p m final rest
+  have h := MixedTrace.mstore s final sf tf p m address value tail oldDecoded newDecoded
+    stack gas height rest
+  convert h using 1 <;> omega
+
+#print axioms mstore
 #print axioms identity
 #print axioms append
 #print axioms recover
