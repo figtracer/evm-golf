@@ -55,19 +55,50 @@ assert len(bytes.fromhex((out / "candidate.hex").read_text())) == 14
 PY
  done
 
+# A mask rewrite exercises unequal instruction counts through the same JUMP.
+printf '%s\n' 6001600160e01b03166001600160e01b03196015565b00 > "$work/mask-original.hex"
+printf '%s\n' 6001600160e01b03166400ffffffff60e01b6015565b00 > "$work/mask-candidate.hex"
+cargo run --locked -- certify-runtime-region \
+  --original "$work/mask-original.hex" --candidate "$work/mask-candidate.hex" \
+  --entry-pc 0 --exit-pc 20 --through-jump --out "$work/mask-accepted" \
+  2>&1 | tee "$work/mask.log"
+python3 - "$work/mask-accepted" <<'PY_CHECK'
+import json
+import pathlib
+import sys
+
+out = pathlib.Path(sys.argv[1])
+report = json.loads((out / "result.json").read_text())
+assert report["claim"] == "conditional checked-scanner internal span through JUMP"
+assert report["jump_pc"] == 20
+assert report["exit_pc"] == report["pushed_destination"] == 21
+assert report["source_instruction_count"] == 14
+assert report["candidate_instruction_count"] == 11
+assert report["source_gas_minimum"] == 47
+assert report["candidate_gas_cost"] == 38
+assert report["gas_surplus_increase"] == 9
+assert report["execution_count_offset_increase"] == 3
+assert report["required_input_stack_words"] == 1
+assert report["maximum_input_stack_words"] == 1021
+assert report["output_stack_delta"] == 1
+assert "whole-contract and all-gas equivalence" in report["unproved"]
+assert "original opaque upstream scanner is unproved" in report["scanner_scope"]
+assert json.loads((out / "environment.json").read_text())["semantics_profile"]["identity"] == "evm-golf-checked-scanner"
+PY_CHECK
+
 # Only the candidate loses the real JUMPDEST. Rejecting either-side mismatch matters.
 printf '%s\n' 60051b01905f808061000c560000 > "$work/invalid-candidate.hex"
 # Byte13 is 0x5b, but belongs to the PUSH1 payload beginning at byte12.
 printf '%s\n' 60200201905f808061000d56605b00 > "$work/payload-original.hex"
 printf '%s\n' 60051b01905f808061000d56605b00 > "$work/payload-candidate.hex"
-for name in one-image-invalid payload conflicting-exit; do
+for name in one-image-invalid payload invalid-span-exit; do
   original="$work/forward-original.hex"
   candidate="$work/forward-candidate.hex"
   extra=()
   case "$name" in
     one-image-invalid) candidate="$work/invalid-candidate.hex" ;;
     payload) original="$work/payload-original.hex"; candidate="$work/payload-candidate.hex" ;;
-    conflicting-exit) extra=(--exit-pc 11) ;;
+    invalid-span-exit) extra=(--exit-pc 10) ;;
   esac
   if cargo run --locked -- certify-runtime-region \
     --original "$original" --candidate "$candidate" --entry-pc 0 --through-jump \
@@ -85,11 +116,9 @@ text = log.read_text()
 expected = {
     "one-image-invalid": "jump destination must contain JUMPDEST in both images",
     "payload": "jump destination is inside PUSH data",
-    "conflicting-exit": "cannot be used with",
+    "invalid-span-exit": "exit PC is inside a PUSH immediate",
 }[sys.argv[3]]
 assert expected in text, text
-if sys.argv[3] == "conflicting-exit":
-    assert "--through-jump" in text and "--exit-pc" in text
 PY
  done
 printf 'Checked-scanner region checks passed. Local evidence: %s\n' "$work"

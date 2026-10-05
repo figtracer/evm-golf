@@ -6,8 +6,8 @@ use serde::Serialize;
 use std::{fmt::Write as _, fs, path::Path};
 
 use super::{
-    ImageRoutes, MASK_AFTER, MASK_BEFORE, MAX_RUNTIME_BYTES, decoded_operation, render_images,
-    routed_decoded_facts,
+    ImageRoutes, MASK_AFTER, MASK_BEFORE, MAX_RUNTIME_BYTES, RenderedImages, decoded_operation,
+    render_images, routed_decoded_facts,
 };
 use crate::{
     proof,
@@ -43,6 +43,16 @@ pub struct SpanCertificate {
     pub state_relation: &'static str,
     pub unproved: [&'static str; 5],
     pub lean_version: String,
+}
+
+/// A selected prefix followed by its literal-destination JUMP under the checked scanner.
+#[derive(Debug, Serialize)]
+pub struct SpanJumpCertificate {
+    #[serde(flatten)]
+    pub span: SpanCertificate,
+    pub jump_pc: usize,
+    pub pushed_destination: usize,
+    pub scanner_scope: &'static str,
 }
 
 #[derive(Clone, Debug)]
@@ -249,14 +259,8 @@ impl Span {
         original: &[u8],
         candidate: &[u8],
         budget: usize,
+        rendered: RenderedImages,
     ) -> Result<(proof::SpanPlan, Vec<(String, String)>)> {
-        let rendered = render_images(
-            original,
-            candidate,
-            self.entry,
-            self.exit - self.entry,
-            ImageRoutes::Window,
-        );
         let mut sources = vec![("Images.lean".to_owned(), rendered.source)];
         let mut leaves = Vec::new();
         for (index, leaf) in self
@@ -806,7 +810,14 @@ pub fn certify_span(
         .with_context(|| format!("use a new output directory: {}", out.display()))?;
     fs::write(out.join("original.hex"), hex::encode(original) + "\n")?;
     fs::write(out.join("candidate.hex"), hex::encode(candidate) + "\n")?;
-    let (plan, sources) = span.chunk_sources(original, candidate, CHUNK_INSTRUCTIONS)?;
+    let rendered = render_images(
+        original,
+        candidate,
+        entry_pc,
+        exit_pc - entry_pc,
+        ImageRoutes::Window,
+    );
+    let (plan, sources) = span.chunk_sources(original, candidate, CHUNK_INSTRUCTIONS, rendered)?;
     for (name, source) in sources {
         fs::write(out.join(name), source)?;
     }
@@ -850,6 +861,146 @@ pub fn certify_span(
     Ok(report)
 }
 
+/// Execute a supported span and its immediately following literal-destination JUMP.
+/// `exit_pc` identifies JUMP; the destination instruction is not executed.
+pub fn certify_span_through_jump(
+    original: &[u8],
+    candidate: &[u8],
+    entry_pc: usize,
+    exit_pc: usize,
+    out: &Path,
+) -> Result<SpanJumpCertificate> {
+    let span = Span::select(original, candidate, entry_pc, exit_pc)?;
+    ensure!(
+        original.get(exit_pc) == Some(&0x56) && candidate.get(exit_pc) == Some(&0x56),
+        "span exit must be JUMP in both images"
+    );
+    let destination = match span.segments.last().map(|segment| &segment.kind) {
+        Some(SegmentKind::Same {
+            op: 0x5f..=0x7f,
+            value,
+            ..
+        }) => *value,
+        _ => bail!("through-jump span must end in an unchanged literal PUSH0..32"),
+    };
+    ensure!(
+        destination < U256::from(original.len()),
+        "jump destination is outside the full images"
+    );
+    let destination = destination.to::<usize>();
+    let rendered = render_images(
+        original,
+        candidate,
+        entry_pc,
+        exit_pc - entry_pc,
+        ImageRoutes::All,
+    );
+    // This checks the complete PUSH-aware destination boundary in both full images.
+    let membership = super::jump::membership_sources(original, candidate, destination, &rendered)?;
+    let jump_decodes =
+        routed_decoded_facts(original, candidate, exit_pc, exit_pc + 1, &rendered.leaves)
+            .replace("GolfOpcodeDecode.decode_jump", "jump_decode");
+    let (plan, mut sources) =
+        span.chunk_sources(original, candidate, CHUNK_INSTRUCTIONS, rendered)?;
+    let root_node = plan
+        .compositions
+        .len()
+        .checked_sub(1)
+        .map_or(proof::SpanNode::Leaf(0), proof::SpanNode::Compose);
+    let (_, summary) = chunk_node(root_node);
+    let mut terminal = include_str!("../../../lean/upstream/templates/SpanJump.lean.in")
+        .replace("$root_summary", &summary)
+        .replace("$jump_decodes", &jump_decodes);
+    for (key, value) in [
+        ("$entry_pc", entry_pc),
+        ("$jump_pc", exit_pc),
+        ("$destination", destination),
+        ("$source_steps", span.source.count),
+        ("$target_steps", span.candidate.count),
+        ("$total_gas", (span.source.gas + 8) as usize),
+        ("$required", span.required),
+        ("$maximum", span.maximum),
+        ("$powers", span.powers),
+        ("$masks", span.masks),
+    ] {
+        terminal = terminal.replace(key, &value.to_string());
+    }
+    let mut jump_plan = proof::JumpPlan {
+        modules: membership
+            .iter()
+            .map(|(name, _, roots)| (name.clone(), roots.clone()))
+            .collect(),
+    };
+    jump_plan.modules.push((
+        "SpanJumpProof".to_owned(),
+        vec![
+            "GolfCertificates.SpanJump.source_count".to_owned(),
+            "GolfCertificates.SpanJump.source_gas".to_owned(),
+            "GolfCertificates.SpanJump.span_jump_boundary".to_owned(),
+        ],
+    ));
+    sources.extend(
+        membership
+            .into_iter()
+            .map(|(name, source, _)| (format!("{name}.lean"), source)),
+    );
+    sources.push(("SpanJumpProof.lean".to_owned(), terminal));
+    proof::check_jump_output(out)?;
+    if let Some(parent) = out.parent().filter(|path| !path.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    fs::create_dir(out)
+        .with_context(|| format!("use a new output directory: {}", out.display()))?;
+    fs::write(out.join("original.hex"), hex::encode(original) + "\n")?;
+    fs::write(out.join("candidate.hex"), hex::encode(candidate) + "\n")?;
+    for (name, source) in sources {
+        fs::write(out.join(name), source)?;
+    }
+    let lean_version = proof::verify_region(out, proof::RegionKind::SpanJump(&plan, &jump_plan))?;
+    let report = SpanJumpCertificate {
+        jump_pc: exit_pc,
+        pushed_destination: destination,
+        scanner_scope: "checked-scanner semantics; equivalence with the original opaque upstream scanner is unproved",
+        span: SpanCertificate {
+            claim: "conditional checked-scanner internal span through JUMP",
+            original_keccak256: keccak256(original).to_string(),
+            candidate_keccak256: keccak256(candidate).to_string(),
+            entry_pc,
+            exit_pc: destination,
+            source_instruction_count: span.source.count + 1,
+            candidate_instruction_count: span.candidate.count + 1,
+            source_gas_minimum: span.source.gas + 8,
+            candidate_gas_cost: span.candidate.gas + 8,
+            gas_surplus_increase: span.source.gas - span.candidate.gas,
+            required_input_stack_words: span.required,
+            maximum_input_stack_words: span.maximum,
+            output_stack_delta: span.source.delta - 1,
+            execution_count_offset_increase: span.source.count - span.candidate.count,
+            power_rewrites: span.powers,
+            mask_rewrites: span.masks,
+            interpreter_fuel: format!(
+                "for every natural fuel, source X(fuel+{}) and candidate X(fuel+{}) reduce to their own X(fuel+1) at the landing PC; its JUMPDEST is not executed",
+                span.source.count + 2,
+                span.candidate.count + 2
+            ),
+            state_relation: "arbitrary nonnegative incoming gas surplus and execution-count offset; related current/original account maps differing only in designated deployed code; both execution-code links; all other frame fields preserved",
+            unproved: [
+                "entry reachability",
+                "suffix outcomes",
+                "whole-contract and all-gas equivalence",
+                "canonical transaction entry",
+                "revm correspondence",
+            ],
+            lean_version,
+        },
+    };
+    fs::write(
+        out.join("result.json"),
+        serde_json::to_string_pretty(&report)? + "\n",
+    )?;
+    Ok(report)
+}
+
 fn lean_stack(words: &[String]) -> String {
     words.iter().rev().fold("tail".to_owned(), |tail, word| {
         format!("({word}) :: {tail}")
@@ -884,6 +1035,62 @@ fn profile(code: &[u8]) -> Result<Profile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn through_jump_rejects_invalid_inputs_before_output_writes() {
+        let oversized = format!("7f{}565b", "ff".repeat(32));
+        for (name, before, after, entry, exit, expected) in [
+            (
+                "nonliteral",
+                "60018056",
+                "60018056",
+                0,
+                3,
+                "must end in an unchanged literal PUSH0..32",
+            ),
+            (
+                "different-literal",
+                "6003565b",
+                "6004565b",
+                0,
+                2,
+                "unsupported changed instruction",
+            ),
+            (
+                "not-jump",
+                "6003005b",
+                "6003005b",
+                0,
+                2,
+                "exit must be JUMP in both images",
+            ),
+            (
+                "oversized-push32",
+                oversized.as_str(),
+                oversized.as_str(),
+                0,
+                33,
+                "destination is outside the full images",
+            ),
+            (
+                "payload-destination",
+                "605b600156",
+                "605b600156",
+                2,
+                4,
+                "destination is inside PUSH data",
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let out = temp.path().join(name);
+            let before = hex::decode(before).unwrap();
+            let after = hex::decode(after).unwrap();
+            let error = certify_span_through_jump(&before, &after, entry, exit, &out).unwrap_err();
+            assert!(error.to_string().contains(expected), "{name}: {error:#}");
+            assert!(!out.exists(), "{name} wrote an output directory");
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+        }
+    }
 
     #[test]
     fn mixed_profiles_include_both_orders_and_repeated_growth() {
@@ -1059,7 +1266,20 @@ mod tests {
         new.extend([255, 0x1b]);
         let span = Span::select(&old, &new, 0, 34).unwrap();
         assert_eq!(span.powers, 1);
-        let (_, sources) = span.chunk_sources(&old, &new, 32).unwrap();
+        let (_, sources) = span
+            .chunk_sources(
+                &old,
+                &new,
+                32,
+                render_images(
+                    &old,
+                    &new,
+                    span.entry,
+                    span.exit - span.entry,
+                    ImageRoutes::Window,
+                ),
+            )
+            .unwrap();
         assert!(sources[1].1.contains("PUSH32"));
         assert!(
             sources[1]

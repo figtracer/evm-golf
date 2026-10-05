@@ -54,8 +54,9 @@ executes nine instructions per side, requires at least 33 source gas, and spends
 33/31 gas. Both reach the pushed destination with stack
 `0 :: 0 :: 0 :: c :: (32*a+b modulo 2^256) :: tail`; the destination instruction
 has not executed. The existing stack and state premises still apply. The entry
-must be an instruction boundary in each image. This mode cannot be combined with
-`--exit-pc` and currently supports the exact power region below.
+must be an instruction boundary in each image. Without `--exit-pc`, this selects
+the exact power region below. Supply `--exit-pc` for a supported span ending in
+a literal push, as described under spans.
 
 It uses a separately built, hash-identified scanner overlay on the pinned upstream
 sources. The overlay makes jump scanning available to proofs; it does not prove
@@ -143,7 +144,14 @@ it does not establish whole-contract or all-gas equivalence. Unchanged supported
 spans are accepted with zero savings. Bytes outside the span remain independently
 bound, without certification of their behavior.
 
-Rust callers can use `region::certify_span` for explicit spans,
+Add `--through-jump` to execute the JUMP at `--exit-pc`. The selected span must
+end in an unchanged literal `PUSH0`–`PUSH32`; the checker proves that its destination
+is valid in both full images. This requires the checked-scanner setup above.
+The result distinguishes `jump_pc` from the landing `exit_pc`, includes the JUMP’s
+gas and instruction count, and stops before executing the destination JUMPDEST.
+
+Rust callers can use `region::certify_span_through_jump` for this mode,
+`region::certify_span` for explicit spans,
 `region::certify_selected` for automatic pattern selection, or `region::certify`
 for the power compiler region.
 

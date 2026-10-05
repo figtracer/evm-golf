@@ -7,7 +7,7 @@ use std::{fmt::Write as _, fs, path::Path};
 
 mod jump;
 mod span;
-pub use span::{SpanCertificate, certify_span};
+pub use span::{SpanCertificate, SpanJumpCertificate, certify_span, certify_span_through_jump};
 
 use super::MAX_RUNTIME_BYTES;
 use crate::proof;
