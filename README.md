@@ -15,13 +15,8 @@ Lean proofs, and revm execution checks. Agents can propose rewrites, verify
 candidates, and compete on fixed expression puzzles. Runtime discovery also finds
 supported stack rearrangements, zero additions, and repeated masks.
 
-For contract bytecode, see the [runtime guide](docs/runtime.md). The optional
-[region checker](docs/regions.md) verifies selected arithmetic, bitwise, and memory spans,
-including supported rewrites and stack permutations, against pinned EVM semantics.
-It can also check a trailing static jump, or paired success and equal output at
-`STOP` or `RETURN`, or paired revert at `REVERT`, under explicit stack, gas,
-and state conditions.
-Eligible terminating programs can also be checked from canonical call initialization.
+See the [runtime guide](docs/runtime.md) for contract optimization and the
+[region checker](docs/regions.md) for conditional proofs against pinned EVM semantics.
 
 - **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
 - **Verify** — Check expression equivalence and emitted bytecode against a Lean model.
@@ -70,15 +65,21 @@ for verification, leaderboards, and batch submissions.
 
 ## Status
 
-EVM Golf is experimental and targets Cancun. Expression verification covers a
-limited Lean bytecode model. The [runtime optimizer](docs/runtime.md) accepts
-hex bytecode with resolved jumps, or dynamic jumps in a mode that preserves byte
-offsets. A separate checker replays arbitrary Cancun runtimes with external-account
-fixtures. Local Lean proofs and concrete replay do not prove arbitrary whole-contract
-equivalence.
+EVM Golf is an experimental CLI targeting Cancun. It optimizes expressions and
+supported complete runtime bytecode. Fixed-layout mode handles dynamic jumps
+without moving byte offsets; unsupported operations are rejected.
 
-See [verification and scoring](docs/verification.md) for the supported semantics,
-proof assumptions, and limits.
+Expression proofs use a limited Lean bytecode model. Runtime optimization checks
+local Lean certificates and supplied transaction cases. The optional upstream
+checker proves conditional execution of supported regions, including eligible
+terminating programs from call entry. These checks do not establish whole-contract
+equivalence for every input, state, or gas limit. `check-runtime` provides concrete
+replay only.
+
+Agents can submit proposals through the CLI; swarm orchestration is external.
+The leaderboard currently covers expression puzzles. See [verification and
+scoring](docs/verification.md) for proof assumptions and [runtime support](docs/runtime.md)
+for accepted bytecode and execution requirements.
 
 ## Contributing
 
