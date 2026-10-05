@@ -128,7 +128,6 @@ impl MemoryPath {
             stores += 1;
             start = pc + 1;
         }
-        ensure!(stores > 0, "memory path must contain MSTORE");
         if start < exit {
             let span = Span::select(original, candidate, start, exit)?;
             powers += span.powers;
@@ -451,9 +450,164 @@ pub fn certify_selected_span_through_jump(
     Ok(SelectedSpanJumpCertificate::Memory(report))
 }
 
+/// Successful execution of an explicit terminal instruction after a supported span.
+#[derive(Debug, Serialize)]
+pub struct TerminalCertificate {
+    #[serde(flatten)]
+    pub span: MemorySpanCertificate,
+    pub terminal_pc: usize,
+    pub terminal: &'static str,
+    pub output_condition: &'static str,
+}
+
+/// Execute STOP or RETURN, keeping input-state and RETURN operand conditions explicit.
+pub fn certify_selected_span_through_halt(
+    original: &[u8],
+    candidate: &[u8],
+    entry: usize,
+    exit: usize,
+    out: &Path,
+) -> Result<TerminalCertificate> {
+    let path = MemoryPath::select(original, candidate, entry, exit)?;
+    let (kind, name, template, consumed) = match (original.get(exit), candidate.get(exit)) {
+        (Some(0x00), Some(0x00)) => (
+            proof::TerminalKind::Stop,
+            "STOP",
+            include_str!("../../../../lean/upstream/templates/TerminalStop.lean.in"),
+            0usize,
+        ),
+        (Some(0xf3), Some(0xf3)) => (
+            proof::TerminalKind::Return,
+            "RETURN",
+            include_str!("../../../../lean/upstream/templates/TerminalReturn.lean.in"),
+            2usize,
+        ),
+        _ => bail!("span exit must be the same explicit STOP or RETURN in both images"),
+    };
+    // RETURN can consume surviving caller words, not just words produced by the span.
+    let required = path
+        .required
+        .max((consumed as isize - path.source.delta).max(0) as usize);
+    ensure!(
+        required <= path.maximum,
+        "terminal has no admissible stack height"
+    );
+    // Include the terminal byte in the routed window, while selecting the body only to exit.
+    let rendered = render_images(
+        original,
+        candidate,
+        entry,
+        exit - entry + 1,
+        ImageRoutes::Window,
+    );
+    let decodes = routed_decoded_facts(original, candidate, exit, exit + 1, &rendered.leaves)
+        .replace(
+            &format!("GolfOpcodeDecode.decode_{}", name.to_ascii_lowercase()),
+            "terminal_decode",
+        );
+    let (plan, mut sources) = path.sources(original, candidate, rendered)?;
+    let root_node = plan
+        .compositions
+        .len()
+        .checked_sub(1)
+        .map_or(SpanNode::Leaf(0), SpanNode::Compose);
+    let (_, summary) = path_node(root_node);
+    let terminal = template
+        .replace("$root_summary", &summary)
+        .replace("$terminal_decodes", &decodes)
+        .replace("$exit_pc", &exit.to_string())
+        .replace("$source_steps", &path.source.count.to_string())
+        .replace("$required", &required.to_string());
+    sources.push(("TerminalProof.lean".to_owned(), terminal));
+    proof::check_region_output(out)?;
+    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    fs::create_dir(out)
+        .with_context(|| format!("use a new output directory: {}", out.display()))?;
+    fs::write(out.join("original.hex"), hex::encode(original) + "\n")?;
+    fs::write(out.join("candidate.hex"), hex::encode(candidate) + "\n")?;
+    for (name, source) in sources {
+        fs::write(out.join(name), source)?;
+    }
+    let lean_version = proof::verify_region(out, proof::RegionKind::Terminal(&plan, kind))?;
+    let mut span = path.report(original, candidate, lean_version);
+    span.claim = "conditional paired canonical success and equal output after an internal span";
+    span.source_instruction_count += 1;
+    span.candidate_instruction_count += 1;
+    span.exit_pc = exit + usize::from(consumed != 0);
+    span.output_stack_delta -= consumed as isize;
+    span.required_input_stack_words = required;
+    span.gas_requirement = if consumed == 0 {
+        "initial gas >= GolfCertificates.Terminal.sourceCost(initial state): source body cost including canonical MSTORE expansion"
+    } else {
+        "initial gas >= GolfCertificates.Terminal.sourceCost(initial state): source body cost plus RETURN expansion evaluated after the body"
+    };
+    span.proof_root = "GolfCertificates.Terminal.terminal_success";
+    span.unproved = [
+        "entry reachability",
+        "arbitrary contextual equivalence",
+        "whole-contract and all-gas equivalence",
+        "canonical transaction entry",
+        "revm correspondence",
+    ];
+    let report = TerminalCertificate {
+        span,
+        terminal_pc: exit,
+        terminal: name,
+        output_condition: if consumed == 0 {
+            "empty canonical output; physical output stack bound discharged"
+        } else {
+            "body stackMap equals address :: size :: tail, has at most 1024 words, and size.toNat < 2^64; output is canonical padded memory at the body endpoint"
+        },
+    };
+    fs::write(
+        out.join("result.json"),
+        serde_json::to_string_pretty(&report)? + "\n",
+    )?;
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn halt_preflight_rejects_invalid_terminals_without_output() {
+        for (before, after, exit) in [
+            (vec![0x5f, 0x56], vec![0x5f, 0x56], 1),
+            (vec![0x5f, 0x00], vec![0x5f, 0xf3], 1),
+            (vec![0x60, 0xf3, 0x00], vec![0x60, 0xf3, 0x00], 1),
+            (vec![0x5f], vec![0x5f], 1),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let out = temp.path().join("new-parent").join("result");
+            assert!(certify_selected_span_through_halt(&before, &after, 0, exit, &out).is_err());
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn terminal_body_reuses_pure_and_memory_profiles() {
+        let pure = [0x60, 7, 0x60, 32, 2, 0];
+        let shifted = [0x60, 7, 0x60, 5, 0x1b, 0];
+        let path = MemoryPath::select(&pure, &shifted, 0, 5).unwrap();
+        assert_eq!((path.stores, path.powers, path.required), (0, 1, 0));
+        assert_eq!(
+            (path.source.count, path.source.gas, path.candidate.gas),
+            (3, 11, 9)
+        );
+        let code = [0x60, 7, 0x5f, 0x52, 0x60, 32, 0x5f, 0xf3];
+        let path = MemoryPath::select(&code, &code, 0, 7).unwrap();
+        assert_eq!((path.stores, path.required, path.source.delta), (1, 0, 2));
+        // A RETURN can also consume caller words surviving an unchanged pure span.
+        let code = [0x90, 0xf3];
+        let path = MemoryPath::select(&code, &code, 0, 1).unwrap();
+        assert_eq!(
+            (path.required, path.source.delta, path.maximum),
+            (2, 0, 1024)
+        );
+    }
 
     #[test]
     fn invalid_memory_jump_rejects_without_creating_parents() {
@@ -606,8 +760,9 @@ mod tests {
     #[test]
     fn push_payload_is_not_a_store_or_a_valid_split_boundary() {
         let payload_only = [0x60, 0x52];
-        let error = MemoryPath::select(&payload_only, &payload_only, 0, 2).unwrap_err();
-        assert!(error.to_string().contains("must contain MSTORE"));
+        let path = MemoryPath::select(&payload_only, &payload_only, 0, 2).unwrap();
+        assert_eq!(path.stores, 0);
+        assert!(matches!(&path.parts[..], [Part::Pure(_)]));
         let code = [0x60, 0x52, 0x52];
         let path = MemoryPath::select(&code, &code, 0, 3).unwrap();
         assert_eq!(path.stores, 1);

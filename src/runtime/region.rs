@@ -9,8 +9,9 @@ mod jump;
 mod span;
 pub use span::{
     MemorySpanCertificate, MemorySpanJumpCertificate, SelectedSpanCertificate,
-    SelectedSpanJumpCertificate, SpanCertificate, SpanJumpCertificate, certify_selected_span,
-    certify_selected_span_through_jump, certify_span, certify_span_through_jump,
+    SelectedSpanJumpCertificate, SpanCertificate, SpanJumpCertificate, TerminalCertificate,
+    certify_selected_span, certify_selected_span_through_halt, certify_selected_span_through_jump,
+    certify_span, certify_span_through_jump,
 };
 
 use super::MAX_RUNTIME_BYTES;
@@ -611,6 +612,8 @@ fn decoded_operation(bytes: &[u8]) -> (String, String) {
         0x60..=0x7f => format!("Operation.Push .PUSH{width}"),
         op @ 0x90..=0x9f => format!("Operation.SWAP{}", op - 0x8f),
         op => match op {
+            0x00 => "Operation.STOP",
+            0xf3 => "Operation.RETURN",
             0x02 => "Operation.MUL",
             0x01 => "Operation.ADD",
             0x5f => "Operation.PUSH0",

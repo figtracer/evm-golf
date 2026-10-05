@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
 use evm_golf::{
     Report, campaign, check,
@@ -59,7 +59,10 @@ enum Action {
         /// Execute the region's trailing JUMP with checked destination proofs.
         #[arg(long)]
         through_jump: bool,
-        /// Exclusive span end; with --through-jump, the PC of the JUMP to execute.
+        /// Execute the explicit STOP or RETURN at --exit-pc.
+        #[arg(long, requires = "exit_pc", conflicts_with = "through_jump")]
+        through_halt: bool,
+        /// Exclusive span end; terminal modes execute the instruction at this PC.
         #[arg(long)]
         exit_pc: Option<usize>,
         #[arg(long)]
@@ -201,14 +204,24 @@ fn main() -> Result<()> {
             entry_pc,
             exit_pc,
             through_jump,
+            through_halt,
             out,
         } => {
             let original = runtime::input::read_bytecode(&original)?;
             let candidate = runtime::input::read_bytecode(&candidate)?;
-            if !through_jump {
+            if !through_jump && !through_halt {
                 prepare_parent(&out)?;
             }
-            let (exit_pc, boundary) = if let (Some(jump_pc), true) = (exit_pc, through_jump) {
+            let (exit_pc, boundary) = if through_halt {
+                let exit = exit_pc.context("--through-halt requires --exit-pc")?;
+                let report = runtime::region::certify_selected_span_through_halt(
+                    &original, &candidate, entry_pc, exit, &out,
+                )?;
+                (
+                    report.span.exit_pc,
+                    "Executes STOP or RETURN with paired success and equal canonical output",
+                )
+            } else if let (Some(jump_pc), true) = (exit_pc, through_jump) {
                 let report = runtime::region::certify_selected_span_through_jump(
                     &original, &candidate, entry_pc, jump_pc, &out,
                 )?;

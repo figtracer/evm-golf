@@ -1,0 +1,51 @@
+import MemoryRegionProof
+import OpcodeDecode
+import PathStop
+set_option Elab.async false
+set_option maxRecDepth 4096
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream GolfCountOffset GolfPathSummary GolfByteRouting
+namespace GolfCertificates.Terminal
+private theorem terminal_decode (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 0)) :
+    decode code pc = some ((Operation.STOP : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+$terminal_decodes
+def sourceCost (s : EVM.State) : Nat := $root_summary.cost s
+def sourceExit (s : EVM.State) : EVM.State := GolfPathStop.terminalPost $root_summary s
+theorem source_count (s : EVM.State) :
+    (sourceExit s).execLength = s.execLength+$source_steps+1 := by
+  exact GolfPathStop.source_count $root_summary s
+theorem source_gas (s : EVM.State) (gas : sourceCost s ≤ s.gasAvailable.toNat) :
+    (sourceExit s).gasAvailable.toNat = s.gasAvailable.toNat-sourceCost s := by
+  exact GolfPathStop.source_gas $root_summary s gas
+theorem terminal_success
+    {owner surplus skipped s t}
+    (related : DeployedOffset owner originalCode candidateCode surplus skipped s t)
+    (xs : List UInt256) (fuel : Nat)
+    (pc : s.pc = $root_summary.entry) (stack : s.stack = xs)
+    (gas : $root_summary.cost s ≤ s.gasAvailable.toNat)
+    (low : $required ≤ xs.length) (height : xs.length ≤ $root_summary.maximum) :
+    ∃ ce : EVM.State,
+      X (fuel+$root_summary.sourceSteps+2) (D_J originalCode (UInt256.ofNat 0)) s =
+        .ok (.success (GolfPathStop.terminalPost $root_summary s) ByteArray.empty) ∧
+      X (fuel+$root_summary.targetSteps+2) (D_J candidateCode (UInt256.ofNat 0)) t =
+        .ok (.success ce ByteArray.empty) ∧
+      DeployedOffset owner originalCode candidateCode (surplus+2*$root_summary.powers+9*$root_summary.masks)
+        (skipped+3*$root_summary.masks) (GolfPathStop.terminalPost $root_summary s) ce ∧
+      (GolfPathStop.terminalPost $root_summary s).stack = $root_summary.stackMap xs ∧ ce.stack = $root_summary.stackMap xs ∧
+      (GolfPathStop.terminalPost $root_summary s).gasAvailable.toNat = s.gasAvailable.toNat-$root_summary.cost s ∧
+      (GolfPathStop.terminalPost $root_summary s).execLength = s.execLength+$root_summary.sourceSteps+1 ∧
+      ce.execLength = t.execLength+$root_summary.targetSteps+1 := by
+  have bodyLow : $root_summary.required ≤ xs.length := by
+    have bound : $root_summary.required ≤ $required := by decide
+    omega
+  exact GolfPathStop.summary_stop $root_summary (by decide)
+    originalAt$exit_pc candidateAt$exit_pc related xs fuel pc stack gas bodyLow height
+
+#print axioms source_count
+#print axioms source_gas
+#print axioms terminal_success
+end GolfCertificates.Terminal

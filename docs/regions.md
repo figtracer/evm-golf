@@ -4,6 +4,7 @@
 interpreter in pinned [EVMYulLean](https://github.com/NethermindEth/EVMYulLean/tree/047f63070309f436b66c61e276ab3b6d1169265a).
 It proves conditional reductions to related internal states. It does not prove
 that a transaction reaches the region or that the remaining execution is equivalent.
+Terminal mode instead checks paired successful termination under explicit conditions.
 
 ## Setup and use
 
@@ -158,8 +159,17 @@ The result distinguishes `jump_pc` from the landing `exit_pc`, includes the JUMP
 gas and instruction count, and stops before executing the destination JUMPDEST.
 For memory paths, the gas requirement includes expansion plus the JUMP’s 8 gas.
 
-Rust callers can use `region::certify_selected_span_through_jump` for this mode,
+Add `--through-halt` to execute an explicit `STOP` or `RETURN` at `--exit-pc`
+using the original upstream profile. It cannot be combined with `--through-jump`.
+The proof gives paired success and equal canonical output. RETURN requires
+`address :: size :: tail` at the body endpoint, a physical stack of at most 1,024
+words, and `size < 2^64`; its gas requirement includes expansion after the body.
+The result distinguishes `terminal_pc` from the resulting `exit_pc`. Entry
+reachability, all-gas equivalence and memory-reader FFI correctness remain unproved.
+
+Rust callers can use `region::certify_selected_span_through_jump` for jump spans,
 `region::certify_span_through_jump` for pure spans,
+`region::certify_selected_span_through_halt` for terminal spans,
 `region::certify_selected_span` for pure or memory spans,
 `region::certify_span` for pure spans,
 `region::certify_selected` for automatic pattern selection, or `region::certify`

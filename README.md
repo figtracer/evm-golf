@@ -17,7 +17,8 @@ candidates, and compete on fixed expression puzzles.
 For contract bytecode, see the [runtime guide](docs/runtime.md). The optional
 [region checker](docs/regions.md) verifies selected arithmetic, bitwise, and memory spans,
 including supported rewrites and stack permutations, against pinned EVM semantics.
-It can also certify a span’s terminal static jump with checked destination proofs.
+It can also check a trailing static jump, or paired success and equal output at
+`STOP` or `RETURN` under explicit stack, gas, and state conditions.
 
 - **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
 - **Verify** — Check expression equivalence and emitted bytecode against a Lean model.

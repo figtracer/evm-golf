@@ -227,4 +227,75 @@ assert "source_gas_minimum" not in report
 assert "sourceCost" in report["gas_requirement"]
 PY_MEMORY
 
+# Terminal certificates execute STOP/RETURN rather than leave a residual suffix.
+printf '%s\n' 600760200200 > "$work/stop-original.hex"
+printf '%s\n' 600760051b00 > "$work/stop-candidate.hex"
+printf '%s\n' 60076020025f5260205ff3 > "$work/return-original.hex"
+printf '%s\n' 600760051b5f5260205ff3 > "$work/return-candidate.hex"
+for terminal in stop return; do
+  end=5
+  [[ "$terminal" != return ]] || end=10
+  if ! cargo run --locked -- certify-runtime-region \
+    --original "$work/$terminal-original.hex" --candidate "$work/$terminal-candidate.hex" \
+    --entry-pc 0 --exit-pc "$end" --through-halt --out "$work/$terminal-accepted"; then
+    cat "$work/$terminal-accepted"/*.log 2>/dev/null || true
+    echo "Failed terminal certificate evidence: $work" >&2
+    exit 1
+  fi
+done
+python3 - "$work/stop-accepted" "$work/return-accepted" <<'PY_TERMINAL'
+import json
+import pathlib
+import sys
+
+for path, terminal, pc, exit_pc, count, source_gas, target_gas, stores, delta in [
+    (sys.argv[1], "STOP", 5, 5, 4, 11, 9, 0, 1),
+    (sys.argv[2], "RETURN", 10, 11, 8, 21, 19, 1, 0),
+]:
+    path = pathlib.Path(path)
+    report = json.loads((path / "result.json").read_text())
+    assert report["terminal"] == terminal and report["terminal_pc"] == pc
+    assert report["entry_pc"] == 0 and report["exit_pc"] == exit_pc
+    assert report["source_instruction_count"] == report["candidate_instruction_count"] == count
+    assert report["source_base_gas"] == source_gas and report["candidate_base_gas"] == target_gas
+    assert report["memory_operations"] == stores and report["output_stack_delta"] == delta
+    assert report["required_input_stack_words"] == 0
+    assert report["gas_surplus_increase"] == 2 and report["execution_count_offset_increase"] == 0
+    assert report["proof_root"] == "GolfCertificates.Terminal.terminal_success"
+    assert "sourceCost(initial state)" in report["gas_requirement"]
+    assert "source_gas_minimum" not in report
+    assert "entry reachability" in report["unproved"]
+    assert (path / "TerminalProof.olean").is_file()
+    assert "'GolfCertificates.Terminal.terminal_success' depends on axioms:" in (path / "TerminalProof.log").read_text()
+    if terminal == "RETURN":
+        assert "RETURN expansion evaluated after the body" in report["gas_requirement"]
+        assert "size.toNat < 2^64" in report["output_condition"]
+    else:
+        assert "empty canonical output" in report["output_condition"]
+PY_TERMINAL
+# Invalid terminal opcode, PUSH payload boundary, and missing explicit terminal byte.
+for end in 4 3 6; do
+  if cargo run --locked -- certify-runtime-region \
+    --original "$work/stop-original.hex" --candidate "$work/stop-candidate.hex" \
+    --entry-pc 0 --exit-pc "$end" --through-halt --out "$work/halt-rejected-$end"; then
+    echo 'Invalid terminal boundary was accepted.' >&2
+    exit 1
+  fi
+  [[ ! -e "$work/halt-rejected-$end" ]]
+done
+if cargo run --locked -- certify-runtime-region \
+  --original "$work/stop-original.hex" --candidate "$work/stop-candidate.hex" \
+  --entry-pc 0 --through-halt --out "$work/halt-missing-exit"; then
+  echo 'Terminal selection without --exit-pc was accepted.' >&2
+  exit 1
+fi
+[[ ! -e "$work/halt-missing-exit" ]]
+if cargo run --locked -- certify-runtime-region \
+  --original "$work/stop-original.hex" --candidate "$work/stop-candidate.hex" \
+  --entry-pc 0 --exit-pc 5 --through-halt --through-jump --out "$work/halt-conflict"; then
+  echo 'Conflicting terminal and jump selection was accepted.' >&2
+  exit 1
+fi
+[[ ! -e "$work/halt-conflict" ]]
+
 echo "Upstream region checks passed. Local evidence: $work"

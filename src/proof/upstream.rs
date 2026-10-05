@@ -76,8 +76,15 @@ pub(crate) enum RegionKind<'a> {
     Mask,
     ChunkedSpan(&'a SpanPlan),
     MemorySpan(&'a MemoryPlan),
+    Terminal(&'a MemoryPlan, TerminalKind),
     MemoryJump(&'a MemoryPlan, &'a JumpPlan),
     SpanJump(&'a SpanPlan, &'a JumpPlan),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TerminalKind {
+    Stop,
+    Return,
 }
 
 /// Ordered modules emitted by the trusted full-image membership generator.
@@ -436,6 +443,17 @@ impl MemoryPlan {
             ]
             .map(|name| format!("GolfCertificates.Memory.{name}"))
             .to_vec(),
+        ));
+        modules
+    }
+
+    fn terminal_modules(&self) -> Vec<(String, Vec<String>)> {
+        let mut modules = self.modules();
+        modules.push((
+            "TerminalProof".to_owned(),
+            ["source_count", "source_gas", "terminal_success"]
+                .map(|name| format!("GolfCertificates.Terminal.{name}"))
+                .to_vec(),
         ));
         modules
     }
@@ -893,6 +911,46 @@ const MEMORY_MODULES: &[(&str, &str, &[&str])] = &[(
     ],
 )];
 
+const STOP_MODULES: &[(&str, &str, &[&str])] = &[(
+    "PathStop",
+    include_str!("../../lean/upstream/PathStop.lean"),
+    &[
+        "GolfPathStop.stopped_preserves",
+        "GolfPathStop.source_count",
+        "GolfPathStop.source_gas",
+        "GolfPathStop.summary_stop",
+    ],
+)];
+
+const RETURN_MODULES: &[(&str, &str, &[&str])] = &[
+    (
+        "ReturnTerminal",
+        include_str!("../../lean/upstream/ReturnTerminal.lean"),
+        &[
+            "CanonicalReturn.cost_return",
+            "CanonicalReturn.step_return",
+            "CanonicalReturn.return_expansion_equal",
+            "CanonicalReturn.return_bytes_equal",
+            "CanonicalReturn.returnPost_preserves",
+            "CanonicalReturn.terminalReturn_gas",
+            "CanonicalReturn.terminalReturn_count",
+            "CanonicalReturn.terminalReturn_output",
+            "CanonicalReturn.terminalReturn_returnData",
+            "CanonicalReturn.X_return",
+            "CanonicalReturn.return_pair",
+        ],
+    ),
+    (
+        "PathReturn",
+        include_str!("../../lean/upstream/PathReturn.lean"),
+        &[
+            "GolfPathReturn.source_count",
+            "GolfPathReturn.source_gas",
+            "GolfPathReturn.summary_return",
+        ],
+    ),
+];
+
 #[derive(Deserialize)]
 struct Manifest {
     #[serde(rename = "packagesDir")]
@@ -992,6 +1050,10 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         RegionKind::MemorySpan(plan) => {
             plan.validate()?;
             Some(plan.modules())
+        }
+        RegionKind::Terminal(plan, _) => {
+            plan.validate()?;
+            Some(plan.terminal_modules())
         }
         RegionKind::MemoryJump(memory, jump) => {
             memory.validate()?;
@@ -1145,12 +1207,14 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         RegionKind::Mask
         | RegionKind::ChunkedSpan(_)
         | RegionKind::MemorySpan(_)
+        | RegionKind::Terminal(_, _)
         | RegionKind::MemoryJump(_, _)
         | RegionKind::SpanJump(_, _) => MASK_MODULES,
     };
     let composition = match kind {
         RegionKind::ChunkedSpan(_)
         | RegionKind::MemorySpan(_)
+        | RegionKind::Terminal(_, _)
         | RegionKind::MemoryJump(_, _)
         | RegionKind::SpanJump(_, _) => SPAN_MODULES,
         RegionKind::Power | RegionKind::PowerJump(_) | RegionKind::Mask => &[],
@@ -1158,13 +1222,14 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     let chunks = match kind {
         RegionKind::ChunkedSpan(_)
         | RegionKind::MemorySpan(_)
+        | RegionKind::Terminal(_, _)
         | RegionKind::MemoryJump(_, _)
         | RegionKind::SpanJump(_, _) => CHUNK_MODULES,
         _ => &[],
     };
     let memory = if matches!(
         kind,
-        RegionKind::MemorySpan(_) | RegionKind::MemoryJump(_, _)
+        RegionKind::MemorySpan(_) | RegionKind::Terminal(_, _) | RegionKind::MemoryJump(_, _)
     ) {
         MEMORY_MODULES
     } else {
@@ -1174,6 +1239,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         kind,
         RegionKind::ChunkedSpan(_)
             | RegionKind::MemorySpan(_)
+            | RegionKind::Terminal(_, _)
             | RegionKind::MemoryJump(_, _)
             | RegionKind::PowerJump(_)
             | RegionKind::SpanJump(_, _)
@@ -1216,6 +1282,11 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     } else {
         &[]
     };
+    let terminal = match kind {
+        RegionKind::Terminal(_, TerminalKind::Stop) => STOP_MODULES,
+        RegionKind::Terminal(_, TerminalKind::Return) => RETURN_MODULES,
+        _ => &[],
+    };
     for (name, source, _) in MODULES
         .iter()
         .chain(additional)
@@ -1228,6 +1299,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         .chain(offset_jump)
         .chain(span_jump)
         .chain(memory_jump)
+        .chain(terminal)
     {
         let path = out.join(format!("{name}.lean"));
         ensure!(
@@ -1247,7 +1319,9 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             "GolfCertificates.Mask.afterDecoded",
             "GolfCertificates.Mask.compiler_mask_boundary",
         ],
-        RegionKind::MemorySpan(_) | RegionKind::MemoryJump(_, _) => &[],
+        RegionKind::MemorySpan(_) | RegionKind::Terminal(_, _) | RegionKind::MemoryJump(_, _) => {
+            &[]
+        }
         RegionKind::ChunkedSpan(_) | RegionKind::SpanJump(_, _) => &[
             "GolfCertificates.Span.source_gas",
             "GolfCertificates.Span.bound_trace",
@@ -1266,6 +1340,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     let generated: &[(&str, &[&str])] = match kind {
         RegionKind::ChunkedSpan(_)
         | RegionKind::MemorySpan(_)
+        | RegionKind::Terminal(_, _)
         | RegionKind::MemoryJump(_, _)
         | RegionKind::PowerJump(_)
         | RegionKind::SpanJump(_, _) => &[],
@@ -1278,6 +1353,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     let generated = match kind {
         RegionKind::ChunkedSpan(plan) => plan.modules(),
         RegionKind::MemorySpan(plan) => plan.modules(),
+        RegionKind::Terminal(plan, _) => plan.terminal_modules(),
         RegionKind::MemoryJump(memory, jump) => {
             let mut modules = memory.modules();
             modules.extend(jump.modules.clone());
@@ -1304,6 +1380,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         kind,
         RegionKind::ChunkedSpan(_)
             | RegionKind::MemorySpan(_)
+            | RegionKind::Terminal(_, _)
             | RegionKind::MemoryJump(_, _)
             | RegionKind::PowerJump(_)
             | RegionKind::SpanJump(_, _)
@@ -1329,6 +1406,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         .chain(offset_jump)
         .chain(span_jump)
         .chain(memory_jump)
+        .chain(terminal)
         .map(|(name, _, roots)| {
             (
                 (*name).to_owned(),
@@ -1498,9 +1576,41 @@ fn check_checkout(path: &Path, revision: &str, out: &Path, name: &str) -> Result
 mod tests {
     use super::{
         JumpPlan, JumpTerminal, Manifest, MemoryPlan, PathLeafKind, RegionKind, SpanNode, SpanPlan,
-        check_output_separation, validate_manifest, verify_region,
+        TerminalKind, check_output_separation, validate_manifest, verify_region,
     };
     use std::fs;
+
+    #[test]
+    fn terminal_inventory_rejects_missing_extra_cached_and_invalid_plans() {
+        for terminal in [TerminalKind::Stop, TerminalKind::Return] {
+            for mutation in ["missing", "extra", "cached", "empty"] {
+                let mut plan = MemoryPlan {
+                    leaves: vec![PathLeafKind::Pure],
+                    compositions: vec![],
+                };
+                let out = tempfile::tempdir().unwrap();
+                for (name, _) in plan.terminal_modules() {
+                    fs::write(out.path().join(format!("{name}.lean")), "").unwrap();
+                }
+                match mutation {
+                    "missing" => fs::remove_file(out.path().join("TerminalProof.lean")).unwrap(),
+                    "extra" => fs::write(out.path().join("JumpMembership.lean"), "").unwrap(),
+                    "cached" => fs::write(out.path().join("TerminalProof.olean"), "").unwrap(),
+                    "empty" => plan.leaves.clear(),
+                    _ => unreachable!(),
+                }
+                let error = verify_region(out.path(), RegionKind::Terminal(&plan, terminal))
+                    .unwrap_err()
+                    .to_string();
+                let expected = match mutation {
+                    "cached" => "cached",
+                    "empty" => "empty span",
+                    _ => "generated",
+                };
+                assert!(error.contains(expected), "{terminal:?}/{mutation}: {error}");
+            }
+        }
+    }
 
     #[test]
     fn jump_output_cannot_write_into_the_checked_installation() {

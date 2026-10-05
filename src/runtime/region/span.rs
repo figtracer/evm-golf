@@ -17,7 +17,8 @@ use crate::{
 mod memory;
 pub use memory::{
     MemorySpanCertificate, MemorySpanJumpCertificate, SelectedSpanCertificate,
-    SelectedSpanJumpCertificate, certify_selected_span, certify_selected_span_through_jump,
+    SelectedSpanJumpCertificate, TerminalCertificate, certify_selected_span,
+    certify_selected_span_through_halt, certify_selected_span_through_jump,
 };
 
 // Canonical instruction count bounds per-leaf proof work; rewrite atoms stay whole.
