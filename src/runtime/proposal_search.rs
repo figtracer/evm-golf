@@ -267,14 +267,16 @@ fn literal_candidate(instructions: &[Instruction]) -> Option<Candidate> {
             (4, after, if second.bytes[0] == 0x5f { 5 } else { 6 })
         } else if push_value(&first.bytes).is_some()
             && first.bytes.len() <= 31
-            && (0x91..=0x97).contains(&second.bytes[0])
-            && third.bytes == [0x90]
             && fourth.bytes == second.bytes
+            && (((0x91..=0x97).contains(&second.bytes[0]) && third.bytes == [0x90])
+                || (second.bytes == [0x90] && (0x91..=0x97).contains(&third.bytes[0])))
         {
-            // PUSH c; SWAPn; SWAP1; SWAPn = SWAP(n-1); PUSH c.
+            // Either SWAPn; SWAP1; SWAPn or SWAP1; SWAPn; SWAP1
+            // after PUSH c becomes SWAP(n-1); PUSH c.
             // Widen the literal by two bytes to preserve all instruction offsets
             // outside the window. The shared checker still checks stack faults.
-            let mut after = vec![second.bytes[0] - 1, first.bytes[0] + 2, 0, 0];
+            let swap = second.bytes[0].max(third.bytes[0]);
+            let mut after = vec![swap - 1, first.bytes[0] + 2, 0, 0];
             after.extend_from_slice(&first.bytes[1..]);
             (4, after, if first.bytes[0] == 0x5f { 5 } else { 6 })
         } else if push_value(&first.bytes).is_some()
@@ -363,6 +365,8 @@ mod tests {
             ("6020939093", "9262000020"),
             ("6040919091", "9062000040"),
             ("5f979097", "96610000"),
+            ("613140909190", "906300003140"),
+            ("5f909790", "96610000"),
         ] {
             let code = from_hex(&format!("5f5f5f5f5f5f5f5f{before}00")).unwrap();
             let batch = discover(&code).unwrap();
@@ -385,19 +389,21 @@ mod tests {
     fn literal_swap_conjugation_respects_push_and_stack_bounds() {
         for width in [0usize, 1, 30, 31, 32] {
             for swap in 0x91..=0x98 {
-                let mut before = vec![0x5f + width as u8];
-                before.extend(std::iter::repeat_n(0xff, width));
-                before.extend([swap, 0x90, swap]);
-                let candidate = literal_candidate(&decode(&before));
-                if width <= 30 && swap <= 0x97 {
-                    let candidate = candidate.unwrap();
-                    assert_eq!(candidate.before.len(), candidate.after.len());
-                    assert_eq!(candidate.required, usize::from(swap - 0x8f));
-                    assert_eq!(candidate.after[0], swap - 1);
-                    assert_eq!(candidate.after[1], 0x5f + width as u8 + 2);
-                    assert_eq!(&candidate.after[4..], &before[1..1 + width]);
-                } else {
-                    assert!(candidate.is_none());
+                for permutation in [[swap, 0x90, swap], [0x90, swap, 0x90]] {
+                    let mut before = vec![0x5f + width as u8];
+                    before.extend(std::iter::repeat_n(0xff, width));
+                    before.extend(permutation);
+                    let candidate = literal_candidate(&decode(&before));
+                    if width <= 30 && swap <= 0x97 {
+                        let candidate = candidate.unwrap();
+                        assert_eq!(candidate.before.len(), candidate.after.len());
+                        assert_eq!(candidate.required, usize::from(swap - 0x8f));
+                        assert_eq!(candidate.after[0], swap - 1);
+                        assert_eq!(candidate.after[1], 0x5f + width as u8 + 2);
+                        assert_eq!(&candidate.after[4..], &before[1..1 + width]);
+                    } else {
+                        assert!(candidate.is_none());
+                    }
                 }
             }
         }
