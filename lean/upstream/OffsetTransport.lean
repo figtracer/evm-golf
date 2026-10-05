@@ -185,6 +185,8 @@ theorem offset_extra_transport (s c next : EVM.State) (fuel candidateFuel surplu
   have stackEq := offset_stack frame
   have costs : C' c op = C' s op := by
     cases allowed with
+    | lt => rfl
+    | iszero => rfl
     | sub => rfl
     | and => rfl
     | not => rfl
@@ -236,6 +238,34 @@ theorem offset_extra_transport (s c next : EVM.State) (fuel candidateFuel surplu
     subst next
     refine ⟨binaryPost c (UInt256.lnot a) tail 3, cb, ?_, ?_, rfl, rfl⟩
     · exact step_not c candidateFuel 3 arg a tail (stackEq.symm.trans stack)
+    · exact binary_preserves frame _ tail 3 (by decide) bounds.gas
+
+  | lt =>
+    have two : 2 ≤ s.stack.length := bounds.inputs
+    obtain ⟨b,a,tail,stack⟩ : ∃ b a tail, s.stack = b :: a :: tail := by
+      cases hs : s.stack with
+      | nil => simp [hs] at two
+      | cons b xs =>
+        cases xs with
+        | nil => simp [hs] at two
+        | cons a tail => exact ⟨b,a,tail,rfl⟩
+    rw [(show C' s .LT = 3 from rfl), step_lt s fuel 3 arg a b tail stack] at canonical
+    have post : next = binaryPost s (UInt256.lt b a) tail 3 := (Except.ok.inj canonical).symm
+    subst next
+    refine ⟨binaryPost c (UInt256.lt b a) tail 3, cb, ?_, ?_, rfl, rfl⟩
+    · exact step_lt c candidateFuel 3 arg a b tail (stackEq.symm.trans stack)
+    · exact binary_preserves frame _ tail 3 (by decide) bounds.gas
+  | iszero =>
+    have one : 1 ≤ s.stack.length := bounds.inputs
+    obtain ⟨a,tail,stack⟩ : ∃ a tail, s.stack = a :: tail := by
+      cases hs : s.stack with
+      | nil => simp [hs] at one
+      | cons a tail => exact ⟨a,tail,rfl⟩
+    rw [(show C' s .ISZERO = 3 from rfl), step_iszero s fuel 3 arg a tail stack] at canonical
+    have post : next = binaryPost s (UInt256.isZero a) tail 3 := (Except.ok.inj canonical).symm
+    subst next
+    refine ⟨binaryPost c (UInt256.isZero a) tail 3, cb, ?_, ?_, rfl, rfl⟩
+    · exact step_iszero c candidateFuel 3 arg a tail (stackEq.symm.trans stack)
     · exact binary_preserves frame _ tail 3 (by decide) bounds.gas
 
   | bor =>

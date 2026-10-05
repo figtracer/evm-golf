@@ -68,6 +68,22 @@ theorem decode_not (code : ByteArray) (pc : UInt256)
   rw [fetched]
   rfl
 
+theorem decode_lt (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 16)) :
+    decode code pc = some ((Operation.LT : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+theorem decode_iszero (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 21)) :
+    decode code pc = some ((Operation.ISZERO : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_lt
+#print axioms decode_iszero
 #print axioms decode_mul
 #print axioms decode_shl
 #print axioms decode_add

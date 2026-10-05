@@ -172,7 +172,7 @@ impl Span {
             ensure!(
                 matches!(
                     op,
-                    0x01 | 0x02 | 0x03 | 0x16 | 0x17 | 0x19 | 0x1b | 0x5f..=0x7f | 0x80 | 0x90..=0x9f
+                    0x01 | 0x02 | 0x03 | 0x10 | 0x15 | 0x16 | 0x17 | 0x19 | 0x1b | 0x5f..=0x7f | 0x80 | 0x90..=0x9f
                 ),
                 "unsupported canonical span opcode 0x{op:02x} at PC {pc}"
             );
@@ -514,9 +514,10 @@ impl Span {
                             1,
                         )
                     }
-                    0x19 => {
+                    0x15 | 0x19 => {
                         let a = words.remove(0);
-                        let result = format!("UInt256.lnot ({a})");
+                        let operation = if op == 0x15 { "isZero" } else { "lnot" };
+                        let result = format!("UInt256.{operation} ({a})");
                         let body =
                             format!("binaryPost ({prev}) ({result}) ({}) 3", lean_stack(&words));
                         words.insert(0, format!("({result})"));
@@ -529,6 +530,7 @@ impl Span {
                             0x01 => format!("UInt256.add ({a}) ({b})"),
                             0x02 => format!("UInt256.mul ({a}) ({b})"),
                             0x03 => format!("UInt256.sub ({a}) ({b})"),
+                            0x10 => format!("UInt256.lt ({a}) ({b})"),
                             0x16 => format!("({a}) &&& ({b})"),
                             0x17 => format!("({a}) ||| ({b})"),
                             0x1b => format!("UInt256.shiftLeft ({b}) ({a})"),
@@ -658,6 +660,8 @@ impl Span {
                             1 => ("add", "extended"),
                             2 => ("mul", "same"),
                             3 => ("sub", "extra"),
+                            0x10 => ("lt", "extra"),
+                            0x15 => ("iszero", "extra"),
                             0x16 => ("and", "extra"),
                             0x17 => ("or", "extra"),
                             0x19 => ("not", "extra"),
@@ -669,7 +673,7 @@ impl Span {
                         };
                         let args = match op {
                             0x5f => String::new(),
-                            0x19 | 0x80 => format!(
+                            0x15 | 0x19 | 0x80 => format!(
                                 " ({}) ({}) stack{i}",
                                 initial_words[0],
                                 lean_stack(&initial_words[1..])
@@ -710,6 +714,8 @@ impl Span {
                             1 => "add",
                             2 => "mul",
                             3 => "sub",
+                            0x10 => "lt",
+                            0x15 => "iszero",
                             0x16 => "and",
                             0x17 => "or",
                             0x19 => "not",
@@ -1067,10 +1073,10 @@ fn profile(code: &[u8]) -> Result<Profile> {
                 ensure!(push_value(&instruction.bytes).is_some(), "truncated PUSH");
                 (0, 1, if op == 0x5f { 2 } else { 3 })
             }
-            1 | 3 | 0x16 | 0x17 | 0x1b => (2, -1, 3),
+            1 | 3 | 0x10 | 0x16 | 0x17 | 0x1b => (2, -1, 3),
             2 => (2, -1, 5),
             0x52 => (2, -2, 3),
-            0x19 => (1, 0, 3),
+            0x15 | 0x19 => (1, 0, 3),
             0x80 => (1, 1, 3),
             0x90..=0x9f => (isize::from(op - 0x8f) + 1, 0, 3),
             _ => bail!("unsupported canonical span opcode 0x{op:02x}"),
@@ -1143,6 +1149,88 @@ mod tests {
         assert!(source.contains(".stack = ((value0 a0 a1 a2)) :: (a0) :: tail := by"));
         assert!(source.contains("canonical_step_or"));
         assert!(source.contains("powers := 0") && source.contains("masks := 0"));
+    }
+
+    #[test]
+    fn comparisons_preserve_canonical_operand_order_and_stack_profiles() {
+        let lt = Span::select(&[0x10], &[0x10], 0, 1).unwrap();
+        assert_eq!(
+            (lt.required, lt.maximum, lt.source.delta, lt.source.gas),
+            (2, 1024, -1, 3)
+        );
+        let source = lt.render_proof(&[0x10], &[0x10], 0);
+        assert!(source.contains("UInt256.lt (a0) (a1)"));
+        assert!(source.contains("canonical_step_lt"));
+        let zero = Span::select(&[0x15], &[0x15], 0, 1).unwrap();
+        assert_eq!(
+            (
+                zero.required,
+                zero.maximum,
+                zero.source.delta,
+                zero.source.gas
+            ),
+            (1, 1024, 0, 3)
+        );
+        let source = zero.render_proof(&[0x15], &[0x15], 0);
+        assert!(source.contains("UInt256.isZero (a0)"));
+        assert!(source.contains("canonical_step_iszero"));
+        assert!(Span::select(&[0x10], &[0x15], 0, 1).is_err());
+        for unsupported in [0x11, 0x1c] {
+            assert!(Span::select(&[unsupported], &[unsupported], 0, 1).is_err());
+        }
+    }
+
+    #[test]
+    fn comparisons_revm_controls_cover_order_zero_and_word_edges() {
+        use crate::runtime::{Case, execute};
+        use revm::context::result::{ExecutionResult, HaltReason};
+        let run = |code: &[u8]| {
+            execute(
+                code,
+                &Case {
+                    calldata: String::new(),
+                    gas_limit: 200_000,
+                    value: String::new(),
+                    storage: Default::default(),
+                },
+            )
+            .unwrap()
+            .result
+        };
+        for (ops, stack, expected) in [
+            (vec![0x10], vec![U256::from(2), U256::from(7)], 1),
+            (vec![0x10], vec![U256::from(7), U256::from(2)], 0),
+            (vec![0x10], vec![U256::MAX, U256::MAX], 0),
+            (vec![0x10], vec![U256::ZERO, U256::MAX], 1),
+            (vec![0x10], vec![U256::MAX, U256::ZERO], 0),
+            (vec![0x15], vec![U256::ZERO], 1),
+            (vec![0x15], vec![U256::from(1)], 0),
+            (vec![0x15], vec![U256::MAX], 0),
+            (vec![0x10, 0x15], vec![U256::from(2), U256::from(7)], 0),
+        ] {
+            let mut code = Vec::new();
+            // A surviving caller tail catches accidental extra stack consumption.
+            for word in std::iter::once(&U256::from(42)).chain(stack.iter().rev()) {
+                code.push(0x7f);
+                code.extend(word.to_be_bytes::<32>());
+            }
+            code.extend(ops);
+            code.extend([0x5f, 0x52, 0x60, 32, 0x52, 0x60, 64, 0x5f, 0xf3]);
+            let result = run(&code);
+            assert!(result.is_success(), "{result:?}");
+            let output = result.output().unwrap();
+            assert_eq!(&output[..32], &U256::from(expected).to_be_bytes::<32>());
+            assert_eq!(&output[32..], &U256::from(42).to_be_bytes::<32>());
+        }
+        for code in [vec![0x10], vec![0x5f, 0x10], vec![0x15]] {
+            assert!(matches!(
+                run(&code),
+                ExecutionResult::Halt {
+                    reason: HaltReason::StackUnderflow,
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]

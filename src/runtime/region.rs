@@ -626,6 +626,8 @@ fn decoded_operation(bytes: &[u8]) -> (String, String) {
             0x16 => "Operation.AND",
             0x17 => "Operation.OR",
             0x19 => "Operation.NOT",
+            0x10 => "Operation.LT",
+            0x15 => "Operation.ISZERO",
             _ => unreachable!("trusted region template contains only supported opcodes"),
         }
         .to_owned(),

@@ -378,4 +378,28 @@ if cargo run --locked -- certify-runtime-region \
 fi
 [[ ! -e "$work/call-entry-return-underflow" ]]
 
+# Canonical LT and ISZERO compose from an empty call-entry stack through STOP.
+printf '%s\n' 60076002101500 > "$work/compare-stop.hex"
+if ! cargo run --locked -- certify-runtime-region \
+  --original "$work/compare-stop.hex" --candidate "$work/compare-stop.hex" \
+  --entry-pc 0 --exit-pc 6 --through-halt --from-call-entry --out "$work/compare-stop-accepted"; then
+  cat "$work/compare-stop-accepted"/*.log 2>/dev/null || true
+  echo "Failed comparison certificate evidence: $work" >&2
+  exit 1
+fi
+python3 - "$work/compare-stop-accepted/result.json" <<'PY_COMPARE_STOP'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    report = json.load(handle)
+assert report["entry_pc"] == 0 and report["terminal_pc"] == report["exit_pc"] == 6
+assert report["terminal"] == "STOP"
+assert report["source_instruction_count"] == report["candidate_instruction_count"] == 5
+assert report["source_base_gas"] == report["candidate_base_gas"] == 12
+assert report["gas_surplus_increase"] == report["execution_count_offset_increase"] == 0
+assert report["required_input_stack_words"] == 0 and report["output_stack_delta"] == 1
+assert report["proof_root"] == "GolfCertificates.CallEntry.call_entry_success"
+PY_COMPARE_STOP
+
 echo "Upstream region checks passed. Local evidence: $work"

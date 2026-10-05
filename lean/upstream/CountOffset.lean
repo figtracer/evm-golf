@@ -56,6 +56,22 @@ theorem step_not (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat
  simp [EVM.step,stack,binaryPost,EVM.State.replaceStackAndIncrPC,EVM.State.incrPC,Stack.push]
  rfl
 
+theorem step_lt (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat))
+ (a b : UInt256) (tail : List UInt256) (stack : s.stack = b::a::tail) :
+ EVM.step (fuel+1) cost (some (.LT,arg)) s = .ok (binaryPost s (UInt256.lt b a) tail cost) := by
+ have specified : {s with stack := b::a::tail} = s := by rw [←stack]
+ rw [←specified]
+ rfl
+
+theorem step_iszero (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat))
+ (a : UInt256) (tail : List UInt256) (stack : s.stack = a::tail) :
+ EVM.step (fuel+1) cost (some (.ISZERO,arg)) s = .ok (binaryPost s (UInt256.isZero a) tail cost) := by
+ have specified : {s with stack := a::tail} = s := by rw [←stack]
+ rw [←specified]
+ rfl
+
+#print axioms step_lt
+#print axioms step_iszero
 #print axioms of_exact
 #print axioms zero_to_exact
 #print axioms step_sub

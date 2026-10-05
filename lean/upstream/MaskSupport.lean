@@ -81,6 +81,8 @@ theorem X_next_or (s next : EVM.State) (fuel : Nat) (jumps : Array UInt256)
  rfl
 
 inductive ExtraOp : Operation .EVM → Prop where
+ | lt : ExtraOp .LT
+ | iszero : ExtraOp .ISZERO
  | sub : ExtraOp .SUB
  | and : ExtraOp .AND
  | not : ExtraOp .NOT
@@ -141,6 +143,39 @@ theorem X_next_extra (s next : EVM.State) (fuel : Nat) (jumps : Array UInt256)
      show ¬1024 < s.stack.length - 1 + 1 by exact Nat.not_lt.mpr outputs]
    change (do
      let n ← EVM.step (fuel+1) 3 (some (.NOT,arg)) s
+     X (fuel+1) jumps n) = _
+   rw [cost] at canonical
+   rw [canonical]
+   rfl
+
+ | lt =>
+   have mem : memoryExpansionCost s .LT = 0 := by
+     simp [memoryExpansionCost,memoryExpansionCost.μᵢ']
+   have cost : C' s .LT = 3 := rfl
+   conv_lhs => unfold X
+   simp only [decoded]
+   simp [mem,cost,Operation.isCreate,δ,α,
+     show ¬s.gasAvailable.toNat < 3 by exact Nat.not_lt.mpr gas,
+     show ¬s.stack.length < 2 by exact Nat.not_lt.mpr inputs,
+     show ¬1024 < s.stack.length - 2 + 1 by exact Nat.not_lt.mpr outputs]
+   change (do
+     let n ← EVM.step (fuel+1) 3 (some (.LT,arg)) s
+     X (fuel+1) jumps n) = _
+   rw [cost] at canonical
+   rw [canonical]
+   rfl
+ | iszero =>
+   have mem : memoryExpansionCost s .ISZERO = 0 := by
+     simp [memoryExpansionCost,memoryExpansionCost.μᵢ']
+   have cost : C' s .ISZERO = 3 := rfl
+   conv_lhs => unfold X
+   simp only [decoded]
+   simp [mem,cost,Operation.isCreate,δ,α,
+     show ¬s.gasAvailable.toNat < 3 by exact Nat.not_lt.mpr gas,
+     show ¬s.stack.length < 1 by exact Nat.not_lt.mpr inputs,
+     show ¬1024 < s.stack.length - 1 + 1 by exact Nat.not_lt.mpr outputs]
+   change (do
+     let n ← EVM.step (fuel+1) 3 (some (.ISZERO,arg)) s
      X (fuel+1) jumps n) = _
    rw [cost] at canonical
    rw [canonical]
