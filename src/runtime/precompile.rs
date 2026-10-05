@@ -119,7 +119,7 @@ impl<CTX: ContextTr> Inspector<CTX> for EcrecoverTrace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::{Case, analyze, compare, execute, from_hex, scenario, transform};
+    use crate::runtime::{Case, compare, execute, from_hex, scenario};
     use std::collections::BTreeMap;
 
     // Public test key 1, signing a fixed digest; no live account is involved.
@@ -194,11 +194,8 @@ mod tests {
     fn one_gas_saved_cannot_hide_failed_call_in_outer_success_or_revert() {
         for ending in ["5000", "505f5ffd"] {
             let original = from_hex(&format!("{PREFIX}6000505afa{ending}")).unwrap();
-            let (candidate, _) = transform(&analyze(&original).unwrap()).unwrap();
-            assert_eq!(
-                candidate,
-                from_hex(&format!("{PREFIX}5f505afa{ending}")).unwrap()
-            );
+            // One byte shorter: PUSH1 0 becomes PUSH0, saving one gas.
+            let candidate = from_hex(&format!("{PREFIX}5f505afa{ending}")).unwrap();
             let mut input = case();
             input.gas_limit = 25_889;
             let left = execute(&original, &input).unwrap();

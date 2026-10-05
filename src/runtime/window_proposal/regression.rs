@@ -126,11 +126,16 @@ fn kernel_checks_closed_arithmetic_and_symbolic_shift_subtraction() {
         };
         let original = [vec![0x5b], before, vec![0]].concat();
         let candidate = [vec![0x5b], after, vec![0]].concat();
-        let (source, names) =
-            artifact::proposal_certificate(&original, &candidate, &site, &[], local).unwrap();
+        let (source, names) = artifact::proposal_batch_certificate(
+            &original,
+            &candidate,
+            std::slice::from_ref(&site),
+            &[],
+        )
+        .unwrap();
         let path = directory.path().join(format!("Arithmetic{index}.lean"));
         fs::write(&path, source).unwrap();
-        let checked = proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational);
+        let checked = proof::verify_named(&path, &names);
         assert!(
             checked.is_ok(),
             "{checked:?}\n{}",
@@ -229,11 +234,16 @@ fn kernel_checks_stack_aliases_neutral_addition_and_wrapping_addition() {
         };
         let original = [vec![0x5b], before, vec![0]].concat();
         let candidate = [vec![0x5b], after, vec![0]].concat();
-        let (source, names) =
-            artifact::proposal_certificate(&original, &candidate, &rewrite, &[], local).unwrap();
+        let (source, names) = artifact::proposal_batch_certificate(
+            &original,
+            &candidate,
+            std::slice::from_ref(&rewrite),
+            &[],
+        )
+        .unwrap();
         let path = directory.path().join(format!("Alias{index}.lean"));
         fs::write(&path, source).unwrap();
-        let result = proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational);
+        let result = proof::verify_named(&path, &names);
         assert!(
             result.is_ok(),
             "{result:?}\n{}",
@@ -378,11 +388,16 @@ fn kernel_checks_exact_stack_permutation_artifacts() {
         };
         let original = [vec![0x5b], before, vec![0]].concat();
         let candidate = [vec![0x5b], after, vec![0]].concat();
-        let (source, names) =
-            artifact::proposal_certificate(&original, &candidate, &rewrite, &[], local).unwrap();
+        let (source, names) = artifact::proposal_batch_certificate(
+            &original,
+            &candidate,
+            std::slice::from_ref(&rewrite),
+            &[],
+        )
+        .unwrap();
         let path = directory.path().join(format!("Permutation{index}.lean"));
         fs::write(&path, source).unwrap();
-        let result = proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational);
+        let result = proof::verify_named(&path, &names);
         assert!(
             result.is_ok(),
             "{result:?}\n{}",

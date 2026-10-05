@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "contracts": [
+    { "id": "demo", "runtime": "demo.hex", "scenarios": "demo.scenarios.json" }
+  ]
+}

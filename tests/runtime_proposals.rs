@@ -1,7 +1,7 @@
 use evm_golf::runtime::{self, RewriteProposalBatch, scenario::Scenario};
 use revm::primitives::keccak256;
 use serde_json::{Value, json};
-use std::{fs, process::Command};
+use std::fs;
 use tempfile::tempdir;
 
 const BEFORE: &str = "600150600250";
@@ -90,46 +90,6 @@ fn batch_rejects_ambiguous_schema_and_invalid_original_intervals() {
 }
 
 #[test]
-fn batch_cli_requires_scenarios_layout_and_excludes_other_selections() {
-    let directory = tempdir().unwrap();
-    for flags in [
-        vec![],
-        vec!["--preserve-layout"],
-        vec!["--scenarios", "fixture.json"],
-        vec![
-            "--preserve-layout",
-            "--scenarios",
-            "fixture.json",
-            "--proposal",
-            "single.json",
-        ],
-        vec![
-            "--preserve-layout",
-            "--scenarios",
-            "fixture.json",
-            "--plan",
-            "plan.json",
-        ],
-    ] {
-        let result = Command::new(env!("CARGO_BIN_EXE_evm-golf"))
-            .args([
-                "optimize-runtime",
-                "--bytecode",
-                "input.hex",
-                "--proposals",
-                "batch.json",
-                "--out",
-            ])
-            .arg(directory.path().join("invalid"))
-            .args(flags)
-            .output()
-            .unwrap();
-        assert_eq!(result.status.code(), Some(2));
-        assert!(!directory.path().join("invalid").exists());
-    }
-}
-
-#[test]
 #[ignore = "requires Lean 4.34.0"]
 fn batch_checks_adjacent_sites_limit_and_deterministic_order() {
     let directory = tempdir().unwrap();
@@ -170,7 +130,7 @@ fn batch_checks_adjacent_sites_limit_and_deterministic_order() {
 
 #[test]
 #[ignore = "requires Lean 4.34.0"]
-fn batch_binds_heterogeneous_local_proofs_through_the_cli() {
+fn batch_binds_heterogeneous_local_proofs() {
     let directory = tempdir().unwrap();
     let code = format!("{BEFORE}600160081b5000");
     let proposals = batch(
@@ -180,29 +140,14 @@ fn batch_binds_heterogeneous_local_proofs_through_the_cli() {
             {"original_pc":0,"before":BEFORE,"after":AFTER}
         ]),
     );
-    let input = directory.path().join("input.hex");
-    let proposed = directory.path().join("proposals.json");
-    let fixture = directory.path().join("scenarios.json");
     let out = directory.path().join("accepted");
-    fs::write(&input, &code).unwrap();
-    fs::write(&proposed, serde_json::to_vec(&proposals).unwrap()).unwrap();
-    fs::write(&fixture, serde_json::to_vec(&scenarios(100000)).unwrap()).unwrap();
-    let result = Command::new(env!("CARGO_BIN_EXE_evm-golf"))
-        .args(["optimize-runtime", "--preserve-layout", "--bytecode"])
-        .arg(&input)
-        .arg("--proposals")
-        .arg(&proposed)
-        .arg("--scenarios")
-        .arg(&fixture)
-        .arg("--out")
-        .arg(&out)
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    runtime::optimize_scenarios_with_proposals(
+        &runtime::from_hex(&code).unwrap(),
+        &scenarios(100000),
+        &out,
+        &proposals,
+    )
+    .unwrap();
     assert_eq!(
         fs::read_to_string(out.join("candidate.hex"))
             .unwrap()
@@ -220,7 +165,6 @@ fn batch_binds_heterogeneous_local_proofs_through_the_cli() {
         serde_json::from_slice(&fs::read(out.join("result.json")).unwrap()).unwrap();
     assert_eq!(report["rewrites"][0]["original_pc"], 0);
     assert_eq!(report["rewrites"][1]["original_pc"], 6);
-    assert_eq!(fs::read_to_string(input).unwrap(), code);
 }
 
 #[test]
@@ -246,110 +190,85 @@ fn batch_cannot_bypass_the_exceptional_halt_guard() {
     assert!(!out.join("result.json").exists());
 }
 
+const DEAD_PUSH: &str = "6003565b60015060025000";
+
+fn single(code: &str, pc: usize, before: &str, after: &str) -> RewriteProposalBatch {
+    batch(
+        code,
+        json!([{"original_pc":pc,"before":before,"after":after}]),
+    )
+}
+
 #[test]
-fn discovery_cli_emits_deterministic_unverified_batch_json() {
+fn single_sites_reject_stale_bytes_push_data_copies_and_changed_profiles() {
     let directory = tempdir().unwrap();
-    let input = directory.path().join("runtime.hex");
-    let code = "600160026003600490925090506122705000";
-    fs::write(&input, code).unwrap();
-    let discover = || {
-        Command::new(env!("CARGO_BIN_EXE_evm-golf"))
-            .args(["discover-runtime-proposals", "--bytecode"])
-            .arg(&input)
-            .output()
-            .unwrap()
-    };
-    let first = discover();
-    assert!(
-        first.status.success(),
-        "{}",
-        String::from_utf8_lossy(&first.stderr)
-    );
-    assert!(String::from_utf8_lossy(&first.stderr).contains("unverified"));
-    let batch: RewriteProposalBatch = serde_json::from_slice(&first.stdout).unwrap();
-    assert_eq!(
-        batch.original_keccak256,
-        keccak256(runtime::from_hex(code).unwrap()).to_string()
-    );
-    assert!(!batch.sites.is_empty());
-    let second = discover();
-    assert!(second.status.success());
-    assert_eq!(first.stdout, second.stdout);
-    assert_eq!(fs::read_to_string(&input).unwrap(), code);
-    assert!(!directory.path().join("candidate.hex").exists());
-    fs::write(&input, "00").unwrap();
-    let empty = discover();
-    assert!(empty.status.success());
-    assert!(
-        serde_json::from_slice::<RewriteProposalBatch>(&empty.stdout)
-            .unwrap()
-            .sites
-            .is_empty()
-    );
-    fs::write(&input, "zz").unwrap();
-    let invalid = discover();
-    assert!(!invalid.status.success());
-    assert!(invalid.stdout.is_empty());
+    let mut wrong_hash = single(DEAD_PUSH, 4, BEFORE, AFTER);
+    wrong_hash.original_keccak256 = format!("0x{}", "00".repeat(32));
+    let protected = "600660065f3960015060025000";
+    let push_data = "67600150600250000000";
+    let mask = "5f356005565b6001166001165f5260205ff3";
+    for (index, (code, proposed)) in [
+        (DEAD_PUSH, wrong_hash),
+        (DEAD_PUSH, single(DEAD_PUSH, 5, BEFORE, AFTER)),
+        (DEAD_PUSH, single(DEAD_PUSH, 4, "600350600250", AFTER)),
+        (DEAD_PUSH, single(DEAD_PUSH, 4, BEFORE, BEFORE)),
+        (DEAD_PUSH, single(DEAD_PUSH, 4, BEFORE, "600050")),
+        (push_data, single(push_data, 1, BEFORE, AFTER)),
+        (protected, single(protected, 6, BEFORE, AFTER)),
+        (mask, single(mask, 6, "600116600116", AFTER)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let out = directory.path().join(format!("rejected-{index}"));
+        assert!(
+            runtime::optimize_scenarios_with_proposals(
+                &runtime::from_hex(code).unwrap(),
+                &scenarios(100000),
+                &out,
+                &proposed,
+            )
+            .is_err(),
+            "invalid proposal {index}"
+        );
+        assert!(!out.join("candidate.hex").exists());
+        assert!(!out.join("result.json").exists());
+    }
 }
 
 #[test]
 #[ignore = "requires Lean 4.34.0"]
-fn discovered_batch_flows_through_existing_cli_proof_and_replay() {
+fn single_site_cannot_hide_false_outputs_or_a_transaction_gas_boundary() {
     let directory = tempdir().unwrap();
-    let code = "600160026003600490925090506122705000";
-    let input = directory.path().join("runtime.hex");
-    let proposed = directory.path().join("proposals.json");
-    let fixture = directory.path().join("scenarios.json");
-    let out = directory.path().join("accepted");
-    fs::write(&input, code).unwrap();
-    fs::write(&fixture, serde_json::to_vec(&scenarios(100000)).unwrap()).unwrap();
-    let discovery = Command::new(env!("CARGO_BIN_EXE_evm-golf"))
-        .args(["discover-runtime-proposals", "--bytecode"])
-        .arg(&input)
-        .output()
-        .unwrap();
-    assert!(
-        discovery.status.success(),
-        "{}",
-        String::from_utf8_lossy(&discovery.stderr)
-    );
-    let batch: RewriteProposalBatch = serde_json::from_slice(&discovery.stdout).unwrap();
-    assert!(!batch.sites.is_empty());
-    fs::write(&proposed, &discovery.stdout).unwrap();
-    let accepted = Command::new(env!("CARGO_BIN_EXE_evm-golf"))
-        .args(["optimize-runtime", "--preserve-layout", "--bytecode"])
-        .arg(&input)
-        .arg("--proposals")
-        .arg(&proposed)
-        .arg("--scenarios")
-        .arg(&fixture)
-        .arg("--out")
-        .arg(&out)
-        .output()
-        .unwrap();
-    assert!(
-        accepted.status.success(),
-        "{}",
-        String::from_utf8_lossy(&accepted.stderr)
-    );
-    let report: Value =
-        serde_json::from_slice(&fs::read(out.join("result.json")).unwrap()).unwrap();
-    assert!(
-        report["cases"][0]["candidate_gas"].as_u64().unwrap()
-            < report["cases"][0]["baseline_gas"].as_u64().unwrap()
-    );
-    assert_ne!(
-        fs::read_to_string(out.join("candidate.hex"))
-            .unwrap()
-            .trim(),
-        code
-    );
-    assert!(out.join("Rewrites.original.log").exists());
-    assert_eq!(fs::read_to_string(&input).unwrap(), code);
-    let retained: Value =
-        serde_json::from_slice(&fs::read(out.join("proposals.json")).unwrap()).unwrap();
-    assert_eq!(
-        retained,
-        serde_json::from_slice::<Value>(&discovery.stdout).unwrap()
-    );
+    let mask = "5f356005565b6001166001165f5260205ff3";
+    // Empty calldata returns zero for both snippets. A finite passing replay must
+    // not admit a rewrite that incorrectly clears odd symbolic inputs.
+    for (name, code, proposed, gas) in [
+        (
+            "false-output",
+            mask,
+            single(mask, 6, "600116600116", "610000165f50"),
+            100000,
+        ),
+        // 17 gas executes the candidate; the original needs 22 after intrinsic gas.
+        (
+            "gas-boundary",
+            DEAD_PUSH,
+            single(DEAD_PUSH, 4, BEFORE, AFTER),
+            21017,
+        ),
+    ] {
+        let out = directory.path().join(name);
+        assert!(
+            runtime::optimize_scenarios_with_proposals(
+                &runtime::from_hex(code).unwrap(),
+                &scenarios(gas),
+                &out,
+                &proposed,
+            )
+            .is_err()
+        );
+        assert!(!out.join("candidate.hex").exists());
+        assert!(!out.join("result.json").exists());
+    }
 }

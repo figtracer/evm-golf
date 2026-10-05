@@ -6,7 +6,7 @@ use anyhow::{Result, bail, ensure};
 use revm::primitives::U256;
 use std::{collections::BTreeSet, fmt::Write as _};
 
-use super::{Instruction, certificates, decode, push_value};
+use super::{Instruction, decode, prelude as model_prelude, push_value};
 
 #[cfg(test)]
 mod regression;
@@ -160,7 +160,7 @@ pub(super) fn batch_prelude() -> Result<String> {
 }
 
 fn prelude() -> Result<String> {
-    let (mut source, _) = certificates(&[])?;
+    let mut source = model_prelude();
     for text in [
         include_str!("../../lean/Fragment.lean"),
         include_str!("../../lean/Stack.lean"),

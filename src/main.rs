@@ -1,13 +1,10 @@
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
-use evm_golf::{
-    Report, campaign, check,
-    contest::{self, RULESET, Submission},
-    expr::RULES,
-    optimize, proof, runtime,
-};
-use std::{fs, num::NonZeroUsize, path::PathBuf};
+use evm_golf::runtime::{self, project};
+use std::{fs, path::PathBuf};
 
+/// Optimize deployed EVM contracts with Lean-checked rewrites and replay of
+/// your transactions. See README.md for the workflow.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
@@ -17,24 +14,36 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    /// Analyze supported Cancun runtime control flow.
-    AnalyzeRuntime {
+    /// Print discovered, unverified patches for each contract as proposals JSON.
+    Inspect {
+        /// project.json listing contracts and their transaction fixtures.
+        project: PathBuf,
+        /// Only these contract IDs (repeatable; default: all).
         #[arg(long)]
-        bytecode: PathBuf,
-        /// Analyze fixed-layout rewrites without resolving dynamic jumps.
-        #[arg(long)]
-        preserve_layout: bool,
+        contract: Vec<String>,
     },
-    /// List trusted fixed-layout rewrite sites bound to the runtime's hash.
-    RuntimeOpportunities {
+    /// Search for verified savings per contract and write the results to --out.
+    Optimize {
+        project: PathBuf,
         #[arg(long)]
-        bytecode: PathBuf,
-    },
-    /// Discover unverified fixed-layout stack proposals with bounded search.
-    DiscoverRuntimeProposals {
+        contract: Vec<String>,
+        /// Maximum rounds of built-in rewrites plus discovery.
+        #[arg(long, default_value_t = 8)]
+        rounds: usize,
+        /// New output directory.
         #[arg(long)]
-        bytecode: PathBuf,
+        out: PathBuf,
     },
+    /// Check exact patches (proposals JSON); every patch for a contract must pass.
+    Verify {
+        project: PathBuf,
+        #[arg(long)]
+        proposals: PathBuf,
+        /// New output directory.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    #[command(hide = true)]
     /// Compare arbitrary Cancun runtimes on supplied account/transaction fixtures.
     /// This is concrete replay, not a Lean or whole-contract equivalence proof.
     CheckRuntime {
@@ -47,6 +56,7 @@ enum Action {
         #[arg(long)]
         out: PathBuf,
     },
+    #[command(hide = true)]
     /// Certify a supported internal region with pinned upstream EVM semantics.
     /// Supports arithmetic, bitwise and memory spans; not whole-contract equivalence.
     CertifyRuntimeRegion {
@@ -71,130 +81,43 @@ enum Action {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Optimize runtime bytecode with local Lean proofs and supplied execution cases.
-    OptimizeRuntime {
-        #[arg(long)]
-        bytecode: PathBuf,
-        #[arg(
-            long,
-            required_unless_present_any = ["sequences", "scenarios"],
-            conflicts_with_all = ["sequences", "scenarios"]
-        )]
-        cases: Option<PathBuf>,
-        /// JSON transaction sequences with persistent state between calls.
-        #[arg(long, required_unless_present_any = ["cases", "scenarios"], conflicts_with_all = ["cases", "scenarios"])]
-        sequences: Option<PathBuf>,
-        /// JSON account fixtures and transaction sequences, including initialized state.
-        #[arg(long, required_unless_present_any = ["cases", "sequences"], conflicts_with_all = ["cases", "sequences"])]
-        scenarios: Option<PathBuf>,
-        /// Preserve byte offsets and allow dynamic jumps, PC and CODESIZE.
-        #[arg(long)]
-        preserve_layout: bool,
-        /// JSON baseline hash and selected PCs from runtime-opportunities.
-        #[arg(long, requires_all = ["preserve_layout", "scenarios"])]
-        plan: Option<PathBuf>,
-        /// JSON hash-bound byte pair; the checker generates the local proof.
-        #[arg(long, requires_all = ["preserve_layout", "scenarios"], conflicts_with = "plan")]
-        proposal: Option<PathBuf>,
-        /// JSON disjoint byte pairs against one immutable baseline; accepted as one batch.
-        #[arg(long, requires_all = ["preserve_layout", "scenarios"], conflicts_with_all = ["plan", "proposal"])]
-        proposals: Option<PathBuf>,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// Run bounded fixed-layout search with local proofs and guarded scenario replay.
-    SearchRuntime {
-        #[arg(long)]
-        bytecode: PathBuf,
-        #[arg(long)]
-        scenarios: PathBuf,
-        /// Maximum rounds of built-in rewrites followed by proposal discovery.
-        #[arg(long)]
-        rounds: NonZeroUsize,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// Verify a batch of proposals, rank accepted entries, and compare e-graph search.
-    Campaign {
-        #[arg(long)]
-        proposals: PathBuf,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// List fixed puzzle specifications as JSON.
-    Challenges,
-    /// Verify a candidate against a fixed puzzle and save a submission.
-    Submit {
-        challenge: String,
-        candidate: String,
-        #[arg(long)]
-        author: String,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// Reverify all submission directories and generate Markdown + JSON rankings.
-    Leaderboard {
-        #[arg(long, default_value = "submissions")]
-        submissions: PathBuf,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// Find a cheaper equivalent expression, then verify it.
-    Optimize {
-        expression: String,
-        /// New directory for proof, checker log, and accepted result.
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// Verify a human- or agent-proposed candidate against a reference.
-    Check {
-        original: String,
-        candidate: String,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// Prove every e-graph rewrite rule at the full 256-bit width.
-    Rules {
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// Run five puzzles and save a local score table.
-    Demo {
-        #[arg(long, default_value = "runs/demo")]
-        out: PathBuf,
-    },
 }
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Action::AnalyzeRuntime {
-            bytecode,
-            preserve_layout,
+        Action::Inspect { project, contract } => {
+            let contracts = project::load(&project, &contract)?;
+            let proposals = project::inspect(&contracts)?;
+            for entry in &proposals.contracts {
+                eprintln!("{}: {} unverified sites", entry.id, entry.sites.len());
+            }
+            println!("{}", serde_json::to_string_pretty(&proposals)?);
+        }
+        Action::Optimize {
+            project,
+            contract,
+            rounds,
+            out,
         } => {
-            let code = runtime::input::read_bytecode(&bytecode)?;
-            let analysis = if preserve_layout {
-                serde_json::to_string_pretty(&runtime::analyze_layout(&code)?)?
-            } else {
-                serde_json::to_string_pretty(&runtime::analyze(&code)?)?
-            };
-            println!("{analysis}");
+            if rounds == 0 {
+                bail!("--rounds must be positive");
+            }
+            let contracts = project::load(&project, &contract)?;
+            prepare_parent(&out)?;
+            report(project::optimize(&contracts, rounds, &out)?, &out)?;
         }
-        Action::RuntimeOpportunities { bytecode } => {
-            let code = runtime::input::read_bytecode(&bytecode)?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&runtime::rewrite_opportunities(&code)?)?
-            );
-        }
-        Action::DiscoverRuntimeProposals { bytecode } => {
-            let code = runtime::input::read_bytecode(&bytecode)?;
-            let proposals = runtime::discover_proposals(&code)?;
-            let json = serde_json::to_string_pretty(&proposals)?;
-            eprintln!(
-                "{} unverified proposals from bounded Cancun stack search; verify with optimize-runtime --proposals before use.",
-                proposals.sites.len()
-            );
-            println!("{json}");
+        Action::Verify {
+            project,
+            proposals,
+            out,
+        } => {
+            let proposals: project::Proposals =
+                serde_json::from_str(&runtime::input::read_json(&proposals)?)
+                    .context("invalid proposals JSON")?;
+            let ids: Vec<String> = proposals.contracts.iter().map(|c| c.id.clone()).collect();
+            let contracts = project::load(&project, &ids)?;
+            prepare_parent(&out)?;
+            report(project::verify(&contracts, &proposals, &out)?, &out)?;
         }
         Action::CheckRuntime {
             original,
@@ -293,198 +216,40 @@ fn main() -> Result<()> {
                 out.display()
             );
         }
-        Action::OptimizeRuntime {
-            bytecode,
-            cases,
-            sequences,
-            scenarios,
-            preserve_layout,
-            plan,
-            proposal,
-            proposals,
-            out,
-        } => {
-            let code = runtime::input::read_bytecode(&bytecode)?;
-            prepare_parent(&out)?;
-            let mode = if preserve_layout {
-                runtime::RuntimeMode::PreserveLayout
-            } else {
-                runtime::RuntimeMode::Compact
-            };
-            let report = if let Some(cases) = cases {
-                let cases: Vec<runtime::Case> =
-                    serde_json::from_str(&runtime::input::read_json(&cases)?)?;
-                runtime::optimize_with(&code, runtime::ExecutionInputs::Cases(&cases), &out, mode)?
-            } else if let Some(sequences) = sequences {
-                let sequences: Vec<runtime::Sequence> =
-                    serde_json::from_str(&runtime::input::read_json(&sequences)?)?;
-                runtime::optimize_with(
-                    &code,
-                    runtime::ExecutionInputs::Sequences(&sequences),
-                    &out,
-                    mode,
-                )?
-            } else {
-                let scenarios: Vec<runtime::scenario::Scenario> = serde_json::from_str(
-                    &runtime::input::read_json(&scenarios.expect("clap requires one input"))?,
-                )?;
-                if let Some(plan) = plan {
-                    let plan: runtime::RewritePlan =
-                        serde_json::from_str(&runtime::input::read_json(&plan)?)?;
-                    runtime::optimize_scenarios_with_plan(&code, &scenarios, &out, &plan)?
-                } else if let Some(proposal) = proposal {
-                    let proposal: runtime::RewriteProposal =
-                        serde_json::from_str(&runtime::input::read_json(&proposal)?)?;
-                    runtime::optimize_scenarios_with_proposal(&code, &scenarios, &out, &proposal)?
-                } else if let Some(proposals) = proposals {
-                    let proposals: runtime::RewriteProposalBatch =
-                        serde_json::from_str(&runtime::input::read_json(&proposals)?)?;
-                    runtime::optimize_scenarios_with_proposals(&code, &scenarios, &out, &proposals)?
-                } else {
-                    runtime::optimize_scenarios(&code, &scenarios, &out, mode)?
-                }
-            };
-            println!(
-                "Runtime bytes: {} → {}; {} local rewrites; {} execution cases passed.\n{}\nEvidence: {}",
-                report.baseline_bytes,
-                report.candidate_bytes,
-                report.rewrites.len(),
-                report.cases.len(),
-                report.verification,
-                out.display()
-            );
-        }
-        Action::SearchRuntime {
-            bytecode,
-            scenarios,
-            rounds,
-            out,
-        } => {
-            let code = runtime::input::read_bytecode(&bytecode)?;
-            let scenarios: Vec<runtime::scenario::Scenario> =
-                serde_json::from_str(&runtime::input::read_json(&scenarios)?)?;
-            prepare_parent(&out)?;
-            let report = runtime::search_scenarios(&code, &scenarios, rounds.get(), &out)?;
-            println!(
-                "Search stopped: {}; {} rounds; {} execution cases passed.\n{}\nEvidence: {}",
-                match report.stop_reason {
-                    runtime::SearchStopReason::Converged => "finite search converged",
-                    runtime::SearchStopReason::RoundsLimit => "round limit reached",
-                },
-                report.rounds_completed,
-                report.cases.len(),
-                report.verification,
-                out.display()
-            );
-        }
-        Action::Campaign { proposals, out } => {
-            prepare_parent(&out)?;
-            eprintln!(
-                "Progress will be saved to {}",
-                out.join("campaign.json").display()
-            );
-            let result = campaign::run(&proposals, &out)?;
-            println!(
-                "Campaign complete: {} verified, {} unverified. Report: {}",
-                result.verified,
-                result.unverified,
-                out.join("README.md").display()
-            );
-        }
-        Action::Challenges => {
-            println!("{}", serde_json::to_string_pretty(&contest::challenges()?)?)
-        }
-        Action::Submit {
-            challenge,
-            candidate,
-            author,
-            out,
-        } => {
-            prepare_parent(&out)?;
-            let submission = Submission {
-                ruleset: RULESET.to_owned(),
-                challenge,
-                candidate,
-                author,
-            };
-            print_report(&contest::submit(&submission, &out)?);
-            println!("Submission: {}", out.display());
-        }
-        Action::Leaderboard { submissions, out } => {
-            prepare_parent(&out)?;
-            let entries = contest::leaderboard(&submissions, &out)?;
-            println!(
-                "Reverified {} submissions. Leaderboard: {}",
-                entries.len(),
-                out.join("README.md").display()
-            );
-        }
-        Action::Optimize { expression, out } => {
-            prepare_parent(&out)?;
-            print_report(&optimize(&expression, &out)?);
-            println!("Evidence: {}", out.display());
-        }
-        Action::Check {
-            original,
-            candidate,
-            out,
-        } => {
-            prepare_parent(&out)?;
-            print_report(&check(&original, &candidate, &out)?);
-            println!("Evidence: {}", out.display());
-        }
-        Action::Rules { out } => {
-            prepare_parent(&out)?;
-            fs::create_dir(&out)?;
-            let path = out.join("Rules.lean");
-            fs::write(&path, proof::rules()?)?;
-            proof::verify(&path)?;
-            println!(
-                "Verified all {} rewrite rules over 256-bit words.\nEvidence: {}",
-                RULES.len(),
-                out.display()
-            );
-        }
-        Action::Demo { out } => {
-            prepare_parent(&out)?;
-            fs::create_dir(&out)?;
-            let mut reports = Vec::new();
-            for (name, expression) in [
-                ("double", "(* x 2)"),
-                ("xor-cancel", "(xor (xor x y) y)"),
-                ("mask-partition", "(or (and x y) (and x (not y)))"),
-                ("demorgan", "(or (not x) (not y))"),
-                ("combined", "(+ (* x 2) (- y y))"),
-            ] {
-                println!("\n{name}");
-                let report = optimize(expression, &out.join(name))?;
-                print_report(&report);
-                reports.push((name, report));
-            }
-            fs::write(
-                out.join("scores.json"),
-                serde_json::to_string_pretty(&reports)? + "\n",
-            )?;
-            println!("\nAll five puzzles verified. Evidence: {}", out.display());
-        }
     }
     Ok(())
 }
 
-fn print_report(report: &Report) {
-    println!("  {} → {}", report.original, report.candidate);
-    println!(
-        "  Body gas: {} → {} (saved {}); runtime bytes: {} → {}",
-        report.baseline.body_gas,
-        report.optimized.body_gas,
-        report.gas_saved,
-        report.baseline.runtime_bytes,
-        report.optimized.runtime_bytes
+fn report(result: project::ProjectResult, out: &std::path::Path) -> Result<()> {
+    for contract in &result.contracts {
+        if contract.accepted {
+            eprintln!(
+                "{}: {} -> {} gas over {} transactions ({} rewrites)",
+                contract.id,
+                contract.baseline_gas,
+                contract.candidate_gas,
+                contract.transactions,
+                contract.rewrites
+            );
+        } else {
+            eprintln!(
+                "{}: rejected: {}",
+                contract.id,
+                contract.error.as_deref().unwrap_or("")
+            );
+        }
+    }
+    eprintln!(
+        "{}\nResults: {}\nNext baseline: {}",
+        result.scope,
+        out.join("result.json").display(),
+        out.join("baseline/project.json").display()
     );
-    println!(
-        "  Lean verified; revm checked {} input pairs.",
-        report.concrete_cases
-    );
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    if result.contracts.iter().any(|c| !c.accepted) {
+        bail!("some contracts were rejected");
+    }
+    Ok(())
 }
 
 fn prepare_parent(path: &std::path::Path) -> Result<()> {

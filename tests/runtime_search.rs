@@ -1,7 +1,7 @@
 use evm_golf::runtime::{self, SearchStopReason, scenario::Scenario};
 use revm::primitives::keccak256;
 use serde_json::{Value, json};
-use std::{fs, process::Command};
+use std::fs;
 use tempfile::tempdir;
 
 fn scenarios() -> Vec<Scenario> {
@@ -43,28 +43,6 @@ fn search_rejects_zero_rounds_existing_output_and_invalid_inputs() {
         assert!(out.join("original.hex").exists());
         assert!(!out.join("candidate.hex").exists());
         assert!(!out.join("result.json").exists());
-    }
-}
-
-#[test]
-fn search_cli_requires_explicit_positive_rounds() {
-    for rounds in [None, Some("0"), Some("-1")] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_evm-golf"));
-        command.args([
-            "search-runtime",
-            "--bytecode",
-            "missing.hex",
-            "--scenarios",
-            "missing.json",
-            "--out",
-            "unused",
-        ]);
-        if let Some(rounds) = rounds {
-            command.args(["--rounds", rounds]);
-        }
-        let output = command.output().unwrap();
-        assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("rounds"));
     }
 }
 

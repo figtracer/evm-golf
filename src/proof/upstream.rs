@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{AxiomPolicy, audit_axioms, run_command};
+use super::{audit_axioms, run_command};
 
 const REVISION: &str = "047f63070309f436b66c61e276ab3b6d1169265a";
 // The curated corpus was checked under this cap; do not silently escalate failures.
@@ -1551,12 +1551,8 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         let compile_ms = started.elapsed().as_millis();
         let compilation_succeeded = compiled.is_ok();
         let checked = compiled.and_then(|()| {
-            audit_axioms(
-                &fs::read_to_string(&log)?,
-                &expected,
-                AxiomPolicy::Foundational,
-            )
-            .with_context(|| format!("upstream axiom audit failed; see {}", log.display()))
+            audit_axioms(&fs::read_to_string(&log)?, &expected)
+                .with_context(|| format!("upstream axiom audit failed; see {}", log.display()))
         });
         if let Some(measurements) = &mut measurements {
             let record = json!({

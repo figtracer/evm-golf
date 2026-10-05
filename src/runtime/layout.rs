@@ -1288,7 +1288,6 @@ mod tests {
     fn computed_jumps_keep_offsets_and_invalid_destinations() {
         // The jump target is calldata-derived; the value 3 survives below it.
         let code = bytes("60035f35565b6002025f5260205ff3");
-        assert!(super::super::analyze(&code).is_err());
         let analysis = analyze(&code, false).unwrap();
         let (candidate, changes) = transform(&analysis).unwrap();
         assert_eq!(changes.len(), 1);

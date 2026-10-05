@@ -3,7 +3,7 @@
 
 use super::{
     CaseResult, ReplayPolicy, Report, RewritePlan, RewriteProposalBatch, RewriteProposalSite,
-    RewriteSelection, RuntimeMode, discover_proposals, optimize_scenarios_selected, scenario,
+    RewriteSelection, discover_proposals, optimize_scenarios_selected, scenario,
 };
 use anyhow::{Context as _, Result, ensure};
 use revm::primitives::{hex, keccak256};
@@ -140,7 +140,7 @@ fn search_with(
                         sites: sites.clone(),
                     };
                     let selection = if !proposals {
-                        RewriteSelection::All(RuntimeMode::PreserveLayout)
+                        RewriteSelection::All
                     } else if sites.is_empty() {
                         RewriteSelection::Plan(&identity)
                     } else {

@@ -189,7 +189,7 @@ for the power compiler region.
 ## Evidence
 
 The output contains both full hex inputs, generated Lean sources, fresh compiled
-modules, per-module logs, `environment.json`, and—only on success—`result.json`.
+modules, per-module logs, `environment.json`, and (only on success) `result.json`.
 The result binds input bytes with Keccak-256 and records the precise region,
 stack/gas conditions and unproved obligations. The mandatory axiom audit accepts
 only `propext`, `Classical.choice`, and `Quot.sound`. Keep all generated evidence

@@ -1,150 +1,112 @@
-# Command reference
+# Commands and formats
 
-Run commands from the checkout root with `cargo run --locked -- <command>`.
-The compiled binary is also available at `target/debug/evm-golf`.
-Every `--out` directory must be new; existing output is never overwritten.
-
-| Command | Purpose |
-| --- | --- |
-| `analyze-runtime --bytecode <hex-file> [--preserve-layout]` | Analyze compact relocation or fixed byte offsets |
-| `runtime-opportunities --bytecode <hex-file>` | List trusted fixed-layout sites bound to the exact runtime hash |
-| `discover-runtime-proposals --bytecode <hex-file>` | Emit unverified, hash-bound stack proposals from bounded search |
-| `optimize-runtime --bytecode <hex-file> (--cases <json-file> or --sequences <json-file> or --scenarios <json-file>) --out <dir>` | Optimize a supported runtime with local proofs; fixed-layout account fixtures also guard external calls |
-| `search-runtime --bytecode <hex-file> --scenarios <json-file> --rounds <N> --out <dir>` | Repeat fixed-layout optimization and discovery, verifying every stage and replaying the final candidate against the original |
-| `check-runtime --original <hex-file> --candidate <hex-file> --scenarios <json-file> --out <dir>` | Compare arbitrary Cancun runtimes on supplied account fixtures; concrete tests only |
-| `certify-runtime-region --original <hex-file> --candidate <hex-file> --entry-pc <offset> --out <dir>` | [Conditional power or mask region proof](regions.md) against pinned upstream semantics |
-| `optimize <expression> --out <dir>` | Search for a cheaper expression, then verify it |
-| `check <original> <candidate> --out <dir>` | Verify an independently proposed replacement |
-| `challenges` | Print the fixed puzzle specifications as JSON |
-| `submit <challenge> <candidate> --author <name> --out <dir>` | Verify a puzzle solution and save a submission |
-| `leaderboard --submissions <dir> --out <dir>` | Reverify submissions and generate Markdown and JSON rankings |
-| `campaign --proposals <file> --out <dir>` | Verify a batch and compare it with e-graph search |
-| `rules --out <dir>` | Prove the built-in rewrite rules at 256-bit width |
-| `demo --out <dir>` | Run five example optimizations and save their scores |
-
-`leaderboard` defaults to `--submissions submissions`. `demo` defaults to
-`--out runs/demo`. Use `<command> --help` for argument details.
-
-Runtime input and its verification boundary are described in the
-[runtime guide](runtime.md). Add `--preserve-layout` to `optimize-runtime` for
-dynamic jumps. Add `--plan <json-file>` with `--preserve-layout --scenarios` to
-select hash-bound rewrite sites; see [rewrite plans](runtime.md#select-rewrite-sites).
-These commands are separate from expression contests.
-
-## Expressions
-
-Expressions use prefix notation and unsigned wrapping 256-bit words.
-
-| Syntax | Meaning |
-| --- | --- |
-| `x`, `y` | Input words at calldata offsets 0 and 32 |
-| `0`, `256`, … | Unsigned constants below 2²⁵⁶ |
-| `(+ a b)`, `(- a b)`, `(* a b)` | Arithmetic modulo 2²⁵⁶ |
-| `(and a b)`, `(or a b)`, `(xor a b)`, `(not a)` | Bitwise operations |
-| `(shl1 a)` | Left shift by one, discarding overflow |
-
-For example:
-
-```sh
-cargo run --locked -- check '(xor (xor x y) y)' 'x' --out runs/check-1
+```text
+evm-golf inspect  PROJECT [--contract ID]...
+evm-golf optimize PROJECT [--contract ID]... [--rounds N] --out DIR
+evm-golf verify   PROJECT --proposals FILE --out DIR
 ```
 
-A false replacement fails verification and produces no accepted result:
+Use `cargo run --locked --` in place of `evm-golf` when running from a checkout.
+JSON results go to stdout and progress to stderr. Every `--out` must be a new
+directory. A command exits with an error if any contract is rejected; its
+`result.json` still records which ones passed.
 
-```sh
-cargo run --locked -- check '(+ x 1)' 'x' --out runs/rejected-1
-```
+## inspect
 
-## Submissions
+Prints a [proposals](#proposals) document with bounded, unverified patches found
+for each contract. It does not run Lean or transactions. An empty `sites` list
+means the search found nothing.
 
-The checker chooses the reference from [challenges.json](../challenges.json).
-A candidate cannot supply its own reference or claim its own score.
+## optimize
 
-```sh
-cargo run --locked -- submit double '(shl1 x)' --author alice --out runs/alice-double
-```
+Runs up to `--rounds` (default 8) rounds per contract. Each round applies the
+built-in rewrites, then discovers and verifies proposals. Every stage is proved
+and replayed, and the final bytecode is replayed against the original. A failed
+proposal batch is retried with half its sites; a site that fails alone is skipped.
+Contracts are independent jobs.
 
-The generated `submission.json` uses this format:
+## verify
+
+Checks the exact patches in `--proposals`. Every site for a contract must pass
+the proof and replay, otherwise that contract is rejected unchanged. Contracts
+not listed in the file are not loaded.
+
+## Project
 
 ```json
 {
-  "ruleset": "evm-golf-cancun",
-  "challenge": "double",
-  "author": "alice",
-  "candidate": "(shl1 x)"
+  "version": 1,
+  "contracts": [
+    { "id": "token", "runtime": "token.hex", "scenarios": "token.scenarios.json" }
+  ]
 }
 ```
 
-Author names and submission directory names use 1–64 ASCII letters, digits,
-hyphens or underscores. Names are self-reported attribution. Unknown JSON fields
-and rulesets are rejected. Keep entries local; see [Leaderboards](#leaderboards)
-to collect and rank them.
+`id`: 1 to 64 ASCII letters, digits, `-` or `_`, unique. `runtime`: deployed
+bytecode as hex (immutables already filled in, at most 24,576 bytes). Paths are
+relative to the project file. Unknown fields are rejected.
 
-## Leaderboards
+## Scenarios
 
-Collect verified entries in an ignored local directory, then generate a board:
+A JSON array. Each scenario starts from fresh state and runs its transactions in
+order, committing state between them.
 
-```sh
-cargo run --locked -- submit double '(shl1 x)' --author alice --out submissions/alice-double
-cargo run --locked -- leaderboard --submissions submissions --out runs/board-1
+```json
+[
+  {
+    "caller": "0x1111111111111111111111111111111111111111",
+    "target": "0x2222222222222222222222222222222222222222",
+    "accounts": {
+      "0x1111111111111111111111111111111111111111": { "balance": "1000000" },
+      "0x2222222222222222222222222222222222222222": { "nonce": 1, "storage": { "0": "7" } }
+    },
+    "transactions": [{ "calldata": "0x", "gas_limit": 100000, "value": "0" }],
+    "environment": { "number": 1, "timestamp": 1 }
+  }
+]
 ```
 
-Entries and generated scores, proofs, and logs belong to the leaderboard output,
-not source-control contributions. `submissions/`, `leaderboard/`, and `runs/` are
-ignored. The CLI generates local files; it does not host or publish a leaderboard.
+- `target` receives the runtime under test. Other accounts may carry `code`,
+  `balance`, `nonce` and `storage`; contracts called by the target must be listed.
+- A transaction may set `to` to call another listed account first.
+- `environment` is optional: `number`, `timestamp`, `gas_limit`, `beneficiary`,
+  `prevrandao`, `chain_id`, `blob_excess_gas`, `block_hashes`.
+- Numbers are decimal or `0x` strings. Duplicate keys are rejected.
+- Limits: 1 MiB per file, 256 transactions, 30,000,000 gas per transaction and
+  300,000,000 in total.
 
-The command reads immediate child directories containing `submission.json`. It
-rechecks every input and ignores saved score files. One invalid entry prevents
-the final board from being written; intermediate evidence remains for diagnosis.
+Both versions must produce the same success or revert, output, logs, storage,
+balances and nonces, and the candidate must not use more gas. Exceptional halts
+(including out of gas) are rejected. See [runtime support](runtime.md#replay).
 
-The output includes `README.md`, `leaderboard.json`, and per-entry proofs and
-results. Rank is per puzzle: body gas first, then runtime byte size. Exact ties
-share rank. Every submission appears, including ties and candidates worse than
-the baseline. [Scoring details](verification.md#scoring).
+## Proposals
 
-## Campaigns
-
-A proposal file is a JSON array of submission objects using the same schema.
-For example, save a local proposal and verify it:
-
-```sh
-mkdir -p runs
-cat > runs/proposals.json <<'JSON'
-[{"ruleset":"evm-golf-cancun","challenge":"double","author":"example","candidate":"(shl1 x)"}]
-JSON
-cargo run --locked -- campaign --proposals runs/proposals.json --out runs/campaign-1
+```json
+{
+  "version": 1,
+  "contracts": [
+    {
+      "id": "token",
+      "original_keccak256": "0x...",
+      "sites": [{ "original_pc": 6, "before": "6004909250905061227050", "after": "6122705091505062000004" }]
+    }
+  ]
+}
 ```
 
-Campaigns continue past individual unverified proposals and record each outcome
-in `campaign.json` after each attempt. An interrupted run retains the latest complete
-snapshot; replay into a fresh output directory. Verified entries are rechecked through the leaderboard path;
-the command also attempts an independently verified e-graph result for every puzzle.
-An unavailable comparison is labeled `unverified` and links to its error log.
-`README.md` contains the comparison and links to evidence.
+`original_keccak256` binds the patches to the exact runtime; a stale hash is
+rejected. Sites are disjoint windows of whole instructions (at most 32 per
+contract), `before` must match the runtime at `original_pc`, and `after` must have
+the same length. The checker derives stack requirements and generates the proof;
+proposals carry no proof or metadata.
 
-A completed batch may contain unverified entries. These can reflect invalid
-inputs, failed proofs, timeouts, or operational errors; they do not automatically
-establish inequivalence. Malformed batch JSON, output-write failures, or failure
-to reverify accepted entries abort the run. An optimizer comparison failure does
-not discard the campaign report. See the report and exit status.
+## Output
 
-Replay makes no model API calls. Proposal generation takes place in the agent
-host. Keep proposal batches and run artifacts local.
-
-## Runtime byte proposals
-
-Runtime agents can submit a hash-bound local byte pair with
-`optimize-runtime --preserve-layout --scenarios <fixtures.json> --proposal <proposal.json>`.
-See [byte-pair proposals](runtime.md#propose-a-byte-pair) for the schema, supported
-instructions and verification boundary. This is separate from expression submissions
-and does not create a leaderboard entry.
-
-## Rule verification
-
-```sh
-cargo run --locked -- rules --out runs/rules-1
+```text
+DIR/result.json              per contract: accepted, gas before/after, rewrites
+DIR/baseline/project.json    next project: accepted bytecode, same scenarios
+DIR/<id>/                    evidence: candidate.hex, Rewrites.lean/.log,
+                             rewrites.json, scenario traces, failure.log
 ```
 
-This generates a Lean theorem for every rule in the Rust rule table. The saved
-log includes each theorem's axiom dependencies. Read the
-[proof policy](verification.md#lean-proofs) before interpreting the result.
+`optimize` stores one subdirectory per search stage under `DIR/<id>/`.

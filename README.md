@@ -2,108 +2,98 @@
 
 # EVM Golf
 
-**EVM optimization and verification toolkit, written in Rust.**
+**Verified gas optimization for deployed EVM contracts.**
 
-[Getting Started](#installation) | [Documentation](docs/README.md) | [Leaderboard](docs/cli.md#leaderboards) | [Contributing](CONTRIBUTING.md)
+[Quick start](#quick-start) | [Commands](docs/cli.md) | [Verification](docs/verification.md) | [Agent guide](AGENTS.md)
 
 </div>
 
 ---
 
-EVM Golf optimizes EVM expressions and supported runtime bytecode using e-graphs,
-Lean proofs, and revm execution checks. Agents can propose rewrites, verify
-candidates, and compete on fixed expression puzzles. Runtime discovery also finds
-supported stack rearrangements, including around pushed constants, zero additions,
-and repeated masks.
+EVM Golf rewrites deployed runtime bytecode to use less gas. Every accepted change
+is checked twice: Lean proves the rewritten instructions equivalent in a bounded
+model, and revm replays your transactions against both versions with guarded
+calls and effects. Byte offsets never move, so jump tables and code copies stay
+valid.
 
-See the [runtime guide](docs/runtime.md) for contract optimization and the
-[region checker](docs/regions.md) for conditional proofs against pinned EVM semantics.
+Bring your own agents: they read a contract, propose exact byte patches, and the
+checker accepts only what it can prove and replay.
 
-- **Optimize** — Search expressions with e-graphs and reduce gas or size in supported runtimes.
-- **Verify** — Check expression equivalence and emitted bytecode against a Lean model.
-- **Compete** — Submit solutions to fixed puzzles and generate verified leaderboards.
-- **Evaluate** — Replay agent proposals and compare them with the built-in optimizer.
-
-## Installation
-
-Build from source with Rust and Cargo. The Lean setup script requires `curl`,
-`tar`, and `zstd` and installs the pinned toolchain inside the checkout.
+## Quick start
 
 ```sh
 git clone https://github.com/figtracer/evm-golf.git
 cd evm-golf
-bash scripts/setup-lean.sh
+bash scripts/setup-lean.sh   # pinned Lean 4.34.0 inside the checkout
 cargo build --locked
 ```
 
-See [installation and setup](docs/getting-started.md) for toolchain requirements.
+Describe your contracts in a `project.json`. Paths are relative to the file:
 
-## Getting Started
-
-Optimize an expression:
-
-```sh
-cargo run --locked -- optimize '(+ (* x 2) (- y y))' --out runs/optimization
+```json
+{
+  "version": 1,
+  "contracts": [
+    { "id": "token", "runtime": "token.hex", "scenarios": "token.scenarios.json" }
+  ]
+}
 ```
 
-Search a supported runtime using your [deployed bytecode and account fixtures](docs/runtime.md):
+`runtime` is the deployed bytecode in hex. `scenarios` lists accounts and
+transactions to replay ([format](docs/cli.md#scenarios)). Then:
 
 ```sh
-cargo run --locked -- search-runtime --bytecode runs/runtime.hex \
-  --scenarios runs/scenarios.json --rounds 4 --out runs/runtime-1
+evm-golf optimize project.json --out runs/opt-1        # built-in search, verified
+evm-golf inspect project.json > proposals.json         # discovered, unverified patches
+evm-golf verify project.json --proposals proposals.json --out runs/check-1
 ```
 
-Outputs include bytecode, proofs, logs, and scores. Keep generated results local.
+Each run writes `result.json` (gas before and after per contract) and
+`baseline/project.json`, a ready-to-use project pointing at the accepted bytecode.
+Use `cargo run --locked --` in place of `evm-golf` if it is not installed.
+Try it on [examples/quickstart](examples/quickstart):
+`cargo run --locked -- optimize examples/quickstart/project.json --out runs/demo`.
 
-Submit a puzzle solution:
+## Results
 
-```sh
-cargo run --locked -- challenges
-cargo run --locked -- submit double '(shl1 x)' --author your-name --out runs/submission
-```
+Measured with the current rewrite catalog, aggregated over the supplied
+transactions (every stage proved and replayed):
 
-Use a new output directory for each run. See the [command reference](docs/cli.md)
-for verification, leaderboards, and batch submissions.
+| Workload | Baseline | Transactions | Gas saved |
+| --- | --- | ---: | ---: |
+| 36 ERC20 and ERC4626 builds | solc output | 1,026 | 6,873 |
+| Balancer vault token info | already optimized runtime | 23 | 195 more |
+| Uniswap V3 pool, tick crossing | already optimized runtime | 37 | 204 more |
+| Uniswap V3 pool, no crossing | already optimized runtime | 40 | 309 more |
 
-## Status
+The 36 builds cover OpenZeppelin, Solady and Solmate, legacy and via-IR pipelines,
+and optimizer off, 200 and 10,000 runs. Rows are separate baselines; do not add
+them. Typical accepted rewrites:
 
-EVM Golf is an experimental CLI targeting Cancun. It optimizes expressions and
-complete deployed runtimes within a restricted opcode subset; arbitrary contracts
-are not yet supported. Fixed-layout mode can reduce execution gas while preserving
-byte size and offsets, including dynamic jump destinations. Compact mode can also
-reduce byte size.
+| Before | After | Saved per execution |
+| --- | --- | ---: |
+| `PUSH1 0x20 DUP2 SWAP1` | `DUP1 PUSH2 0x0020` | 3 |
+| `PUSH1 a PUSH1 0x20 SWAP1` | `PUSH1 0x20 PUSH2 a` | 3 |
+| `POP PUSH2 c SWAP3 POP POP POP` | `POP POP POP POP PUSH3 c` | 3 |
 
-Expression proofs use a limited Lean bytecode model. Runtime optimization checks
-local Lean certificates and supplied transaction cases; it does not prove full
-runtime execution. Discovery emits unverified proposals that must pass these checks.
-The optional upstream checker proves conditional execution of supported regions,
-including eligible terminating programs from call entry. These checks do not
-establish whole-contract equivalence for every input, state, or gas limit. `check-runtime` provides concrete
-replay only.
+Widened PUSH immediates keep every byte offset unchanged.
 
-`search-runtime` repeats built-in rewrites and bounded proposal discovery with
-verification at every stage. Agents can also submit proposals through the CLI;
-model swarm orchestration is external. The leaderboard covers expression puzzles. See [verification and
-scoring](docs/verification.md) for proof assumptions and [runtime support](docs/runtime.md)
-for accepted bytecode and execution requirements.
+## What is and is not proven
 
-## Contributing
+Accepted changes carry local Lean certificates over a bounded stack model, bound to the exact full bytecode, plus replay of your transactions. That is
+not whole-contract equivalence: inputs, states and gas limits outside your
+scenarios are not covered, and contracts are optimized independently.
+Only a subset of opcodes and control flow is supported. See
+[verification](docs/verification.md) for the exact boundary and
+[runtime support](docs/runtime.md) for what can be optimized.
 
-Contributions to the optimizer, verifier, and challenge set are welcome. Read the
-[contribution guidelines](CONTRIBUTING.md) and [developer documentation](docs/dev/README.md).
-Agents can use the [agent guide](AGENTS.md).
+## Documentation
 
-## Support
-
-For bugs and feature requests, [open an issue](https://github.com/figtracer/evm-golf/issues).
-Include the command, input expression, toolchain versions, and relevant checker output.
-
-## Acknowledgements
-
-Built with [egg](https://github.com/egraphs-good/egg),
-[Lean](https://github.com/leanprover/lean4), and
-[revm](https://github.com/bluealloy/revm). Inspired by [zkGolf](https://zk.golf/).
+[Commands and formats](docs/cli.md), [runtime support](docs/runtime.md),
+[verification](docs/verification.md), [development](docs/dev/README.md) and
+[contributing](CONTRIBUTING.md).
 
 ## License
 
-Licensed under the [MIT License](LICENSE).
+[MIT](LICENSE). Built with [Lean](https://github.com/leanprover/lean4) and
+[revm](https://github.com/bluealloy/revm).
