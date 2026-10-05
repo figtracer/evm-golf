@@ -276,6 +276,29 @@ fn literal_candidate(instructions: &[Instruction]) -> Option<Candidate> {
             let mut after = vec![0x92, 0x91, 0x90, first.bytes[0] + 2, 0, 0];
             after.extend_from_slice(&first.bytes[1..]);
             (6, after, if first.bytes[0] == 0x5f { 5 } else { 6 })
+        } else if push_value(&first.bytes).is_some()
+            && first.bytes.len() <= 31
+            && instructions.get(1..7).is_some_and(|tail| {
+                tail.iter()
+                    .zip([0x81, 0x90, 0x50, 0x91, 0x90, 0x50])
+                    .all(|(instruction, op)| instruction.bytes == [op])
+            })
+        {
+            let mut after = vec![first.bytes[0] + 2, 0, 0];
+            after.extend_from_slice(&first.bytes[1..]);
+            after.extend([0x81, 0x50, 0x50, 0x90]);
+            (7, after, if first.bytes[0] == 0x5f { 5 } else { 6 })
+        } else if push_value(&first.bytes).is_some()
+            && first.bytes.len() <= 32
+            && instructions.get(1..6).is_some_and(|tail| {
+                tail.iter()
+                    .zip([0x82, 0x91, 0x50, 0x83, 0x90])
+                    .all(|(instruction, op)| instruction.bytes == [op])
+            })
+        {
+            let mut after = vec![0x81, 0x90, 0x50, 0x82, first.bytes[0] + 1, 0];
+            after.extend_from_slice(&first.bytes[1..]);
+            (6, after, if first.bytes[0] == 0x5f { 2 } else { 3 })
         } else if second.bytes == [0x16]
             && fourth.bytes == [0x16]
             && push_value(&first.bytes).is_some()
@@ -321,6 +344,10 @@ mod tests {
             ("610f9a9093929190", "9291906300000f9a"),
             ("5f9093929190", "929190610000"),
             ("60ff1660ff16", "60ff1660ff50"),
+            ("5f819050919050", "61000081505090"),
+            ("6005819050919050", "6200000581505090"),
+            ("5f8291508390", "819050826000"),
+            ("60058291508390", "81905082610005"),
         ] {
             let code = from_hex(&format!("5f5f5f5f5f5f5f5f{before}00")).unwrap();
             let batch = discover(&code).unwrap();
