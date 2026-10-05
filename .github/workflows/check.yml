@@ -17,7 +17,9 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     # Run independent suites separately so each bounds its own cold setup and checks.
-    timeout-minutes: 30
+    # The region suite recompiles independent certificates and exceeded 30 minutes.
+    # Individual proof budgets remain enforced by the checker.
+    timeout-minutes: ${{ matrix.suite == 'regions' && 60 || 30 }}
     strategy:
       fail-fast: false
       matrix:

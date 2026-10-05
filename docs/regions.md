@@ -4,7 +4,7 @@
 interpreter in pinned [EVMYulLean](https://github.com/NethermindEth/EVMYulLean/tree/047f63070309f436b66c61e276ab3b6d1169265a).
 It proves conditional reductions to related internal states. It does not prove
 that a transaction reaches the region or that the remaining execution is equivalent.
-Terminal mode instead checks paired successful termination under explicit conditions.
+Terminal mode checks paired success or revert with equal canonical output under explicit conditions.
 
 ## Setup and use
 

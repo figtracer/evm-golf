@@ -50,7 +50,7 @@ Ubuntu, including the proof suite. The individual commands are:
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-cargo test --locked -- --ignored
+cargo test --locked -- --ignored --test-threads=1
 ```
 
 The normal suite covers expression validation, arithmetic boundaries, gas and
