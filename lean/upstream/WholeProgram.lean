@@ -114,7 +114,9 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
     obtain ⟨f', s', t', surplus', skipped', k, lt, srun, hp', rel', cand⟩ :=
       h owner nj jumps (f + 1) s t surplus skipped r rel rfl ok
     obtain ⟨g, r', run', related⟩ := ih f' lt s' t' surplus' skipped' r rel' hp' srun
-    exact ⟨g + k, r', by rw [cand g]; exact run', related⟩
+    cases g with
+    | zero => rw [X_zero] at run'; cases run'
+    | succ g => exact ⟨g + 1 + k, r', by rw [cand g]; exact run', related⟩
   | invalid o =>
     have ds : decode s.executionEnv.code s.pc = some (.INVALID, none) := by rw [sc]; exact o
     obtain ⟨z, -⟩ := X_inv (getD_of ds) ok

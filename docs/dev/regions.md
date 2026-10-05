@@ -220,7 +220,9 @@ The generator lists every instruction reachable from pc 0 or a JUMPDEST and
 emits one obligation per instruction, split across modules that each stay
 within the per-module budget ([WholeProgram.lean](../../lean/upstream/WholeProgram.lean)).
 Images up to the EIP-170 limit are accepted. They may differ only at same-width
-`PUSHn 2^k; MUL` → `PUSHn k; SHL` sites and must have the same jump table.
+`PUSHn 2^k; MUL` → `PUSHn k; SHL` sites and at one-hop threading sites
+`PUSHn X; JUMPI` → `PUSHn Y; JUMPI` where `X` holds the unchanged trampoline
+`JUMPDEST; PUSHm Y; JUMP`, and must have the same jump table.
 Reachable instructions must be in the supported profile: stack, arithmetic,
 comparison and bitwise opcodes; memory, `KECCAK256`, calldata, call-context and
 block reads; `SLOAD`, `SSTORE`, `TLOAD`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`,
@@ -228,4 +230,4 @@ block reads; `SLOAD`, `SSTORE`, `TLOAD`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`,
 `GAS`, code reads, `TSTORE` and `SELFDESTRUCT` are rejected.
 
 Not proved: message-call (Θ) and transaction (Υ) equivalence, exceptional
-original runs, other rewrite families and formal correspondence with revm.
+original runs, stack-window rewrites and formal correspondence with revm.

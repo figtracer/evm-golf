@@ -25,15 +25,50 @@ pub struct WholeCertificate {
     pub runtime_bytes: usize,
     pub covered_instructions: usize,
     pub power_sites: Vec<usize>,
+    pub thread_sites: Vec<usize>,
     pub assumptions: [&'static str; 3],
     pub unproved: [&'static str; 4],
     pub lean_version: String,
 }
 
+#[derive(Clone)]
 struct PowerSite {
     pc: usize,
     width: usize,
     exponent: usize,
+}
+
+/// `PUSHn from; JUMPI` rewritten to `PUSHn to; JUMPI`, where `from` holds the
+/// unchanged trampoline `JUMPDEST; PUSHm to; JUMP`.
+#[derive(Clone)]
+struct ThreadSite {
+    pc: usize,
+    width: usize,
+    from: usize,
+    to: usize,
+    to_width: usize,
+}
+
+#[derive(Clone)]
+enum Site {
+    Power(PowerSite),
+    Thread(ThreadSite),
+}
+
+impl Site {
+    fn pc(&self) -> usize {
+        match self {
+            Site::Power(s) => s.pc,
+            Site::Thread(s) => s.pc,
+        }
+    }
+    /// Both sites are PUSHn followed by one opcode.
+    fn end(&self) -> usize {
+        match self {
+            Site::Power(s) => s.pc + s.width + 2,
+            Site::Thread(s) => s.pc + s.width + 2,
+        }
+    }
 }
 
 enum Obligation {
@@ -53,6 +88,7 @@ enum Obligation {
     FallOff,
     Invalid,
     Power(PowerSite),
+    Thread(ThreadSite),
 }
 
 pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCertificate> {
@@ -77,6 +113,13 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
             .iter()
             .filter_map(|(pc, obligation)| {
                 matches!(obligation, Obligation::Power(_)).then_some(*pc)
+            })
+            .collect(),
+        thread_sites: plan
+            .points
+            .iter()
+            .filter_map(|(pc, obligation)| {
+                matches!(obligation, Obligation::Thread(_)).then_some(*pc)
             })
             .collect(),
         assumptions: [
@@ -145,19 +188,18 @@ fn plan(original: &[u8], candidate: &[u8]) -> Result<Plan> {
             starts.contains(&pc),
             "execution reaches pc {pc}, which is not an instruction boundary"
         );
-        let (obligation, next) = if let Some(site) = sites.iter().find(|s| s.pc == pc) {
-            let next = pc + site.width + 2;
-            (
-                Obligation::Power(PowerSite {
-                    pc,
-                    width: site.width,
-                    exponent: site.exponent,
-                }),
-                Some(next),
-            )
+        let (obligation, next) = if let Some(site) = sites.iter().find(|s| s.pc() == pc) {
+            if let Site::Thread(thread) = site {
+                pending.push(thread.to);
+            }
+            let obligation = match site.clone() {
+                Site::Power(power) => Obligation::Power(power),
+                Site::Thread(thread) => Obligation::Thread(thread),
+            };
+            (obligation, Some(site.end()))
         } else {
             ensure!(
-                !sites.iter().any(|s| s.pc < pc && pc < s.pc + s.width + 2),
+                !sites.iter().any(|s| s.pc() < pc && pc < s.end()),
                 "execution reaches pc {pc} inside a rewrite site"
             );
             let instruction = instructions
@@ -199,10 +241,11 @@ fn power_sites(
     candidate: &[u8],
     instructions: &[Instruction],
     starts: &BTreeSet<usize>,
-) -> Result<Vec<PowerSite>> {
-    let mut sites: Vec<PowerSite> = Vec::new();
+) -> Result<Vec<Site>> {
+    let instruction_at = |pc: usize| instructions.iter().find(|i| i.pc == pc);
+    let mut sites: Vec<Site> = Vec::new();
     for (pc, (a, b)) in original.iter().zip(candidate).enumerate() {
-        if a == b || sites.last().is_some_and(|s| pc < s.pc + s.width + 2) {
+        if a == b || sites.last().is_some_and(|s| pc < s.end()) {
             continue;
         }
         let start = *starts
@@ -217,23 +260,54 @@ fn power_sites(
         let width = push_width(push.bytes[0]);
         let next = instructions.get(index + 1);
         let value = U256::from_be_slice(&push.bytes[1..]);
+        let replaced = U256::from_be_slice(&candidate[start + 1..start + 1 + width]);
+        let same_push = width > 0 && candidate[start] == push.bytes[0];
+        // Jump threading: only the destination immediate changes.
+        if let (true, Some(jumpi)) = (same_push, next)
+            && jumpi.bytes == [0x57]
+            && candidate[jumpi.pc] == 0x57
+            && pc < jumpi.pc
+        {
+            let from = value.to::<usize>();
+            let to = replaced.to::<usize>();
+            let trampoline = (instruction_at(from), instruction_at(from + 1));
+            if let (Some(dest), Some(push2)) = trampoline
+                && value < U256::from(original.len())
+                && dest.bytes == [0x5b]
+                && push_width(push2.bytes[0]) > 0
+                && U256::from_be_slice(&push2.bytes[1..]) == replaced
+                && instruction_at(from + 1 + push2.bytes.len()).is_some_and(|j| j.bytes == [0x56])
+                && original[from..from + 2 + push2.bytes.len()]
+                    == candidate[from..from + 2 + push2.bytes.len()]
+            {
+                sites.push(Site::Thread(ThreadSite {
+                    pc: start,
+                    width,
+                    from,
+                    to,
+                    to_width: push2.bytes.len() - 1,
+                }));
+                continue;
+            }
+        }
         let exponent = (width > 0 && value.count_ones() == 1).then(|| value.trailing_zeros());
-        let shift = U256::from_be_slice(&candidate[start + 1..start + 1 + width]);
         match (exponent, next) {
             (Some(k), Some(mul))
                 if mul.bytes == [0x02]
-                    && candidate[start] == push.bytes[0]
+                    && same_push
                     && candidate[mul.pc] == 0x1b
-                    && shift == U256::from(k)
+                    && replaced == U256::from(k)
                     && pc < mul.pc + 1 =>
             {
-                sites.push(PowerSite {
+                sites.push(Site::Power(PowerSite {
                     pc: start,
                     width,
                     exponent: k,
-                })
+                }))
             }
-            _ => bail!("unsupported difference at byte {pc}: only PUSH 2^k; MUL to PUSH k; SHL"),
+            _ => bail!(
+                "unsupported difference at byte {pc}: only PUSH 2^k; MUL to PUSH k; SHL and one-hop JUMPI threading"
+            ),
         }
     }
     Ok(sites)
@@ -399,7 +473,7 @@ fn in_chunk_term(k: usize, n: usize) -> String {
 
 fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String)> {
     let mut modules = Vec::new();
-    let mut image = format!("import WholeXi\nimport WholeStorage\n{HEADER}");
+    let mut image = format!("import WholeXi\nimport WholeStorage\nimport WholeThread\n{HEADER}");
     for (side, code) in [("old", original), ("new", candidate)] {
         let mut names = Vec::new();
         for (i, chunk) in code.chunks(BYTES_PER_CHUNK).enumerate() {
@@ -586,6 +660,23 @@ fn obligation_term(
             ".halt _ Operation.STOP none congruent_stop (Or.inl rfl) (decode_getD oldBytes {pc} (by decide) {K}) (decode_getD newBytes {pc} (by decide) {K})"
         ),
         Obligation::Invalid => format!(".invalid _ {}", old(pc)),
+        Obligation::Thread(site) => {
+            let jumpi = site.pc + site.width + 1;
+            let push2 = site.from + 1;
+            let jump = push2 + site.to_width + 1;
+            format!(
+                ".segment _ (fun owner nj hj => thread_segment owner oldCode newCode jumps nj P (UInt256.ofNat {pc}) .PUSH{w} .PUSH{m} {w} {m} (UInt256.ofNat {from}) (UInt256.ofNat {to}) (by decide) (by decide) {} {} (decode_fact' oldBytes {jumpi} {K} (by decide) {K}) (decode_fact' newBytes {jumpi} {K} (by decide) {K}) {} (decode_fact' oldBytes {push2} {K} (by decide) {K}) (decode_fact' oldBytes {jump} {K} (by decide) {K}) {} (mem_points (in_chunk{} {K})) hj)",
+                old(pc),
+                new(pc),
+                old(site.from),
+                next(jumpi + 1),
+                chunk_of(site.to),
+                w = site.width,
+                m = site.to_width,
+                from = site.from,
+                to = site.to,
+            )
+        }
         Obligation::Power(site) => {
             let mul = site.pc + site.width + 1;
             format!(
@@ -620,6 +711,19 @@ mod tests {
         assert!(plan_err(&original, &wrong).contains("unsupported difference"));
         let call = hex::decode("f100").unwrap();
         assert!(plan_err(&call, &call).contains("unsupported opcode 0xf1"));
+    }
+
+    #[test]
+    fn plans_threading_site_and_its_destination() {
+        let original = hex::decode("346007570000005b600b565b600080fd").unwrap();
+        let candidate = hex::decode("34600b570000005b600b565b600080fd").unwrap();
+        let planned = plan(&original, &candidate).unwrap();
+        assert!(matches!(planned.points[1].1, Obligation::Thread(_)));
+        let pcs: Vec<usize> = planned.points.iter().map(|(pc, _)| *pc).collect();
+        assert_eq!(pcs, vec![0, 1, 4, 7, 8, 10, 11, 12, 14, 15]);
+        // A destination without the matching trampoline is rejected.
+        let wrong = hex::decode("34600c570000005b600b565b600080fd").unwrap();
+        assert!(plan_err(&original, &wrong).contains("unsupported difference"));
     }
 
     fn plan_err(a: &[u8], b: &[u8]) -> String {

@@ -170,6 +170,19 @@ assert report["power_sites"] == [6]
 assert any("Υ" in item for item in report["unproved"])
 assert json.loads((out / "environment.json").read_text())["semantics_profile"]["identity"] == "evm-golf-checked-scanner"
 PY_WHOLE
+# One-hop JUMPI threading through an unchanged trampoline.
+printf '%s\n' 346007570000005b600b565b600080fd > "$work/thread-original.hex"
+printf '%s\n' 34600b570000005b600b565b600080fd > "$work/thread-candidate.hex"
+cargo run --locked -- certify-runtime-whole \
+  --original "$work/thread-original.hex" --candidate "$work/thread-candidate.hex" \
+  --out "$work/thread-accepted" 2>&1 | tee "$work/thread.log"
+python3 - "$work/thread-accepted/result.json" <<'PY_THREAD'
+import json
+import sys
+
+report = json.load(open(sys.argv[1]))
+assert report["thread_sites"] == [1] and report["power_sites"] == []
+PY_THREAD
 printf '%s\n' 34600a57600760031b005b600080fd > "$work/whole-wrong.hex"
 if cargo run --locked -- certify-runtime-whole \
   --original "$work/whole-original.hex" --candidate "$work/whole-wrong.hex" \

@@ -791,6 +791,11 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
         include_str!("../../lean/upstream/WholeXi.lean"),
         &["GolfWhole.xi_refines"],
     ),
+    (
+        "WholeThread",
+        include_str!("../../lean/upstream/WholeThread.lean"),
+        &["GolfWhole.thread_segment"],
+    ),
 ];
 
 const MASK_MODULES: &[(&str, &str, &[&str])] = &[

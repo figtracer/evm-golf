@@ -169,7 +169,7 @@ def Segment (owner : AccountAddress) (old new : ByteArray) (oj nj : Array UInt25
   ∀ (fuel : ℕ) (s t : State) (surplus skipped : ℕ) (r : ExecutionResult State),
     DeployedOffset owner old new surplus skipped s t → s.pc = pc → X fuel oj s = .ok r →
     ∃ (f : ℕ) (s' t' : State) (surplus' skipped' k : ℕ), f < fuel ∧ X f oj s' = .ok r ∧ P s'.pc ∧
-      DeployedOffset owner old new surplus' skipped' s' t' ∧ ∀ g, X (g + k) nj t = X g nj t'
+      DeployedOffset owner old new surplus' skipped' s' t' ∧ ∀ g, X (g + 1 + k) nj t = X (g + 1) nj t'
 
 /-- Obligations at one synchronization point. -/
 inductive Point (old new : ByteArray) (oj : Array UInt256) (P : UInt256 → Prop) :
