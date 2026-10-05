@@ -90,7 +90,7 @@ not whole-contract equivalence: inputs, states and gas limits outside your
 scenarios are not covered, and contracts are optimized independently.
 Only a subset of opcodes and control flow is supported. A developer command
 proves whole-program refinement against EVMYulLean, but only for call-free
-runtimes with the power and JUMPI-threading rewrites. See
+runtimes with the power, JUMPI-threading and stack-shuffle rewrites. See
 [verification](docs/verification.md) for the exact boundary and
 [runtime support](docs/runtime.md) for what can be optimized.
 

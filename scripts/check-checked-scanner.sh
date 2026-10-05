@@ -183,6 +183,19 @@ import sys
 report = json.load(open(sys.argv[1]))
 assert report["thread_sites"] == [1] and report["power_sites"] == []
 PY_THREAD
+# Stack window that needs the unchanged PUSH0 before it.
+printf '%s\n' 345f80fd > "$work/window-original.hex"
+printf '%s\n' 345f5ffd > "$work/window-candidate.hex"
+cargo run --locked -- certify-runtime-whole \
+  --original "$work/window-original.hex" --candidate "$work/window-candidate.hex" \
+  --out "$work/window-accepted" 2>&1 | tee "$work/window.log"
+python3 - "$work/window-accepted/result.json" <<'PY_WINDOW'
+import json
+import sys
+
+report = json.load(open(sys.argv[1]))
+assert report["window_sites"] == [1]
+PY_WINDOW
 printf '%s\n' 34600a57600760031b005b600080fd > "$work/whole-wrong.hex"
 if cargo run --locked -- certify-runtime-whole \
   --original "$work/whole-original.hex" --candidate "$work/whole-wrong.hex" \

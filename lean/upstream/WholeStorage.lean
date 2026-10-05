@@ -478,6 +478,108 @@ theorem same_coinbase : Same .COINBASE :=
     (fun _ _ _ _ => rfl) (fun _ => rfl) (fun _ => frameless_rfl) (fun _ _ => rfl)
     (fun _ _ _ => rfl) (fun _ => rfl) (fun _ => by simp [H])
 
+theorem tstore_accounts (x : EvmYul.State .EVM) (a b : UInt256) (o : AccountAddress)
+    (hx : x.executionEnv.codeOwner = o) :
+    EvmYul.State.tstore x a b = { x with accountMap := (match x.accountMap.find? o with
+      | none => x.accountMap
+      | some acc => x.accountMap.insert o (acc.updateTransientStorage a b)) } := by
+  unfold EvmYul.State.tstore EvmYul.State.lookupAccount
+  simp only [hx]
+  cases x.accountMap.find? o <;> simp [Option.option, EvmYul.State.updateAccount]
+
+theorem tupdate_related (owner addr : AccountAddress) (old new : ByteArray) (acc acc' : Account .EVM)
+    (a b : UInt256) (h : AccountsRelated owner addr old new acc acc') :
+    AccountsRelated owner addr old new (acc.updateTransientStorage a b)
+      (acc'.updateTransientStorage a b) := by
+  unfold AccountsRelated at h ⊢
+  obtain ⟨n, bal, st, ts, c⟩ := h
+  unfold Account.updateTransientStorage
+  split <;> simp_all
+
+theorem tlinked (owner : AccountAddress) (code : ByteArray) (s t : State) (a b : UInt256)
+    (link : Linked owner code s)
+    (ht : t.toState = EvmYul.State.tstore s.toState a b) (o : s.executionEnv.codeOwner = owner) :
+    Linked owner code t := by
+  obtain ⟨lo, c, ⟨a1, f1, c1⟩, ⟨a2, f2, c2⟩⟩ := link
+  have e := tstore_accounts s.toState a b owner o
+  have hm : t.accountMap = s.accountMap.insert owner (a1.updateTransientStorage a b) := by
+    have := congrArg EvmYul.State.accountMap ht
+    rw [e] at this
+    change t.accountMap = _ at this
+    rw [this]; simp only [f1]
+  have h0 : t.σ₀ = s.σ₀ := by
+    have := congrArg EvmYul.State.σ₀ ht; rw [e] at this; exact this
+  have he : t.executionEnv = s.executionEnv := by
+    have := congrArg EvmYul.State.executionEnv ht; rw [e] at this; exact this
+  refine ⟨by rw [he]; exact lo, by rw [he]; exact c, ⟨a1.updateTransientStorage a b, ?_, ?_⟩,
+    ⟨a2, by rw [h0]; exact f2, c2⟩⟩
+  · rw [hm, Batteries.RBMap.find?_insert, if_pos (compare_eq_iff_eq.mpr rfl)]
+  · unfold Account.updateTransientStorage; split <;> exact c1
+
+theorem tstore_preserves (arg : Option (UInt256 × Nat)) :
+    Preserves (EvmYul.step (.TSTORE : Operation .EVM) arg) := by
+  intro owner old new surplus skipped u u' v h run
+  have st := rel_stack h
+  obtain ⟨o, o'⟩ := owner_eq h
+  have e : ∀ y : State, EvmYul.step (.TSTORE : Operation .EVM) arg y =
+      (match y.stack.pop2 with
+        | some ⟨s, μ₀, μ₁⟩ =>
+          Except.ok (({ y with toState := EvmYul.State.tstore y.toState μ₀ μ₁ } : State).replaceStackAndIncrPC s)
+        | _ => Except.error .StackUnderflow : Except EVM.ExecutionException State) := fun _ => rfl
+  rw [e] at run ⊢
+  rw [←st]
+  cases hp : u.stack.pop2 with
+  | none => rw [hp] at run; cases run
+  | some p =>
+    obtain ⟨stk, a, b⟩ := p
+    rw [hp] at run
+    injection run with run
+    subst run
+    refine ⟨_, rfl, ?_⟩
+    have A := tstore_accounts u.toState a b owner o
+    have A' := tstore_accounts u'.toState a b owner o'
+    have G : Frameless (fun x => (x : State).replaceStackAndIncrPC stk) := frameless_rfl
+    have g := G.preserve h
+    refine ⟨?_, g.count, g.gas, ?_⟩
+    · have l : E (({ u with toState := EvmYul.State.tstore u.toState a b } : State).replaceStackAndIncrPC stk) =
+          E (u.replaceStackAndIncrPC stk) := by rw [A]; rfl
+      have r : E (({ u' with toState := EvmYul.State.tstore u'.toState a b } : State).replaceStackAndIncrPC stk) =
+          E (u'.replaceStackAndIncrPC stk) := by rw [A']; rfl
+      exact l.trans (g.frame.trans r.symm)
+    · have m := h.maps
+      have rel := m.1 owner
+      refine ⟨?_, ?_, tlinked owner old u _ a b m.2.2.1 rfl o, tlinked owner new u' _ a b m.2.2.2 rfl o'⟩
+      · change MapsRelated owner old new (EvmYul.State.tstore u.toState a b).accountMap
+          (EvmYul.State.tstore u'.toState a b).accountMap
+        rw [A, A']
+        revert rel
+        cases f : u.accountMap.find? owner <;> cases f' : u'.accountMap.find? owner <;>
+          simp only [] <;> intro rel
+        · exact m.1
+        · exact False.elim rel
+        · exact False.elim rel
+        · exact maps_insert owner old new _ _ _ _ m.1 (tupdate_related _ _ _ _ _ _ a b rel)
+      · change MapsRelated owner old new (EvmYul.State.tstore u.toState a b).σ₀
+          (EvmYul.State.tstore u'.toState a b).σ₀
+        rw [A, A']; exact m.2.1
+
+theorem same_tstore : Same .TSTORE :=
+  same_rel (fun arg => EvmYul.step (.TSTORE : Operation .EVM) arg) (fun _ _ _ _ => rfl) tstore_preserves
+    (fun _ => rfl)
+    (fun arg u v run => by
+      have e : EvmYul.step (.TSTORE : Operation .EVM) arg u =
+          (match u.stack.pop2 with
+            | some ⟨s, μ₀, μ₁⟩ =>
+              Except.ok (({ u with toState := EvmYul.State.tstore u.toState μ₀ μ₁ } : State).replaceStackAndIncrPC s)
+            | _ => Except.error .StackUnderflow : Except EVM.ExecutionException State) := rfl
+      simp only [] at run
+      rw [e] at run
+      cases hp : u.stack.pop2 with
+      | none => rw [hp] at run; cases run
+      | some p => obtain ⟨_, _, _⟩ := p; rw [hp] at run; injection run with run; subst run; rfl)
+    (fun _ => by simp [H])
+
+#print axioms same_tstore
 #print axioms same_sload
 #print axioms same_sstore
 #print axioms same_tload

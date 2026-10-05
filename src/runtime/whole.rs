@@ -26,6 +26,7 @@ pub struct WholeCertificate {
     pub covered_instructions: usize,
     pub power_sites: Vec<usize>,
     pub thread_sites: Vec<usize>,
+    pub window_sites: Vec<usize>,
     pub assumptions: [&'static str; 3],
     pub unproved: [&'static str; 4],
     pub lean_version: String,
@@ -49,10 +50,20 @@ struct ThreadSite {
     to_width: usize,
 }
 
+/// Equal-length straight-line stack windows (PUSH, DUP, SWAP, POP).
+#[derive(Clone)]
+struct WindowSite {
+    pc: usize,
+    end: usize,
+    old: Vec<(usize, Vec<u8>)>,
+    new: Vec<(usize, Vec<u8>)>,
+}
+
 #[derive(Clone)]
 enum Site {
     Power(PowerSite),
     Thread(ThreadSite),
+    Window(WindowSite),
 }
 
 impl Site {
@@ -60,6 +71,7 @@ impl Site {
         match self {
             Site::Power(s) => s.pc,
             Site::Thread(s) => s.pc,
+            Site::Window(s) => s.pc,
         }
     }
     /// Both sites are PUSHn followed by one opcode.
@@ -67,6 +79,7 @@ impl Site {
         match self {
             Site::Power(s) => s.pc + s.width + 2,
             Site::Thread(s) => s.pc + s.width + 2,
+            Site::Window(s) => s.end,
         }
     }
 }
@@ -89,6 +102,7 @@ enum Obligation {
     Invalid,
     Power(PowerSite),
     Thread(ThreadSite),
+    Window(WindowSite),
 }
 
 pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCertificate> {
@@ -122,6 +136,13 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
                 matches!(obligation, Obligation::Thread(_)).then_some(*pc)
             })
             .collect(),
+        window_sites: plan
+            .points
+            .iter()
+            .filter_map(|(pc, obligation)| {
+                matches!(obligation, Obligation::Window(_)).then_some(*pc)
+            })
+            .collect(),
         assumptions: [
             "Ξ: a fresh call frame whose current and original account maps differ only in the owner's deployed code; X: states at pc 0 equal except deployed code, execution count and extra candidate gas",
             "valid jump tables are computed by the checked-scanner profile of D_J",
@@ -129,7 +150,7 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
         ],
         unproved: [
             "transaction-level (Υ) and message-call (Θ) equivalence",
-            "opcodes outside the supported profile, including calls, creation, GAS, code reads and TSTORE",
+            "opcodes outside the supported profile: calls, creation, GAS, code reads, balances and SELFDESTRUCT",
             "exceptional original runs (the claim is conditioned on original success or revert)",
             "revm correspondence",
         ],
@@ -157,11 +178,6 @@ fn plan(original: &[u8], candidate: &[u8]) -> Result<Plan> {
         "whole-program certificates accept 1..={MAX_WHOLE_BYTES} runtime bytes"
     );
     let instructions = decode(original);
-    let last = instructions.last().context("empty runtime")?;
-    ensure!(
-        last.bytes.len() == push_width(last.bytes[0]) + 1,
-        "truncated final PUSH is unsupported"
-    );
     let starts: BTreeSet<usize> = instructions.iter().map(|i| i.pc).collect();
     let jumpdests = jump_table(original);
     ensure!(
@@ -195,6 +211,7 @@ fn plan(original: &[u8], candidate: &[u8]) -> Result<Plan> {
             let obligation = match site.clone() {
                 Site::Power(power) => Obligation::Power(power),
                 Site::Thread(thread) => Obligation::Thread(thread),
+                Site::Window(window) => Obligation::Window(window),
             };
             (obligation, Some(site.end()))
         } else {
@@ -305,12 +322,141 @@ fn power_sites(
                     exponent: k,
                 }))
             }
-            _ => bail!(
-                "unsupported difference at byte {pc}: only PUSH 2^k; MUL to PUSH k; SHL and one-hop JUMPI threading"
-            ),
+            _ => {
+                // A window may need a few unchanged instructions before the
+                // first difference, e.g. `PUSH0 DUP1` -> `PUSH0 PUSH0`.
+                let floor = sites.last().map_or(0, Site::end);
+                let mut error = None;
+                let mut found = None;
+                for back in 0..8 {
+                    let Some(at) = index.checked_sub(back) else {
+                        break;
+                    };
+                    let begin = &instructions[at];
+                    if begin.pc < floor || (back > 0 && !window_op(&begin.bytes)) {
+                        break;
+                    }
+                    match window_site(original, candidate, begin.pc, pc) {
+                        Ok(site) => {
+                            found = Some(site);
+                            break;
+                        }
+                        Err(e) => error = error.or(Some(e)),
+                    }
+                }
+                match found {
+                    Some(site) => sites.push(Site::Window(site)),
+                    None => return Err(error.expect("at least one attempt")),
+                }
+            }
         }
     }
     Ok(sites)
+}
+
+fn window_op(bytes: &[u8]) -> bool {
+    matches!(bytes[0], 0x5f..=0x7f | 0x80..=0x9f | 0x50) && bytes.len() == push_width(bytes[0]) + 1
+}
+
+/// The smallest span from `start`, ending at a common instruction boundary after
+/// every differing byte, whose two sides pass the window check. Only window
+/// opcodes may appear on either side.
+fn window_site(
+    original: &[u8],
+    candidate: &[u8],
+    start: usize,
+    first: usize,
+) -> Result<WindowSite> {
+    const MAX_WINDOW: usize = 48;
+    let step = |code: &[u8], pc: usize| (pc + push_width(code[pc]) + 1).min(code.len());
+    let (mut o, mut c) = (start, start);
+    let mut old = Vec::new();
+    let mut new = Vec::new();
+    let mut last = first;
+    loop {
+        if o == c && o > last {
+            let same = o >= original.len()
+                || original[o..step(original, o)] == candidate[o..step(candidate, o)];
+            if same && window_check(&old, &new) {
+                return Ok(WindowSite {
+                    pc: start,
+                    end: o,
+                    old,
+                    new,
+                });
+            }
+        }
+        ensure!(
+            old.len() + new.len() < MAX_WINDOW && o < original.len() && c < candidate.len(),
+            "unsupported difference at byte {first}: not a power, threading or stack-window rewrite"
+        );
+        if o <= c {
+            let next = step(original, o);
+            old.push((o, original[o..next].to_vec()));
+            o = next;
+        } else {
+            let next = step(candidate, c);
+            new.push((c, candidate[c..next].to_vec()));
+            c = next;
+        }
+        ensure!(
+            old.iter().chain(&new).all(|(_, b)| window_op(b)),
+            "unsupported difference at byte {first}: not a power, threading or stack-window rewrite"
+        );
+        let reach = o.max(c);
+        if let Some(d) = (last..reach).rev().find(|&i| original[i] != candidate[i]) {
+            last = last.max(d);
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+enum Sym {
+    Input(usize),
+    Lit(U256),
+}
+
+/// Mirror of the Lean `windowCheck`; Lean decides it again in the certificate.
+fn window_check(old: &[(usize, Vec<u8>)], new: &[(usize, Vec<u8>)]) -> bool {
+    fn run(instrs: &[(usize, Vec<u8>)]) -> (Vec<Sym>, usize, Vec<i64>, usize) {
+        let (mut a, mut m, mut heights, mut cost) = (Vec::<Sym>::new(), 0usize, Vec::new(), 0usize);
+        for (_, b) in instrs {
+            let (need, c) = match b[0] {
+                0x5f => (0, 2),
+                0x60..=0x7f => (0, 3),
+                op @ 0x80..=0x8f => (usize::from(op - 0x7f), 3),
+                op @ 0x90..=0x9f => (usize::from(op - 0x8f) + 1, 3),
+                _ => (1, 2),
+            };
+            // `a` is top first; pull missing inputs from below.
+            while a.len() < need {
+                a.push(Sym::Input(m));
+                m += 1;
+            }
+            match b[0] {
+                0x5f..=0x7f => a.insert(0, Sym::Lit(U256::from_be_slice(&b[1..]))),
+                op @ 0x80..=0x8f => a.insert(0, a[usize::from(op - 0x80)].clone()),
+                op @ 0x90..=0x9f => a.swap(0, usize::from(op - 0x8f)),
+                _ => {
+                    a.remove(0);
+                }
+            }
+            cost += c;
+            heights.push(a.len() as i64 - m as i64);
+        }
+        (a, m, heights, cost)
+    }
+    let (mut an, mn, hn, cn) = run(new);
+    let (ao, mo, ho, co) = run(old);
+    if mn > mo {
+        return false;
+    }
+    an.extend((mn..mo).map(Sym::Input));
+    an == ao
+        && cn <= co
+        && new.len() <= old.len()
+        && !old.is_empty()
+        && hn.iter().all(|h| ho.iter().any(|g| h <= g))
 }
 
 fn classify(instruction: &Instruction) -> Result<Obligation> {
@@ -426,6 +572,7 @@ fn simple_name(op: u8) -> Option<&'static str> {
         0x46 => "CHAINID",
         0x54 => "SLOAD",
         0x55 => "SSTORE",
+        0x5d => "TSTORE",
         0x59 => "MSIZE",
         0x5c => "TLOAD",
         0xa0 => "LOG0",
@@ -473,7 +620,7 @@ fn in_chunk_term(k: usize, n: usize) -> String {
 
 fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String)> {
     let mut modules = Vec::new();
-    let mut image = format!("import WholeXi\nimport WholeStorage\nimport WholeThread\n{HEADER}");
+    let mut image = format!("import WholeXi\nimport WholeStorage\nimport WholeWindow\n{HEADER}");
     for (side, code) in [("old", original), ("new", candidate)] {
         let mut names = Vec::new();
         for (i, chunk) in code.chunks(BYTES_PER_CHUNK).enumerate() {
@@ -625,6 +772,22 @@ end GolfWholeCertificate",
     modules
 }
 
+fn wop(bytes: &[u8]) -> String {
+    match bytes[0] {
+        0x5f => "WOp.push0".to_owned(),
+        op @ 0x60..=0x7f => {
+            let width = usize::from(op - 0x5f);
+            format!(
+                "WOp.push .PUSH{width} (UInt256.ofNat {}) {width}",
+                U256::from_be_slice(&bytes[1..])
+            )
+        }
+        op @ 0x80..=0x8f => format!("WOp.dup {}", op - 0x7f),
+        op @ 0x90..=0x9f => format!("WOp.swap {}", op - 0x8f),
+        _ => "WOp.pop".to_owned(),
+    }
+}
+
 fn obligation_term(
     pc: usize,
     obligation: &Obligation,
@@ -677,6 +840,34 @@ fn obligation_term(
                 to = site.to,
             )
         }
+        Obligation::Window(site) => {
+            let ops = |instrs: &[(usize, Vec<u8>)]| {
+                let items: Vec<String> = instrs.iter().map(|(_, b)| wop(b)).collect();
+                format!("[{}]", items.join(", "))
+            };
+            let wcode = |side: &str, instrs: &[(usize, Vec<u8>)]| {
+                let mut term = format!("(WCode.nil (UInt256.ofNat {}))", site.end);
+                for (i, (at, bytes)) in instrs.iter().enumerate().rev() {
+                    let after = at + bytes.len();
+                    term = format!(
+                        "(WCode.cons (UInt256.ofNat {at}) (UInt256.ofNat {after}) (UInt256.ofNat {}) ({}) {} (by decide) (decode_fact {side}Bytes {at} (by decide) {K}) {K} {term})",
+                        site.end,
+                        wop(bytes),
+                        ops(&instrs[i + 1..]),
+                    );
+                }
+                term
+            };
+            format!(
+                ".segment _ (fun owner nj _ => window_segment owner oldCode newCode jumps nj P (UInt256.ofNat {pc}) (UInt256.ofNat {}) {} {} {} {} {K} (mem_points (in_chunk{} {K})))",
+                site.end,
+                ops(&site.old),
+                ops(&site.new),
+                wcode("old", &site.old),
+                wcode("new", &site.new),
+                chunk_of(site.end),
+            )
+        }
         Obligation::Power(site) => {
             let mul = site.pc + site.width + 1;
             format!(
@@ -724,6 +915,18 @@ mod tests {
         // A destination without the matching trampoline is rejected.
         let wrong = hex::decode("34600c570000005b600b565b600080fd").unwrap();
         assert!(plan_err(&original, &wrong).contains("unsupported difference"));
+    }
+
+    #[test]
+    fn plans_stack_windows() {
+        // PUSH1 0x20 DUP2 SWAP1 -> DUP1 PUSH2 0x0020, followed by STOP.
+        let original = hex::decode("6020819000").unwrap();
+        let candidate = hex::decode("806100200000").unwrap()[..5].to_vec();
+        let planned = plan(&original, &candidate).unwrap();
+        assert!(matches!(planned.points[0].1, Obligation::Window(_)));
+        // A window that changes the result is rejected before Lean.
+        let bad = hex::decode("8061002100").unwrap();
+        assert!(plan_err(&original, &bad).contains("unsupported difference"));
     }
 
     fn plan_err(a: &[u8], b: &[u8]) -> String {

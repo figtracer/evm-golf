@@ -765,6 +765,7 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfWhole.same_log0",
             "GolfWhole.same_log4",
             "GolfWhole.same_keccak256",
+            "GolfWhole.same_tstore",
         ],
     ),
     (
@@ -795,6 +796,15 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
         "WholeThread",
         include_str!("../../lean/upstream/WholeThread.lean"),
         &["GolfWhole.thread_segment"],
+    ),
+    (
+        "WholeWindow",
+        include_str!("../../lean/upstream/WholeWindow.lean"),
+        &[
+            "GolfWhole.window_source",
+            "GolfWhole.window_cand",
+            "GolfWhole.window_segment",
+        ],
     ),
 ];
 

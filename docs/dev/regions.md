@@ -222,12 +222,15 @@ within the per-module budget ([WholeProgram.lean](../../lean/upstream/WholeProgr
 Images up to the EIP-170 limit are accepted. They may differ only at same-width
 `PUSHn 2^k; MUL` → `PUSHn k; SHL` sites and at one-hop threading sites
 `PUSHn X; JUMPI` → `PUSHn Y; JUMPI` where `X` holds the unchanged trampoline
-`JUMPDEST; PUSHm Y; JUMP`, and must have the same jump table.
+`JUMPDEST; PUSHm Y; JUMP`, and in straight-line stack windows of `PUSH`, `DUP`,
+`SWAP` and `POP` whose two sides compute the same stack for every input, need no
+deeper stack, cost no more gas and execute no more instructions. The images must
+have the same jump table.
 Reachable instructions must be in the supported profile: stack, arithmetic,
 comparison and bitwise opcodes; memory, `KECCAK256`, calldata, call-context and
-block reads; `SLOAD`, `SSTORE`, `TLOAD`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`,
+block reads; `SLOAD`, `SSTORE`, `TLOAD`, `TSTORE`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`,
 `JUMPDEST`, `STOP`, `RETURN`, `REVERT` and undefined opcodes. Calls, creation,
-`GAS`, code reads, `TSTORE` and `SELFDESTRUCT` are rejected.
+`GAS`, code reads, balances, `MCOPY` and `SELFDESTRUCT` are rejected.
 
 Not proved: message-call (Θ) and transaction (Υ) equivalence, exceptional
-original runs, stack-window rewrites and formal correspondence with revm.
+original runs, windows with arithmetic and formal correspondence with revm.
