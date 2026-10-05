@@ -24,6 +24,7 @@ const COMPOSITION_MODEL: &str = include_str!("../../lean/Composition.lean");
 const LAYOUT_SCANNER: &str = include_str!("../../lean/LayoutScanner.lean");
 const LAYOUT_MODEL: &str = include_str!("../../lean/Layout.lean");
 const LAYOUT_CHUNKS: &str = include_str!("../../lean/LayoutChunks.lean");
+const THREADING: &str = include_str!("../../lean/Threading.lean");
 // A full EIP-170 image exceeded 65K recursive elaboration depth and the default
 // heartbeat budget. Kernel reduction at these limits checked 24,576 bytes; the
 // existing 60-second wall-clock proof budget still bounds the entire attempt.
@@ -331,6 +332,154 @@ fn shared_scan(
         writeln!(source, "theorem {image}Shared : scan {image} = {} := by\n rw [{image}_split, scan_complete_chunks, {side}Chunks_length, {side}Chunks_rows]\n simp only [gap_{count}_length, List.append_assoc] <;> rfl", rows.join(" ++ ")).unwrap();
     }
     Ok(gaps)
+}
+
+/// Certificate for one-hop jump threading: exact bytes, equal layout and jump
+/// destinations, and a control-flow simulation theorem per site.
+pub(super) fn thread_certificate(
+    original: &[u8],
+    candidate: &[u8],
+    threads: &[layout::Thread],
+    copies: &[layout::CodeCopy],
+) -> Result<(String, Vec<String>)> {
+    ensure!(
+        original.len() <= MAX_RUNTIME_BYTES && candidate.len() == original.len(),
+        "thread artifact requires equal images within the EIP-170 limit"
+    );
+    ensure!(
+        (1..=MAX_PROPOSAL_SITES).contains(&threads.len()),
+        "thread artifact requires 1..={MAX_PROPOSAL_SITES} sites"
+    );
+    let mut source = prelude();
+    writeln!(
+        source,
+        "\n{FRAGMENT_MODEL}\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_SCANNER}\n{LAYOUT_MODEL}\n{LAYOUT_CHUNKS}\n{THREADING}\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\nnamespace GolfThreadArtifact\nopen GolfLayout GolfThread"
+    )
+    .unwrap();
+    writeln!(
+        source,
+        "noncomputable def original : List Nat := {original:?}"
+    )
+    .unwrap();
+    writeln!(
+        source,
+        "noncomputable def candidate : List Nat := {candidate:?}"
+    )
+    .unwrap();
+    let rewrites: Vec<_> = threads
+        .iter()
+        .map(|thread| thread.rewrite(original))
+        .collect();
+    let windows = rewrites
+        .iter()
+        .map(|rewrite| {
+            Ok((
+                rewrite.original_pc,
+                from_hex(&rewrite.before)?,
+                from_hex(&rewrite.after)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let sites: Vec<_> = windows
+        .iter()
+        .map(|(pc, before, after)| (*pc, before.as_slice(), after.as_slice()))
+        .collect();
+    let rendered: Vec<_> = sites
+        .iter()
+        .zip(&rewrites)
+        .map(|((pc, before, after), rewrite)| {
+            format!("⟨{pc}, {before:?}, {after:?}, {}⟩", rewrite.required_stack)
+        })
+        .collect();
+    writeln!(
+        source,
+        "def sites : List GolfLayout.Site := [{}]",
+        rendered.join(", ")
+    )
+    .unwrap();
+    shared_scan(&mut source, original, candidate, &sites)?;
+    let rows: Vec<_> = (0..sites.len()).map(|i| format!("rows_{i}")).collect();
+    for row in &rows {
+        let i = &row["rows_".len()..];
+        writeln!(
+            source,
+            "theorem {row} : oldRows_{i} = newRows_{i} := by decide +kernel"
+        )
+        .unwrap();
+    }
+    let dests: Vec<_> = decode(original)
+        .iter()
+        .filter(|op| op.bytes[0] == 0x5b)
+        .map(|op| op.pc)
+        .collect();
+    writeln!(source, "def dests : List Nat := {dests:?}
+theorem thread_bytes : original.all (fun b => b < 256) = true ∧ candidate.all (fun b => b < 256) = true ∧
+    applySites original sites = some candidate :=
+  ⟨by decide +kernel, by decide +kernel, by decide +kernel⟩
+theorem thread_layout : scan original = scan candidate := by
+  rw [originalShared, candidateShared, {}]
+theorem thread_dests : GolfWindowArtifact.jumpTargets (scan original) = dests := by decide +kernel", rows.join(", ")).unwrap();
+    let mut names = vec![
+        "GolfThreadArtifact.thread_bytes".to_owned(),
+        "GolfThreadArtifact.thread_layout".to_owned(),
+        "GolfThreadArtifact.thread_dests".to_owned(),
+    ];
+    for (i, thread) in threads.iter().enumerate() {
+        let layout::Thread {
+            pc,
+            width,
+            jump,
+            source: from,
+            target,
+            trampoline_width,
+        } = thread;
+        writeln!(source, "noncomputable def site_{i} : Site original candidate dests where
+  pc := {pc}
+  width := {width}
+  jump := {jump}
+  source := {from}
+  target := {target}
+  trampolineWidth := {trampoline_width}
+  isJump := by decide
+  originalPush := by decide +kernel
+  candidatePush := by decide +kernel
+  originalValue := by decide +kernel
+  candidateValue := by decide +kernel
+  originalJump := by decide +kernel
+  candidateJump := by decide +kernel
+  widthBound := by decide
+  trampolineBound := by decide
+  jumpdest := by decide +kernel
+  trampolinePush := by decide +kernel
+  trampolineValue := by decide +kernel
+  trampolineJump := by decide +kernel
+  sourceValid := by decide +kernel
+  targetValid := by decide +kernel
+theorem thread_{i} (stack : List Nat) : ∃ k, k ≤ 3 ∧
+    run original dests (2 + k) (.running {pc} stack) = run candidate dests 2 (.running {pc} stack) :=
+  sound site_{i} stack").unwrap();
+        names.push(format!("GolfThreadArtifact.thread_{i}"));
+    }
+    if !copies.is_empty() {
+        source.push_str("def copies : List GolfLayout.CodeCopy := [");
+        let rendered: Vec<_> = copies
+            .iter()
+            .map(|copy| {
+                format!(
+                    "⟨{}, {}, {}, {}, {}⟩",
+                    copy.pc, copy.prefix_start, copy.source, copy.len, copy.destination
+                )
+            })
+            .collect();
+        source.push_str(&rendered.join(", "));
+        source.push_str("]\ntheorem codecopy_artifact : GolfLayout.CodeCopyArtifact original candidate copies :=\n  ⟨by decide +kernel, by decide +kernel, by decide +kernel⟩\n");
+        names.push("GolfThreadArtifact.codecopy_artifact".to_owned());
+    }
+    source.push_str("end GolfThreadArtifact\n");
+    for name in &names {
+        writeln!(source, "#print axioms {name}").unwrap();
+    }
+    Ok((source, names))
 }
 
 fn complete(instructions: &[Instruction]) -> bool {
@@ -685,6 +834,46 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Lean 4.34.0"]
+    fn thread_certificates_bind_sites_trampolines_and_destinations() {
+        let original = from_hex("60016008570000005b600d56005b00").unwrap();
+        let analysis = layout::analyze(&original, true).unwrap();
+        let threads = layout::threads(&analysis);
+        let mut candidate = original.clone();
+        candidate[3] = 0x0d;
+        let (source, names) = thread_certificate(&original, &candidate, &threads, &[]).unwrap();
+        let dir = tempdir().unwrap();
+        let check = |label: &str, source: &str| {
+            let path = dir.path().join(format!("{label}.lean"));
+            fs::write(&path, source).unwrap();
+            proof::verify_named(&path, &names)
+        };
+        let valid = check("Valid", &source);
+        assert!(valid.is_ok(), "{valid:?}");
+        for (label, correct, wrong) in [
+            // Another target, a trampoline that no longer reaches it, a
+            // candidate that changes another byte, and a fake destination.
+            ("Target", "target := 13", "target := 12"),
+            ("Trampoline", "trampolineWidth := 1", "trampolineWidth := 2"),
+            (
+                "Candidate",
+                "def candidate : List Nat := [96, 1, 96, 13, 87, 0, 0, 0",
+                "def candidate : List Nat := [96, 1, 96, 13, 87, 0, 1, 0",
+            ),
+            (
+                "Dests",
+                "def dests : List Nat := [8, 13]",
+                "def dests : List Nat := [8, 12, 13]",
+            ),
+            ("Jump", "jump := 87", "jump := 86"),
+        ] {
+            let changed = source.replacen(correct, wrong, 1);
+            assert_ne!(source, changed, "missing mutation {label}");
+            assert!(check(label, &changed).is_err(), "accepted {label}");
         }
     }
 

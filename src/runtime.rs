@@ -44,6 +44,8 @@ enum RewriteSelection<'a> {
     All,
     Plan(&'a RewritePlan),
     Proposals(&'a RewriteProposalBatch),
+    /// One-hop jump threading through `JUMPDEST; PUSH; JUMP` trampolines.
+    Threads,
 }
 
 // EIP-170 maximum deployed runtime size. Creation bytecode is not accepted here.
@@ -172,6 +174,24 @@ pub fn optimize_scenarios(
         .map(|(report, _)| report)
 }
 
+/// Number of one-hop jump threading sites the next threading stage would use.
+pub(crate) fn thread_sites(code: &[u8]) -> Result<usize> {
+    Ok(layout::threads(&layout::analyze(code, true)?)
+        .len()
+        .min(MAX_PROPOSAL_SITES))
+}
+
+/// Retarget literal jumps past `JUMPDEST; PUSH; JUMP` trampolines, prove the
+/// control-flow simulation and replay the supplied scenarios.
+pub fn optimize_scenarios_threads(
+    code: &[u8],
+    scenarios: &[scenario::Scenario],
+    out: &Path,
+) -> Result<Report> {
+    optimize_scenarios_selected(code, scenarios, out, RewriteSelection::Threads)
+        .map(|(report, _)| report)
+}
+
 /// Prove disjoint original-image proposals together and replay the final candidate.
 /// One invalid site, aggregate proof or supplied transaction rejects the entire batch.
 pub fn optimize_scenarios_with_proposals(
@@ -246,8 +266,22 @@ fn optimize_checked(
     replay: impl FnOnce(&[u8]) -> Result<Vec<CaseResult>>,
 ) -> Result<(Report, Vec<u8>)> {
     let analysis = layout::analyze(code, true)?;
+    let mut threads = Vec::new();
     let (candidate, rewrites) = match selection {
         RewriteSelection::All => layout::transform(&analysis)?,
+        RewriteSelection::Threads => {
+            threads = layout::threads(&analysis);
+            threads.truncate(MAX_PROPOSAL_SITES);
+            ensure!(!threads.is_empty(), "no jump threading sites");
+            let mut candidate = code.to_vec();
+            let rewrites: Vec<_> = threads.iter().map(|thread| thread.rewrite(code)).collect();
+            for rewrite in &rewrites {
+                let after = from_hex(&rewrite.after)?;
+                candidate[rewrite.original_pc..rewrite.original_pc + after.len()]
+                    .copy_from_slice(&after);
+            }
+            (candidate, rewrites)
+        }
         RewriteSelection::Plan(plan) => {
             ensure!(
                 plan.original_keccak256
@@ -305,10 +339,14 @@ fn optimize_checked(
     // Re-decode and revalidate the emitted control flow independently.
     layout::analyze(&candidate, true)?;
     let path = out.join("Rewrites.lean");
-    let (source, names) = if matches!(selection, RewriteSelection::Proposals(_)) {
-        artifact::proposal_batch_certificate(code, &candidate, &rewrites, &copies)?
-    } else {
-        artifact::certificate(code, &candidate, &rewrites, &copies)?
+    let (source, names) = match selection {
+        RewriteSelection::Proposals(_) => {
+            artifact::proposal_batch_certificate(code, &candidate, &rewrites, &copies)?
+        }
+        RewriteSelection::Threads => {
+            artifact::thread_certificate(code, &candidate, &threads, &copies)?
+        }
+        _ => artifact::certificate(code, &candidate, &rewrites, &copies)?,
     };
     fs::write(&path, source)?;
     let lean_version = Some(proof::verify_named(&path, &names)?);

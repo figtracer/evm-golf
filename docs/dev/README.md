@@ -15,7 +15,7 @@
 | `src/runtime/scenario.rs`, `calls.rs`, `precompile.rs` | Account fixtures and guarded revm replay |
 | `src/runtime/region*` | Developer region certificates against upstream semantics |
 | `src/proof.rs`, `src/proof/upstream.rs` | Pinned Lean runners and axiom audit |
-| `lean/` | Model, stack, composition, layout and window proofs |
+| `lean/` | Model, stack, composition, layout, window and jump threading proofs |
 | `lean/upstream/` | Upstream interpreter region lemmas and templates |
 | `examples/quickstart/` | Minimal runnable project |
 | `tests/` | CLI, replay and proof regression tests |

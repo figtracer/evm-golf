@@ -231,6 +231,106 @@ pub(super) fn transform(analysis: &LayoutAnalysis) -> Result<(Vec<u8>, Vec<Rewri
     Ok((candidate, rewrites))
 }
 
+/// `PUSH source; JUMP|JUMPI` where `source` holds `JUMPDEST; PUSH target; JUMP`.
+/// Threading retargets the first PUSH to `target`, keeping its width.
+#[derive(Debug, Clone)]
+pub(super) struct Thread {
+    pub(super) pc: usize,
+    pub(super) width: usize,
+    pub(super) jump: u8,
+    pub(super) source: usize,
+    pub(super) target: usize,
+    pub(super) trampoline_width: usize,
+}
+
+impl Thread {
+    pub(super) fn rewrite(&self, code: &[u8]) -> Rewrite {
+        let end = self.pc + self.width + 2;
+        let before = &code[self.pc..end];
+        let mut after = before.to_vec();
+        after[1..1 + self.width]
+            .copy_from_slice(&U256::from(self.target).to_be_bytes::<32>()[32 - self.width..]);
+        Rewrite {
+            original_pc: self.pc,
+            before: hex::encode(before),
+            after: hex::encode(after),
+            required_stack: usize::from(self.jump == 0x57),
+        }
+    }
+}
+
+/// One-hop jump threading sites. Trampolines and every JUMPDEST stay in place;
+/// a site never overlaps a trampoline or a protected code read.
+pub(super) fn threads(analysis: &LayoutAnalysis) -> Vec<Thread> {
+    let instructions = &analysis.instructions;
+    let index: BTreeMap<_, _> = instructions
+        .iter()
+        .enumerate()
+        .map(|(i, op)| (op.pc, i))
+        .collect();
+    let jumpdest = |pc: usize| {
+        index
+            .get(&pc)
+            .is_some_and(|&i| instructions[i].bytes[0] == 0x5b)
+    };
+    let mut found = Vec::new();
+    for (i, push) in instructions.iter().enumerate() {
+        let op = push.bytes[0];
+        let Some(jump) = instructions.get(i + 1).map(|next| next.bytes[0]) else {
+            continue;
+        };
+        if !(0x60..=0x7f).contains(&op)
+            || push.bytes.len() != usize::from(op - 0x5f) + 1
+            || !matches!(jump, 0x56 | 0x57)
+            || !analysis.reachable.contains(&push.pc)
+        {
+            continue;
+        }
+        let Some(source) = push_value(&push.bytes).and_then(|v| usize::try_from(v).ok()) else {
+            continue;
+        };
+        if !jumpdest(source) {
+            continue;
+        }
+        let t = index[&source];
+        let (Some(tpush), Some(tjump)) = (instructions.get(t + 1), instructions.get(t + 2)) else {
+            continue;
+        };
+        let Some(target) = push_value(&tpush.bytes).and_then(|v| usize::try_from(v).ok()) else {
+            continue;
+        };
+        let width = push.bytes.len() - 1;
+        if tjump.bytes[0] != 0x56
+            || !jumpdest(target)
+            || target == source
+            || (width < 8 && target >> (8 * width) != 0)
+        {
+            continue;
+        }
+        found.push(Thread {
+            pc: push.pc,
+            width,
+            jump,
+            source,
+            target,
+            trampoline_width: tpush.bytes.len() - 1,
+        });
+    }
+    let trampolines: Vec<_> = found
+        .iter()
+        .map(|thread| (thread.source, thread.source + thread.trampoline_width + 3))
+        .collect();
+    found.retain(|thread| {
+        let (start, end) = (thread.pc, thread.pc + thread.width + 2);
+        !trampolines.iter().any(|&(a, b)| start < b && a < end)
+            && !analysis.copies.iter().any(|copy| {
+                (copy.len != 0 && start < copy.source + copy.len && copy.source < end)
+                    || (start < copy.pc + 1 && copy.prefix_start < end)
+            })
+    });
+    found
+}
+
 pub(super) fn is_mask(site: &Rewrite) -> bool {
     MASK_WINDOWS.iter().any(|(before, after, required)| {
         site.required_stack == *required && site.before == *before && site.after == *after
@@ -623,6 +723,54 @@ mod tests {
 
     fn bytes(input: &str) -> Vec<u8> {
         from_hex(input).unwrap()
+    }
+
+    fn thread_sites(code: &str) -> Vec<(usize, usize)> {
+        threads(&analyze(&bytes(code), true).unwrap())
+            .iter()
+            .map(|thread| (thread.pc, thread.target))
+            .collect()
+    }
+
+    #[test]
+    fn threads_retarget_literal_jumps_past_trampolines_only() {
+        // PUSH1 1; PUSH1 8; JUMPI; STOP; pad; X: JUMPDEST PUSH1 13 JUMP; STOP; Y: JUMPDEST STOP
+        let jumpi = "60016008570000005b600d56005b00";
+        assert_eq!(thread_sites(jumpi), [(2, 13)]);
+        let thread = &threads(&analyze(&bytes(jumpi), true).unwrap())[0];
+        let rewrite = thread.rewrite(&bytes(jumpi));
+        assert_eq!(
+            (rewrite.before.as_str(), rewrite.after.as_str()),
+            ("600857", "600d57")
+        );
+        assert_eq!(rewrite.required_stack, 1);
+        // Unconditional JUMP through the same trampoline.
+        assert_eq!(thread_sites("60085600000000005b600d56005b00"), [(0, 13)]);
+        for (name, code) in [
+            // Target is not a JUMPDEST.
+            ("not-jumpdest", "60016008570000005b600d560000"),
+            // Target JUMPDEST byte is PUSH data.
+            ("push-data", "60016008570000005b600e5600605b00"),
+            // Trampoline jumps to itself.
+            ("self", "60016008570000005b600856"),
+            // Trampoline ends in JUMPI, not JUMP.
+            ("jumpi-trampoline", "60016008570000005b600d57005b00"),
+            // The retargeted PUSH is unreachable.
+            ("unreachable", "0060095700000000005b600e56005b00"),
+        ] {
+            assert!(thread_sites(code).is_empty(), "{name}");
+        }
+        // Target 0x100 does not fit the one-byte source PUSH.
+        let mut wide = String::from("6001600857000000");
+        wide.push_str("5b61010056");
+        wide.push_str(&"00".repeat(0x100 - 13));
+        wide.push_str("5b00");
+        assert!(thread_sites(&wide).is_empty());
+        // A site inside another site's trampoline is left alone: X chains to Y,
+        // which chains to Z; only the outer jump is threaded per stage.
+        let chain = "60016008570000005b600d56005b60135600005b00";
+        assert_eq!(threads(&analyze(&bytes(chain), true).unwrap()).len(), 1);
+        assert_eq!(thread_sites(chain), [(2, 13)]);
     }
     fn case(input: &str) -> Case {
         Case {

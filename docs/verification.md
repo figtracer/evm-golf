@@ -19,12 +19,19 @@ metadata is accepted. One certificate covers the whole runtime and proves:
   and substitution holds under any completely decoded prefix and suffix
   ([lean/Composition.lean](../lean/Composition.lean)).
 
+- **Jump threading.** In a control-flow model of PUSH, JUMPDEST, JUMP and JUMPI
+  over the full images ([lean/Threading.lean](../lean/Threading.lean)), the
+  candidate reaches in two steps the same program counter and stack that the
+  original reaches after also running the trampoline, including the same stack
+  faults, for every input stack. Jump destinations are computed from the bytes
+  and proved equal in both images.
+
 Only Lean's foundational axioms (`propext`, `Classical.choice`, `Quot.sound`)
 may appear in the axiom report, and every expected theorem must be reported.
 The pinned toolchain is Lean 4.34.0. Each certificate must check within 60
 seconds; any failure or timeout rejects the candidate.
 
-The model erases gas and does not interpret calls, storage or memory. It does not
+The models erase gas and do not interpret calls, storage or memory. It does not
 prove which stack heights the surrounding program reaches, or that the model
 matches revm for every instruction.
 

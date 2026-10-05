@@ -56,7 +56,7 @@ Try it on [examples/quickstart](examples/quickstart):
 
 ## Results
 
-Measured with the current rewrite catalog, aggregated over the supplied
+Measured before jump threading was added, aggregated over the supplied
 transactions (every stage proved and replayed):
 
 | Workload | Baseline | Transactions | Gas saved |
@@ -75,12 +75,14 @@ them. Typical accepted rewrites:
 | `PUSH1 0x20 DUP2 SWAP1` | `DUP1 PUSH2 0x0020` | 3 |
 | `PUSH1 a PUSH1 0x20 SWAP1` | `PUSH1 0x20 PUSH2 a` | 3 |
 | `POP PUSH2 c SWAP3 POP POP POP` | `POP POP POP POP PUSH3 c` | 3 |
+| `PUSH2 X JUMPI`, X: `JUMPDEST PUSH2 Y JUMP` | `PUSH2 Y JUMPI` | 12 when taken |
 
 Widened PUSH immediates keep every byte offset unchanged.
 
 ## What is and is not proven
 
-Accepted changes carry local Lean certificates over a bounded stack model, bound to the exact full bytecode, plus replay of your transactions. That is
+Accepted changes carry local Lean certificates over bounded stack and control-flow
+models, bound to the exact full bytecode, plus replay of your transactions. That is
 not whole-contract equivalence: inputs, states and gas limits outside your
 scenarios are not covered, and contracts are optimized independently.
 Only a subset of opcodes and control flow is supported. See

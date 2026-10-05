@@ -25,6 +25,10 @@ rejected.
 
 Built-in rules (applied by `optimize`):
 
+- Jump threading: `PUSH X; JUMP` or `PUSH X; JUMPI`, where X holds
+  `JUMPDEST; PUSH Y; JUMP`, becomes `PUSH Y` with the same width, saving 12 gas
+  each time the jump is taken. The trampoline stays for other callers; sites never
+  overlap a trampoline or a protected code read. At most 32 sites per stage.
 - MUL by 0, 1 or a power of two becomes AND 0, ADD 0 or SHL.
 - Zero DUP chains reuse PUSH0; two-literal AND and SHL fold into one literal.
 - Repeated address masks and 224-bit mask construction are simplified.

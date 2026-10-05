@@ -330,3 +330,49 @@ fn literal_folds_need_no_input_stack() {
         "60036000505f5260205ff3"
     );
 }
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn jumps_are_threaded_past_trampolines() {
+    let dir = tempdir().unwrap();
+    // CALLDATALOAD(0) selects the JUMPI; X = 8 is `JUMPDEST; PUSH1 13; JUMP`.
+    let code = "5f356008570000005b600d56005b00";
+    let taken = format!("{:064x}", 1);
+    let out = dir.path().join("threaded");
+    runtime::optimize_scenarios_threads(
+        &runtime::from_hex(code).unwrap(),
+        &scenarios(json!([
+            {"calldata":taken,"gas_limit":100000},
+            {"calldata":"","gas_limit":100000}
+        ])),
+        &out,
+    )
+    .unwrap();
+    let report: Value =
+        serde_json::from_slice(&fs::read(out.join("result.json")).unwrap()).unwrap();
+    assert_eq!(report["rewrites"].as_array().unwrap().len(), 1);
+    assert_eq!(saved(&report, 0), 12);
+    assert_eq!(saved(&report, 1), 0);
+    assert_eq!(
+        fs::read_to_string(out.join("candidate.hex"))
+            .unwrap()
+            .trim(),
+        "5f35600d570000005b600d56005b00"
+    );
+    assert!(
+        fs::read_to_string(out.join("Rewrites.log"))
+            .unwrap()
+            .contains("thread_0")
+    );
+    // No trampoline: the stage refuses to run rather than accept a no-op.
+    let out = dir.path().join("none");
+    assert!(
+        runtime::optimize_scenarios_threads(
+            &runtime::from_hex("00").unwrap(),
+            &scenarios(json!([{"calldata":"","gas_limit":100000}])),
+            &out,
+        )
+        .is_err()
+    );
+    assert!(!out.join("result.json").exists());
+}

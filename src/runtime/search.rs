@@ -3,7 +3,7 @@
 
 use super::{
     CaseResult, ReplayPolicy, Report, RewritePlan, RewriteProposalBatch, RewriteProposalSite,
-    RewriteSelection, discover_proposals, optimize_scenarios_selected, scenario,
+    RewriteSelection, discover_proposals, optimize_scenarios_selected, scenario, thread_sites,
 };
 use anyhow::{Context as _, Result, ensure};
 use revm::primitives::{hex, keccak256};
@@ -108,9 +108,22 @@ fn search_with(
         let key = |site: &RewriteProposalSite| {
             (site.original_pc, site.before.clone(), site.after.clone())
         };
+        let mut threads_failed = false;
         for round in 1..=rounds {
             let mut changed = false;
-            for proposals in [false, true] {
+            for kind in ["builtins", "threads", "proposals"] {
+                let proposals = kind == "proposals";
+                let threads = kind == "threads";
+                // Threading runs only when sites exist; a failed threading
+                // stage is recorded and threading is not retried.
+                let thread_count = if threads && !threads_failed {
+                    thread_sites(&candidate)?
+                } else {
+                    0
+                };
+                if threads && thread_count == 0 {
+                    continue;
+                }
                 let mut sites: Vec<RewriteProposalSite> = if proposals {
                     discover_proposals(&candidate)?
                         .sites
@@ -121,10 +134,7 @@ fn search_with(
                     Vec::new()
                 };
                 for attempt in 0.. {
-                    let mut directory = format!(
-                        "round-{round}-{}",
-                        if proposals { "proposals" } else { "builtins" }
-                    );
+                    let mut directory = format!("round-{round}-{kind}");
                     if attempt > 0 {
                         directory.push_str(&format!("-retry-{attempt}"));
                     }
@@ -139,7 +149,9 @@ fn search_with(
                         original_keccak256: input.clone(),
                         sites: sites.clone(),
                     };
-                    let selection = if !proposals {
+                    let selection = if threads {
+                        RewriteSelection::Threads
+                    } else if !proposals {
                         RewriteSelection::All
                     } else if sites.is_empty() {
                         RewriteSelection::Plan(&identity)
@@ -164,6 +176,15 @@ fn search_with(
                                     sites.truncate(sites.len() / 2);
                                 }
                                 continue;
+                            }
+                            Err(error) if threads => {
+                                report.failures.push(SearchFailure {
+                                    directory,
+                                    sites: thread_count,
+                                    error: format!("{error:#}"),
+                                });
+                                threads_failed = true;
+                                break;
                             }
                             Err(error) => {
                                 return Err(error.context(format!("search stage {directory}")));
