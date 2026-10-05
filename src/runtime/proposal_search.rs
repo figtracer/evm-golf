@@ -19,6 +19,9 @@ const MIN_SOURCE_OPS: usize = 2;
 const MAX_SOURCE_OPS: usize = 6;
 const INPUT_WORDS: usize = 8;
 const MAX_PEAK: usize = 2;
+// Up to two PUSH literals per window, modelled as opaque words distinct from
+// inputs. In replacement op lists, these marker bytes place each literal.
+const LITERAL_OPS: [u8; 2] = [0x5f, 0x60];
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 struct State {
@@ -55,9 +58,10 @@ impl State {
     fn apply(&self, op: u8) -> Option<Self> {
         let mut next = self.clone();
         let need = match op {
+            0x5f | 0x60 => 0,
             0x50 => 1,
             0x80..=0x87 => usize::from(op - 0x7f),
-            0x90..=0x96 => usize::from(op - 0x8e),
+            0x90..=0x97 => usize::from(op - 0x8e),
             _ => return None,
         };
         let height = self.words.len() as isize - INPUT_WORDS as isize;
@@ -66,6 +70,7 @@ impl State {
             return None;
         }
         match op {
+            0x5f | 0x60 => next.words.insert(0, 0xff - (op - 0x5f)),
             0x50 => {
                 next.words.remove(0);
             }
@@ -86,33 +91,151 @@ impl State {
     }
 }
 
+/// Record sequences placing exactly `literals` opaque PUSH words (each marker
+/// once) among up to MAX_REPLACEMENT_OPS stack ops. Gas excludes the PUSHes,
+/// whose cost depends on the final immediate width.
 fn enumerate(
     state: State,
     ops: &mut Vec<u8>,
     gas: u64,
+    literals: usize,
     table: &mut HashMap<State, Vec<Replacement>>,
 ) {
-    table.entry(state.clone()).or_default().push(Replacement {
-        ops: ops.clone(),
-        gas,
-    });
-    if ops.len() == MAX_REPLACEMENT_OPS {
-        return;
+    let placed = ops.iter().filter(|op| LITERAL_OPS.contains(op)).count();
+    if placed == literals {
+        table.entry(state.clone()).or_default().push(Replacement {
+            ops: ops.clone(),
+            gas,
+        });
     }
-    for op in ALPHABET {
+    let stack_full = ops.len() - placed == MAX_REPLACEMENT_OPS;
+    let pushes: Vec<_> = LITERAL_OPS[..literals]
+        .iter()
+        .copied()
+        .filter(|op| !ops.contains(op))
+        .collect();
+    let stack = ALPHABET.into_iter().filter(|_| !stack_full);
+    for op in stack.chain(pushes) {
         if let Some(next) = state.apply(op) {
+            let cost = match op {
+                0x50 => 2,
+                op if LITERAL_OPS.contains(&op) => 0,
+                _ => 3,
+            };
             ops.push(op);
-            enumerate(next, ops, gas + if op == 0x50 { 2 } else { 3 }, table);
+            enumerate(next, ops, gas + cost, literals, table);
             ops.pop();
         }
     }
 }
 
+fn push_gas(width: usize) -> u64 {
+    if width == 0 { 2 } else { 3 }
+}
+
+/// Windows with one or two PUSH literals and up to MAX_SOURCE_OPS stack ops,
+/// rewritten to any cheaper enumerated placement. PUSHes are widened by the
+/// removed stack-op count to keep offsets fixed; the shared certificate filters.
+fn literal_placements(
+    instructions: &[Instruction],
+    tables: &[HashMap<State, Vec<Replacement>>; 2],
+    eligibility: &mut HashMap<(Vec<u8>, Vec<u8>), bool>,
+) -> Option<Candidate> {
+    let first = instructions.first()?;
+    let mut state = State::initial();
+    let mut stack_ops = 0;
+    let mut stack_gas = 0;
+    let mut literals: Vec<&[u8]> = Vec::new();
+    let mut before = Vec::new();
+    let mut best: Option<Candidate> = None;
+    for instruction in instructions.iter().take(MAX_SOURCE_OPS + LITERAL_OPS.len()) {
+        let op = instruction.bytes[0];
+        let next = if literals.len() < LITERAL_OPS.len() && push_value(&instruction.bytes).is_some()
+        {
+            literals.push(&instruction.bytes[1..]);
+            state.apply(LITERAL_OPS[literals.len() - 1])
+        } else if (ALPHABET.contains(&op) || op == 0x97) && stack_ops < MAX_SOURCE_OPS {
+            stack_ops += 1;
+            stack_gas += if op == 0x50 { 2 } else { 3 };
+            state.apply(op)
+        } else {
+            None
+        };
+        let Some(next) = next else { break };
+        state = next;
+        before.extend_from_slice(&instruction.bytes);
+        if literals.is_empty() || stack_ops == 0 {
+            continue;
+        }
+        let old_gas = stack_gas + literals.iter().map(|l| push_gas(l.len())).sum::<u64>();
+        // Pad nonzero-width literals first: widening PUSH0 costs one gas.
+        let mut order: Vec<_> = (0..literals.len()).collect();
+        order.sort_by_key(|&i| literals[i].is_empty());
+        let mut options: Vec<_> = tables[literals.len() - 1]
+            .get(&state)
+            .into_iter()
+            .flatten()
+            .filter_map(|replacement| {
+                let mut padding =
+                    (stack_ops + literals.len()).checked_sub(replacement.ops.len())?;
+                let mut pads = vec![0; literals.len()];
+                for &i in &order {
+                    pads[i] = padding.min(32 - literals[i].len());
+                    padding -= pads[i];
+                }
+                let gas = replacement.gas
+                    + (0..literals.len())
+                        .map(|i| push_gas(literals[i].len() + pads[i]))
+                        .sum::<u64>();
+                (padding == 0 && gas < old_gas).then_some((gas, pads, replacement))
+            })
+            .collect();
+        options.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.ops.cmp(&b.2.ops)));
+        for (gas, pads, replacement) in options {
+            if best
+                .as_ref()
+                .is_some_and(|best| best.saving >= old_gas - gas)
+            {
+                break;
+            }
+            let mut after = Vec::with_capacity(before.len());
+            for &op in &replacement.ops {
+                if let Some(i) = LITERAL_OPS.iter().position(|&marker| marker == op) {
+                    after.push(0x5f + (literals[i].len() + pads[i]) as u8);
+                    after.extend(std::iter::repeat_n(0, pads[i]));
+                    after.extend_from_slice(literals[i]);
+                } else {
+                    after.push(op);
+                }
+            }
+            let eligible = *eligibility
+                .entry((before.clone(), after.clone()))
+                .or_insert_with(|| window_proposal::certificate(&before, &after).is_ok());
+            if eligible {
+                best = Some(Candidate {
+                    start: first.pc,
+                    end: first.pc + before.len(),
+                    before: before.clone(),
+                    after,
+                    required: state.required,
+                    saving: old_gas - gas,
+                });
+                break;
+            }
+        }
+    }
+    best
+}
+
 pub(super) fn discover(original: &[u8]) -> Result<RewriteProposalBatch> {
     let analysis = layout::analyze(original, true)?;
     let instructions = decode(original);
-    let mut table = HashMap::default();
-    enumerate(State::initial(), &mut Vec::new(), 0, &mut table);
+    let [table, one, two] = [0, 1, 2].map(|literals| {
+        let mut table = HashMap::default();
+        enumerate(State::initial(), &mut Vec::new(), 0, literals, &mut table);
+        table
+    });
+    let literal_tables = [one, two];
     let mut eligibility = HashMap::<(Vec<u8>, Vec<u8>), bool>::default();
     let mut candidates = Vec::new();
     for (index, first) in instructions.iter().enumerate() {
@@ -120,6 +243,11 @@ pub(super) fn discover(original: &[u8]) -> Result<RewriteProposalBatch> {
             continue;
         }
         if let Some(candidate) = literal_candidate(&instructions[index..]) {
+            candidates.push(candidate);
+        }
+        if let Some(candidate) =
+            literal_placements(&instructions[index..], &literal_tables, &mut eligibility)
+        {
             candidates.push(candidate);
         }
         let mut state = State::initial();
@@ -367,6 +495,8 @@ mod tests {
             ("5f979097", "96610000"),
             ("613140909190", "906300003140"),
             ("5f909790", "96610000"),
+            ("60208190", "80610020"),
+            ("506116c392505050", "50505050620016c3"),
         ] {
             let code = from_hex(&format!("5f5f5f5f5f5f5f5f{before}00")).unwrap();
             let batch = discover(&code).unwrap();
@@ -410,6 +540,58 @@ mod tests {
     }
 
     #[test]
+    fn literal_placement_respects_push_width_and_literal_count() {
+        let tables = [1, 2].map(|literals| {
+            let mut table = HashMap::default();
+            enumerate(State::initial(), &mut Vec::new(), 0, literals, &mut table);
+            table
+        });
+        let mut eligibility = HashMap::default();
+        // PUSHw c; DUP2; SWAP1 = DUP1; PUSH(w+1) c, only while w + 1 <= 32.
+        for width in [0usize, 1, 31, 32] {
+            let mut before = vec![0x5f + width as u8];
+            before.extend(std::iter::repeat_n(0xab, width));
+            before.extend([0x81, 0x90]);
+            let found = literal_placements(&decode(&before), &tables, &mut eligibility);
+            if width < 32 {
+                let found = found.unwrap();
+                let mut after = vec![0x80, 0x60 + width as u8, 0];
+                after.extend(std::iter::repeat_n(0xab, width));
+                assert_eq!((found.before, found.after), (before, after));
+            } else {
+                assert!(found.is_none());
+            }
+        }
+        // Two literals swap by reordering the PUSHes; the nonzero one is widened.
+        for (before, after) in [
+            ("600160029000", "6002610001"),
+            ("5f60029000", "6100025f00"),
+            ("5f5f9000", "5f60000000"),
+        ] {
+            let found = literal_placements(
+                &decode(&from_hex(before).unwrap()),
+                &tables,
+                &mut eligibility,
+            )
+            .unwrap();
+            assert_eq!(
+                hex::encode(found.after),
+                &after[..found.before.len() * 2],
+                "{before}"
+            );
+        }
+        // A third literal ends the window.
+        assert!(
+            literal_placements(
+                &decode(&[0x60, 1, 0x60, 2, 0x60, 3]),
+                &tables,
+                &mut eligibility
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn discovers_deterministic_permutations_and_checked_dup_aliases() {
         for (before, expected) in [
             ("9092509050612270", "9150915062002270"),
@@ -435,7 +617,8 @@ mod tests {
         let before = from_hex("9090506001").unwrap();
         let after = from_hex("5080506001").unwrap();
         assert!(window_proposal::certificate(&before, &after).is_err());
-        let code = [vec![0x5f, 0x5f], before, vec![0]].concat();
+        // CALLDATASIZE supplies stack words without forming a literal window.
+        let code = [vec![0x36, 0x36], before, vec![0]].concat();
         assert!(discover(&code).unwrap().sites.is_empty());
     }
 

@@ -13,7 +13,8 @@
 EVM Golf optimizes EVM expressions and supported runtime bytecode using e-graphs,
 Lean proofs, and revm execution checks. Agents can propose rewrites, verify
 candidates, and compete on fixed expression puzzles. Runtime discovery also finds
-supported stack rearrangements, zero additions, and repeated masks.
+supported stack rearrangements, including around pushed constants, zero additions,
+and repeated masks.
 
 See the [runtime guide](docs/runtime.md) for contract optimization and the
 [region checker](docs/regions.md) for conditional proofs against pinned EVM semantics.

@@ -104,8 +104,12 @@ proposal was found within this search; the optimizer rejects empty batches.
 The finite search enumerates up to four POP, SWAP1–SWAP7 or DUP1–DUP8 instructions
 (69,905 raw sequences), within the existing eight-input and two-extra-slot bounds.
 It examines two to six such source instructions followed by a PUSH, and can widen
-that PUSH's immediate to keep byte offsets unchanged. These limits bound search
-work; they do not establish global optimality or completeness for other windows.
+that PUSH's immediate to keep byte offsets unchanged. A second pass treats one or
+two PUSHes in a window of up to six such instructions or SWAP8 as opaque words and
+tries every enumerated placement of them among up to four instructions, again
+widening a PUSH.
+These limits bound search work; they do not establish global optimality or
+completeness for other windows.
 It also proposes zero-addition cleanup, repeated-mask removal, and swaps around
 a pushed constant, including redundant DUP/POP sequences and three-swap cleanup.
 These patterns use the same certificate and layout guards.
