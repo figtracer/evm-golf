@@ -26,6 +26,7 @@
 | `lean/Certificates.lean` | Soundness of the shared exact-site checker |
 | `lean/LayoutScanner.lean` | Shared PUSH-aware scan definitions for both Lean toolchains |
 | `lean/Layout.lean` | Exact fixed-layout reconstruction, local proofs and constant-copy byte binding |
+| `lean/LayoutChunks.lean` | Scan decomposition over shared unchanged gaps for layout and batch artifacts |
 | `tests/` | Execution, CLI, proof, and campaign regression tests |
 | `challenges.json` | Puzzle IDs, descriptions, and reference expressions |
 | `scripts/` | Toolchain setup and repository checks |

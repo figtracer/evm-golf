@@ -4,7 +4,8 @@ use anyhow::{Result, ensure};
 use std::{collections::BTreeMap, fmt::Write as _};
 
 use super::{
-    MAX_PROPOSAL_SITES, MAX_RUNTIME_BYTES, Rewrite, certificates, decode, from_hex, layout,
+    Instruction, MAX_PROPOSAL_SITES, MAX_RUNTIME_BYTES, Rewrite, certificates, decode, from_hex,
+    layout,
     window_proposal::{self, WindowProof},
 };
 
@@ -23,6 +24,7 @@ const STACK_MODEL: &str = include_str!("../../lean/Stack.lean");
 const COMPOSITION_MODEL: &str = include_str!("../../lean/Composition.lean");
 const LAYOUT_SCANNER: &str = include_str!("../../lean/LayoutScanner.lean");
 const LAYOUT_MODEL: &str = include_str!("../../lean/Layout.lean");
+const LAYOUT_CHUNKS: &str = include_str!("../../lean/LayoutChunks.lean");
 // A full EIP-170 image exceeded 65K recursive elaboration depth and the default
 // heartbeat budget. Kernel reduction at these limits checked 24,576 bytes; the
 // existing 60-second wall-clock proof budget still bounds the entire attempt.
@@ -68,8 +70,18 @@ pub(super) fn certificate(
     source.push_str("\nnamespace GolfArtifact\n");
     // Embed both actual images independently; never define candidate by applying
     // the proposed patches, which would conceal errors in the Rust emitter.
-    writeln!(source, "def original : List Nat := {original:?}").unwrap();
-    writeln!(source, "def candidate : List Nat := {candidate:?}").unwrap();
+    // Kernel checks never execute compiled code; skipping codegen for the
+    // image literals avoids compiling ~24K-element lists for every proof.
+    writeln!(
+        source,
+        "noncomputable def original : List Nat := {original:?}"
+    )
+    .unwrap();
+    writeln!(
+        source,
+        "noncomputable def candidate : List Nat := {candidate:?}"
+    )
+    .unwrap();
     source.push_str("def sites : List GolfLayout.Site := [\n");
     for (i, rewrite) in rewrites.iter().enumerate() {
         let before = from_hex(&rewrite.before)?;
@@ -115,9 +127,61 @@ pub(super) fn certificate(
         source.push_str("\nend GolfArtifact\n#print axioms GolfArtifact.window_artifact\n");
         return Ok((source, vec!["GolfArtifact.window_artifact".into()]));
     }
-    source.push_str(
-        "\ntheorem layout_artifact :\n  GolfLayout.LayoutArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.sites := by\n  refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, ?_⟩\n  exact GolfReflected.checkSites_sound GolfArtifact.sites (by decide +kernel)\n#print axioms layout_artifact\n",
-    );
+    // Deciding equality of two full scans is slow in the kernel once the images
+    // differ (see shared_scan), so artifacts with up to a batch of sites derive it from
+    // shared gap rows. Larger site lists keep the direct decision.
+    let same_layout = if rewrites.is_empty() || rewrites.len() > MAX_PROPOSAL_SITES {
+        "by decide +kernel"
+    } else {
+        let decoded = rewrites
+            .iter()
+            .map(|rewrite| {
+                Ok((
+                    rewrite.original_pc,
+                    from_hex(&rewrite.before)?,
+                    from_hex(&rewrite.after)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let sites: Vec<_> = decoded
+            .iter()
+            .map(|(pc, before, after)| (*pc, before.as_slice(), after.as_slice()))
+            .collect();
+        // Shapes the emitter cannot share keep the direct decision, so invalid
+        // artifacts still fail in the kernel rather than in this generator.
+        let mut shared = format!(
+            "\n-- Shared scan rows for layout_artifact.\n{LAYOUT_CHUNKS}\nnamespace GolfArtifact\nopen GolfLayout\n"
+        );
+        let shape = |code| {
+            decode(code)
+                .iter()
+                .map(|op| (op.pc, op.bytes.len(), op.bytes[0] == 0x5b))
+                .collect::<Vec<_>>()
+        };
+        if sites
+            .iter()
+            .all(|(_, before, after)| shape(before) == shape(after))
+            && shared_scan(&mut shared, original, candidate, &sites).is_ok()
+        {
+            source.push_str(&shared);
+            let mut rows = Vec::new();
+            for i in 0..sites.len() {
+                writeln!(
+                    source,
+                    "theorem rows_{i} : oldRows_{i} = newRows_{i} := by decide +kernel"
+                )
+                .unwrap();
+                rows.push(format!("rows_{i}"));
+            }
+            writeln!(source, "theorem sameLayout : scan original = scan candidate := by\n rw [originalShared, candidateShared, {}]\nend GolfArtifact", rows.join(", ")).unwrap();
+            "GolfArtifact.sameLayout"
+        } else {
+            "by decide +kernel"
+        }
+    };
+    writeln!(source,
+        "\ntheorem layout_artifact :\n  GolfLayout.LayoutArtifact GolfArtifact.original GolfArtifact.candidate GolfArtifact.sites := by\n  refine ⟨by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel, {same_layout}, by decide +kernel, by decide +kernel, ?_⟩\n  exact GolfReflected.checkSites_sound GolfArtifact.sites (by decide +kernel)\n#print axioms layout_artifact",
+    ).unwrap();
     let mut names = vec!["layout_artifact".into()];
     if !copies.is_empty() {
         source.push_str("\nnamespace GolfArtifact\ndef copies : List GolfLayout.CodeCopy := [\n");
@@ -195,7 +259,7 @@ pub(super) fn proposal_certificate(
     )
     .unwrap();
     // Embed independently supplied images; the kernel must check reconstruction.
-    writeln!(source, "def original : List Nat := {original:?}\ndef candidate : List Nat := {candidate:?}\ndef copies : List GolfLayout.CodeCopy := [").unwrap();
+    writeln!(source, "noncomputable def original : List Nat := {original:?}\nnoncomputable def candidate : List Nat := {candidate:?}\ndef copies : List GolfLayout.CodeCopy := [").unwrap();
     for (i, copy) in copies.iter().enumerate() {
         writeln!(
             source,
@@ -209,10 +273,150 @@ pub(super) fn proposal_certificate(
         )
         .unwrap();
     }
-    writeln!(source, "]\ndef artifact : GenericWindowArtifact original candidate site copies {} ({}) {} {} {} :=\n certify localCertificate (by decide +kernel)\nend GolfProposedArtifact\n#print axioms GolfProposedArtifact.artifact",
+    writeln!(source, "]\nnoncomputable def artifact : GenericWindowArtifact original candidate site copies {} ({}) {} {} {} :=\n certify localCertificate (by decide +kernel)\nend GolfProposedArtifact\n#print axioms GolfProposedArtifact.artifact",
         local.required, local.delta, local.peak, local.before_ops, local.after_ops).unwrap();
     names.push("GolfProposedArtifact.artifact".into());
     Ok((source, names))
+}
+
+/// Emit `originalShared`/`candidateShared`: both independent images split into
+/// the same symbolic unchanged gaps and per-site window rows. Requires the
+/// LayoutChunks model and `original`/`candidate` definitions in scope. The
+/// kernel then never compares two full scans, which took ~48s on one Balancer
+/// image versus <1s for a single scan.
+/// Returns each gap's start, end and scan fuel.
+fn shared_scan(
+    source: &mut String,
+    original: &[u8],
+    candidate: &[u8],
+    windows: &[(usize, &[u8], &[u8])],
+) -> Result<Vec<(usize, usize, usize)>> {
+    // Full independent arrays stay above. Complete unchanged gaps are shared
+    // symbolically; every rendered split and local row list is kernel checked.
+    ensure!(
+        original.len() == candidate.len(),
+        "proposal candidate must preserve the original length"
+    );
+    let mut gaps = Vec::new();
+    let mut chunks = [Vec::new(), Vec::new()];
+    let mut rows = [Vec::new(), Vec::new()];
+    let mut gap_start = 0;
+    let count = windows.len();
+    for site in 0..=count {
+        let end = windows.get(site).map_or(original.len(), |window| window.0);
+        ensure!(
+            gap_start <= end && end <= original.len(),
+            "proposal sites must be sorted, disjoint and inside the original"
+        );
+        let gap = &original[gap_start..end];
+        ensure!(
+            gap == &candidate[gap_start..end],
+            "proposal candidate changes an unchanged gap"
+        );
+        let instructions = decode(gap);
+        let fuel = if site < count {
+            ensure!(
+                complete(&instructions),
+                "proposal boundary truncates a PUSH instruction"
+            );
+            instructions.len()
+        } else {
+            // The final gap may contain a truncated PUSH, like canonical scan.
+            gap.len()
+        };
+        writeln!(source, "noncomputable def gap_{site} : List Nat := {gap:?}\ntheorem gap_{site}_length : gap_{site}.length = {} := by decide +kernel", gap.len()).unwrap();
+        if site < count {
+            writeln!(source, "theorem gap_{site}_complete : CompleteScanPrefix gap_{site} {fuel} := completeCount_sound (gap_{site}.length+1) gap_{site} {fuel} (by decide +kernel)\nnoncomputable def gapChunk_{site} : CompleteChunk := ⟨gap_{site}, {fuel}, gap_{site}_complete⟩").unwrap();
+        }
+        writeln!(
+            source,
+            "noncomputable def gapRows_{site} : List (Nat × Nat × Bool) := scanAux {fuel} {gap_start} gap_{site}"
+        )
+        .unwrap();
+        gaps.push((gap_start, end, fuel));
+        if site == count {
+            break;
+        }
+        let (pc, before, after) = windows[site];
+        gap_start = pc + before.len();
+        ensure!(
+            before.len() == after.len()
+                && original.get(pc..gap_start) == Some(before)
+                && candidate.get(pc..gap_start) == Some(after),
+            "site bytes do not match both images"
+        );
+        ensure!(
+            complete(&decode(before)) && complete(&decode(after)),
+            "site truncates a PUSH instruction"
+        );
+        for ((side, code), (chunks, rows)) in [("old", before), ("new", after)]
+            .into_iter()
+            .zip(chunks.iter_mut().zip(rows.iter_mut()))
+        {
+            let instructions = decode(code);
+            let operations = instructions.len();
+            writeln!(source, "def {side}Chunk_{site} : CompleteChunk := ⟨{code:?}, {operations}, completeCount_sound ({}+1) {code:?} {operations} (by decide +kernel)⟩", code.len()).unwrap();
+            write!(
+                source,
+                "def {side}Rows_{site} : List (Nat × Nat × Bool) := ["
+            )
+            .unwrap();
+            for (index, instruction) in instructions.iter().enumerate() {
+                write!(
+                    source,
+                    "{}({}, {}, {})",
+                    if index == 0 { "" } else { ", " },
+                    pc + instruction.pc,
+                    instruction.bytes.len(),
+                    instruction.bytes[0] == 0x5b
+                )
+                .unwrap();
+            }
+            writeln!(source, "]\ntheorem {side}Rows_{site}_exact : scanAux {operations} {pc} {code:?} = {side}Rows_{site} := by decide +kernel").unwrap();
+            chunks.extend([format!("gapChunk_{site}"), format!("{side}Chunk_{site}")]);
+            rows.extend([format!("gapRows_{site}"), format!("{side}Rows_{site}")]);
+        }
+    }
+    let prefix_end = gaps.last().unwrap().0;
+    for ((side, image), (chunks, rows)) in [("old", "original"), ("new", "candidate")]
+        .into_iter()
+        .zip(chunks.iter().zip(rows.iter_mut()))
+    {
+        writeln!(source, "noncomputable def {side}Chunks : List CompleteChunk := [{}]\ntheorem {image}_split : {image} = chunkBytes {side}Chunks ++ gap_{count} := by decide +kernel\ntheorem {side}Chunks_length : (chunkBytes {side}Chunks).length = {prefix_end} := by decide +kernel", chunks.join(", ")).unwrap();
+        let mut definitions = vec![format!("{side}Chunks"), "chunkRows".into()];
+        definitions.extend((0..count).map(|i| format!("gapChunk_{i}")));
+        definitions.extend((0..count).map(|i| format!("{side}Chunk_{i}")));
+        definitions.extend((0..count).map(|i| format!("gap_{i}_length")));
+        definitions.extend((0..count).map(|i| format!("{side}Rows_{i}_exact")));
+        definitions.extend(
+            [
+                "List.length_cons",
+                "List.length_nil",
+                "Nat.reduceAdd",
+                "List.append_nil",
+                "List.append_assoc",
+            ]
+            .map(str::to_owned),
+        );
+        // Associativity must be proved symbolically: rfl alone can normalize the
+        // entire shared scan to reconcile differently associated append trees.
+        writeln!(source, "theorem {side}Chunks_rows : chunkRows 0 {side}Chunks = {} := by\n simp only [{}] <;> rfl", rows.join(" ++ "), definitions.join(", ")).unwrap();
+        rows.push(format!("gapRows_{count}"));
+        writeln!(source, "theorem {image}Shared : scan {image} = {} := by\n rw [{image}_split, scan_complete_chunks, {side}Chunks_length, {side}Chunks_rows]\n simp only [gap_{count}_length, List.append_assoc] <;> rfl", rows.join(" ++ ")).unwrap();
+    }
+    Ok(gaps)
+}
+
+fn complete(instructions: &[Instruction]) -> bool {
+    instructions.iter().all(|instruction| {
+        let op = instruction.bytes[0];
+        instruction.bytes.len()
+            == if (0x60..=0x7f).contains(&op) {
+                usize::from(op - 0x5f) + 1
+            } else {
+                1
+            }
+    })
 }
 
 /// One fresh proof binds every disjoint proposal to the immutable original.
@@ -273,9 +477,9 @@ pub(super) fn proposal_batch_certificate(
         source.push_str(&proof.source);
         names.extend(proof.names.iter().cloned());
     }
-    writeln!(source,"\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\n{}\n{}\n{}",
+    writeln!(source,"\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\n{}\n{}\n{}\n{}",
         include_str!("../../lean/GenericWindowArtifact.lean"),include_str!("../../lean/GenericWindowBatch.lean"),
-        include_str!("../../lean/GenericWindowScan.lean")).unwrap();
+        include_str!("../../lean/LayoutChunks.lean"),include_str!("../../lean/GenericWindowScan.lean")).unwrap();
     source.push_str("\nnamespace GolfProposedBatch\nopen GolfLayout GolfGenericWindow\n");
     for (index, (before, after, proof)) in proofs.iter().enumerate() {
         let namespace = format!("GolfGenerated.Pair{index}");
@@ -329,7 +533,7 @@ pub(super) fn proposal_batch_certificate(
     }
     source.push('\n');
     // Both complete arrays are independent inputs, not an application-defined candidate.
-    writeln!(source,"def original : List Nat := {original:?}\ndef candidate : List Nat := {candidate:?}\ndef copies : List GolfLayout.CodeCopy := [").unwrap();
+    writeln!(source,"noncomputable def original : List Nat := {original:?}\nnoncomputable def candidate : List Nat := {candidate:?}\ndef copies : List GolfLayout.CodeCopy := [").unwrap();
     for (i, copy) in copies.iter().enumerate() {
         writeln!(
             source,
@@ -344,52 +548,18 @@ pub(super) fn proposal_batch_certificate(
         .unwrap();
     }
     source.push_str("]\n");
-    // Full independent arrays stay above. Complete unchanged gaps are shared
-    // symbolically; every rendered split and local row list is kernel checked.
-    ensure!(
-        original.len() == candidate.len(),
-        "proposal candidate must preserve the original length"
-    );
-    let mut old_chunks = Vec::new();
-    let mut new_chunks = Vec::new();
-    let mut old_rows = Vec::new();
-    let mut new_rows = Vec::new();
-    let mut gap_start = 0;
+    let windows: Vec<_> = rewrites
+        .iter()
+        .zip(&indexes)
+        .map(|(rewrite, &index)| {
+            let (before, after, _) = &proofs[index];
+            (rewrite.original_pc, before.as_slice(), after.as_slice())
+        })
+        .collect();
+    let gaps = shared_scan(&mut source, original, candidate, &windows)?;
     let count = rewrites.len();
-    for site in 0..=count {
-        let end = rewrites
-            .get(site)
-            .map_or(original.len(), |rewrite| rewrite.original_pc);
-        let gap = &original[gap_start..end];
-        ensure!(
-            gap == &candidate[gap_start..end],
-            "proposal candidate changes an unchanged gap"
-        );
-        let instructions = decode(gap);
-        let fuel = if site < count {
-            ensure!(
-                instructions.iter().all(|instruction| {
-                    let op = instruction.bytes[0];
-                    instruction.bytes.len()
-                        == if (0x60..=0x7f).contains(&op) {
-                            usize::from(op - 0x5f) + 1
-                        } else {
-                            1
-                        }
-                }),
-                "proposal boundary truncates a PUSH instruction"
-            );
-            instructions.len()
-        } else {
-            // The final gap may contain a truncated PUSH, like canonical scan.
-            gap.len()
-        };
-        writeln!(source, "def gap_{site} : List Nat := {gap:?}\ntheorem gap_{site}_length : gap_{site}.length = {} := by decide +kernel", gap.len()).unwrap();
-        if site < count {
-            writeln!(source, "theorem gap_{site}_complete : CompleteScanPrefix gap_{site} {fuel} := completeCount_sound (gap_{site}.length+1) gap_{site} {fuel} (by decide +kernel)\ndef gapChunk_{site} : CompleteChunk := ⟨gap_{site}, {fuel}, gap_{site}_complete⟩").unwrap();
-        }
-        writeln!(source, "def gapRows_{site} : List GolfGenericWindow.Row := scanAux {fuel} {gap_start} gap_{site}
-theorem gapBounds_{site} (row : GolfGenericWindow.Row) (member : row ∈ gapRows_{site}) :
+    for (site, &(gap_start, end, fuel)) in gaps.iter().enumerate() {
+        writeln!(source, "theorem gapBounds_{site} (row : GolfGenericWindow.Row) (member : row ∈ gapRows_{site}) :
  {gap_start} ≤ row.1 ∧ row.1 < {end} := by
  refine ⟨scanAux_lower {fuel} {gap_start} gap_{site} row member, ?_⟩
  simpa only [gap_{site}_length, Nat.reduceAdd] using scanAux_upper {fuel} {gap_start} gap_{site} row member
@@ -402,66 +572,19 @@ theorem gapExterior_{site} : GolfGenericWindowBatch.exterior sites gapRows_{site
  GolfSharedSuffix.exterior_gap sites gapRows_{site} {gap_start} {end} gapBounds_{site} gapDisjoint_{site}
 theorem gapNoInterior_{site} (site : Site) (member : site ∈ sites) : noInterior site gapRows_{site} = true :=
  GolfSharedSuffix.noInterior_gap site gapRows_{site} {gap_start} {end} gapBounds_{site} (gapDisjoint_{site} site member)").unwrap();
-        if site == count {
-            break;
-        }
-        let rewrite = &rewrites[site];
-        let (before, after, _) = &proofs[indexes[site]];
-        gap_start = rewrite.original_pc + before.len();
-        for (side, code, chunks, rows) in [
-            ("old", before, &mut old_chunks, &mut old_rows),
-            ("new", after, &mut new_chunks, &mut new_rows),
-        ] {
-            let instructions = decode(code);
-            let operations = instructions.len();
-            writeln!(source, "def {side}Chunk_{site} : CompleteChunk := ⟨{code:?}, {operations}, completeCount_sound ({}+1) {code:?} {operations} (by decide +kernel)⟩", code.len()).unwrap();
-            write!(
-                source,
-                "def {side}Rows_{site} : List GolfGenericWindow.Row := ["
-            )
-            .unwrap();
-            for (index, instruction) in instructions.iter().enumerate() {
-                write!(
-                    source,
-                    "{}({}, {}, {})",
-                    if index == 0 { "" } else { ", " },
-                    rewrite.original_pc + instruction.pc,
-                    instruction.bytes.len(),
-                    instruction.bytes[0] == 0x5b
-                )
-                .unwrap();
-            }
-            writeln!(source, "]\ntheorem {side}Rows_{site}_exact : scanAux {operations} {} {code:?} = {side}Rows_{site} := by decide +kernel\ntheorem {side}Exterior_{site} : GolfGenericWindowBatch.exterior sites {side}Rows_{site} = [] := by decide +kernel\ntheorem {side}Jumps_{site} : jumps {side}Rows_{site} = [] := by decide +kernel\ntheorem {side}NoInterior_{site} : sites.all (fun site => noInterior site {side}Rows_{site}) = true := by decide +kernel", rewrite.original_pc).unwrap();
-            chunks.extend([format!("gapChunk_{site}"), format!("{side}Chunk_{site}")]);
-            rows.extend([format!("gapRows_{site}"), format!("{side}Rows_{site}")]);
+    }
+    for site in 0..count {
+        for side in ["old", "new"] {
+            writeln!(source, "theorem {side}Exterior_{site} : GolfGenericWindowBatch.exterior sites {side}Rows_{site} = [] := by decide +kernel\ntheorem {side}Jumps_{site} : jumps {side}Rows_{site} = [] := by decide +kernel\ntheorem {side}NoInterior_{site} : sites.all (fun site => noInterior site {side}Rows_{site}) = true := by decide +kernel").unwrap();
         }
     }
-    for (side, chunks, rows, image) in [
-        ("old", old_chunks, &mut old_rows, "original"),
-        ("new", new_chunks, &mut new_rows, "candidate"),
-    ] {
-        writeln!(source, "def {side}Chunks : List CompleteChunk := [{}]\ntheorem {image}_split : {image} = chunkBytes {side}Chunks ++ gap_{count} := by decide +kernel\ntheorem {side}Chunks_length : (chunkBytes {side}Chunks).length = {previous_end} := by decide +kernel", chunks.join(", ")).unwrap();
-        let mut definitions = vec![format!("{side}Chunks"), "chunkRows".into()];
-        definitions.extend((0..count).map(|i| format!("gapChunk_{i}")));
-        definitions.extend((0..count).map(|i| format!("{side}Chunk_{i}")));
-        definitions.extend((0..count).map(|i| format!("gap_{i}_length")));
-        definitions.extend((0..count).map(|i| format!("{side}Rows_{i}_exact")));
-        definitions.extend(
-            [
-                "List.length_cons",
-                "List.length_nil",
-                "Nat.reduceAdd",
-                "List.append_nil",
-                "List.append_assoc",
-            ]
-            .map(str::to_owned),
-        );
-        // Associativity must be proved symbolically: rfl alone can normalize the
-        // entire shared scan to reconcile differently associated append trees.
-        writeln!(source, "theorem {side}Chunks_rows : chunkRows 0 {side}Chunks = {} := by\n simp only [{}] <;> rfl", rows.join(" ++ "), definitions.join(", ")).unwrap();
+    let [old_rows, new_rows] = ["old", "new"].map(|side| {
+        let mut rows: Vec<_> = (0..count)
+            .flat_map(|i| [format!("gapRows_{i}"), format!("{side}Rows_{i}")])
+            .collect();
         rows.push(format!("gapRows_{count}"));
-        writeln!(source, "theorem {image}Shared : scan {image} = {} := by\n rw [{image}_split, scan_complete_chunks, {side}Chunks_length, {side}Chunks_rows]\n simp only [gap_{count}_length, List.append_assoc] <;> rfl", rows.join(" ++ ")).unwrap();
-    }
+        rows
+    });
     source.push_str("theorem exterior_append (sites : List Site) (left right : List GolfGenericWindow.Row) :\n GolfGenericWindowBatch.exterior sites (left ++ right) =\n GolfGenericWindowBatch.exterior sites left ++ GolfGenericWindowBatch.exterior sites right := List.filter_append ..\ntheorem jumps_append (left right : List GolfGenericWindow.Row) :\n jumps (left ++ right) = jumps left ++ jumps right := by\n simp only [jumps, List.filter_append, List.map_append]\n");
     for (theorem, function, distribution, property) in [
         (
@@ -506,7 +629,7 @@ theorem gapNoInterior_{site} (site : Site) (member : site ∈ sites) : noInterio
             .join(", ");
         writeln!(source, " simp only [noInterior, List.all_append]\n change ({terms}) = true\n rw [{lemmas}]\n rfl").unwrap();
     }
-    source.push_str("def artifact : GolfGenericWindowBatch.Artifact original candidate sites copies := by\n refine ⟨locals, ?_⟩\n exact ⟨by decide +kernel, by decide +kernel, by decide +kernel,\n   by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel,\n   exteriorShared,jumpsShared,oldNoInterior,newNoInterior,\n   by decide +kernel,by decide +kernel,by decide +kernel,by decide +kernel⟩\nend GolfProposedBatch\n#print axioms GolfProposedBatch.artifact\n");
+    source.push_str("noncomputable def artifact : GolfGenericWindowBatch.Artifact original candidate sites copies := by\n refine ⟨locals, ?_⟩\n exact ⟨by decide +kernel, by decide +kernel, by decide +kernel,\n   by decide +kernel, by decide +kernel, by decide +kernel, by decide +kernel,\n   exteriorShared,jumpsShared,oldNoInterior,newNoInterior,\n   by decide +kernel,by decide +kernel,by decide +kernel,by decide +kernel⟩\nend GolfProposedBatch\n#print axioms GolfProposedBatch.artifact\n");
     names.push("GolfProposedBatch.artifact".into());
     Ok((source, names))
 }
@@ -892,6 +1015,26 @@ mod tests {
             proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational)
         };
         check("Valid", &original, &candidate, &rewrites).unwrap();
+        // The shared-row layout proof must bind every rendered row and offset.
+        let (source, names) = certificate(&original, &candidate, &rewrites, &[]).unwrap();
+        assert!(source.contains("theorem sameLayout"));
+        for (label, correct, wrong) in [
+            ("GapPc", "scanAux 1 8 gap_2", "scanAux 1 9 gap_2"),
+            (
+                "WindowRow",
+                "[(5, 2, false), (7, 1, false)]",
+                "[(5, 2, false), (7, 1, true)]",
+            ),
+        ] {
+            let changed = source.replacen(correct, wrong, 1);
+            assert_ne!(source, changed, "missing mutation {label}");
+            let path = dir.path().join(format!("Shared{label}.lean"));
+            fs::write(&path, changed).unwrap();
+            assert!(
+                proof::verify_named(&path, &names, proof::AxiomPolicy::Foundational).is_err(),
+                "accepted {label} corruption"
+            );
+        }
         check("Identity", &original, &original, &[]).unwrap();
         check("Empty", &[], &[], &[]).unwrap();
         let mut family_original = vec![0x5f];
@@ -1358,7 +1501,9 @@ theorem zero_dup_controls :
         };
         check("DisjointCopy", &source, &names).unwrap();
         // Isolate the new root: reconstruction must not mask a broken copy gate.
-        let start = source.find("theorem layout_artifact :").unwrap();
+        let start = source
+            .find("-- Shared scan rows for layout_artifact.")
+            .unwrap();
         let end = source.find("#print axioms layout_artifact\n").unwrap()
             + "#print axioms layout_artifact\n".len();
         let mut isolated = source.clone();

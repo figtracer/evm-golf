@@ -233,7 +233,10 @@ fn certificate_in(before: &[u8], after: &[u8], index: Option<usize>) -> Result<W
     if index.is_none() {
         source.push_str(FAULT_MODEL);
     }
-    writeln!(source,"\nnamespace {namespace}\ntheorem fault_classes : (List.range 1025).all (fun h => decide (GolfGeneratedFault.run (before.length+1) before h = GolfGeneratedFault.run (after.length+1) after h)) = true := by decide +kernel\nend {namespace}").unwrap();
+    // Explicit boundary heights plus the generic middle-height lemma cover all
+    // 1,025 heights; equal lengths make one fuel bound serve both sides.
+    let bound = before.len() + 1;
+    writeln!(source,"\nnamespace {namespace}\ntheorem fault_classes : (List.range 1025).all (fun h => decide (GolfGeneratedFault.run (before.length+1) before h = GolfGeneratedFault.run (after.length+1) after h)) = true :=\n GolfGeneratedFault.classes_of_bounds before after {bound} (by decide +kernel) (by decide +kernel) (by decide) (by decide +kernel) (by decide +kernel)\nend {namespace}").unwrap();
     let names = [
         "before_profile",
         "after_profile",
@@ -638,6 +641,57 @@ def run : Nat → List Nat → Nat → Result
      else if 144 ≤ op ∧ op ≤ 159 then
        if height < op-142 then .underflow else run fuel rest height
      else .unsupported
+
+-- Away from both stack limits no guard can fire, so heights are interchangeable.
+theorem run_congr : ∀ (fuel : Nat) (code : List Nat) (h h' : Nat),
+    17 + fuel ≤ h → 17 + fuel ≤ h' → h + fuel < 1024 → h' + fuel < 1024 →
+    run fuel code h = run fuel code h'
+  | 0, _, _, _, _, _, _, _ => rfl
+  | fuel+1, [], _, _, _, _, _, _ => rfl
+  | fuel+1, op::rest, h, h', l, l', u, u' => by
+    simp only [run]
+    split
+    · split
+      · rfl
+      · rw [if_neg (by omega), if_neg (by omega)]
+        exact run_congr fuel _ _ _ (by omega) (by omega) (by omega) (by omega)
+    · split
+      · rw [if_neg (by omega), if_neg (by omega)]
+        exact run_congr fuel _ _ _ (by omega) (by omega) (by omega) (by omega)
+      · split
+        · rw [if_neg (by omega), if_neg (by omega)]
+          exact run_congr fuel _ _ _ (by omega) (by omega) (by omega) (by omega)
+        · split
+          · rw [if_neg (by omega), if_neg (by omega)]
+            exact run_congr fuel _ _ _ (by omega) (by omega) (by omega) (by omega)
+          · split
+            · rw [if_neg (by omega), if_neg (by omega)]
+              exact run_congr fuel _ _ _ (by omega) (by omega) (by omega) (by omega)
+            · rfl
+
+-- Equal fault classes at all 1,025 heights from the low and high boundary
+-- heights alone; every middle height behaves like the first middle height.
+theorem classes_of_bounds (before after : List Nat) (bound : Nat)
+    (beforeBound : before.length + 1 ≤ bound) (afterBound : after.length + 1 ≤ bound)
+    (room : 17 + 2 * bound < 1024)
+    (low : (List.range (18 + bound)).all (fun h => decide
+      (run (before.length+1) before h = run (after.length+1) after h)) = true)
+    (high : (List.range (bound + 1)).all (fun i => decide
+      (run (before.length+1) before (1024-i) = run (after.length+1) after (1024-i))) = true) :
+    (List.range 1025).all (fun h => decide
+      (run (before.length+1) before h = run (after.length+1) after h)) = true := by
+  rw [List.all_eq_true] at low high ⊢
+  intro h member
+  rw [List.mem_range] at member
+  by_cases small : h < 18 + bound
+  · exact low h (List.mem_range.mpr small)
+  · by_cases large : 1024 ≤ h + bound
+    · have checked := high (1024 - h) (List.mem_range.mpr (by omega))
+      rwa [show 1024 - (1024 - h) = h by omega] at checked
+    · have middle := low (17 + bound) (List.mem_range.mpr (by omega))
+      rw [run_congr (before.length+1) before h (17 + bound) (by omega) (by omega) (by omega) (by omega),
+        run_congr (after.length+1) after h (17 + bound) (by omega) (by omega) (by omega) (by omega)]
+      exact middle
 end GolfGeneratedFault
 "#;
 
