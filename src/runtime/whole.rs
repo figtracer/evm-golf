@@ -355,7 +355,10 @@ fn power_sites(
 }
 
 fn window_op(bytes: &[u8]) -> bool {
-    matches!(bytes[0], 0x5f..=0x7f | 0x80..=0x9f | 0x50) && bytes.len() == push_width(bytes[0]) + 1
+    matches!(
+        bytes[0],
+        0x5f..=0x7f | 0x80..=0x9f | 0x50 | 0x01 | 0x03 | 0x16 | 0x17 | 0x1b
+    ) && bytes.len() == push_width(bytes[0]) + 1
 }
 
 /// The smallest span from `start`, ending at a common instruction boundary after
@@ -414,6 +417,41 @@ fn window_site(
 enum Sym {
     Input(usize),
     Lit(U256),
+    Bin(u8, Box<Sym>, Box<Sym>),
+}
+
+/// Interpreter result of a binary window opcode on (top, second).
+fn bin_value(op: u8, a: U256, b: U256) -> U256 {
+    match op {
+        0x01 => a.wrapping_add(b),
+        0x03 => a.wrapping_sub(b),
+        0x16 => a & b,
+        0x17 => a | b,
+        _ => {
+            if a >= U256::from(256) {
+                U256::ZERO
+            } else {
+                b << a.to::<usize>()
+            }
+        }
+    }
+}
+
+/// Mirror of the Lean `norm`: constant folding and a few identities.
+fn norm(s: &Sym) -> Sym {
+    let Sym::Bin(op, a, b) = s else { return s.clone() };
+    let (a, b) = (norm(a), norm(b));
+    let zero = Sym::Lit(U256::ZERO);
+    match (op, &a, &b) {
+        (_, Sym::Lit(x), Sym::Lit(y)) => Sym::Lit(bin_value(*op, *x, *y)),
+        (0x01, _, _) if b == zero => a,
+        (0x01, _, _) if a == zero => b,
+        (0x03, _, _) if b == zero => a,
+        (0x16 | 0x17, _, _) if a == b => a,
+        (0x16, _, Sym::Bin(0x16, inner, _)) if **inner == a => b,
+        (0x1b, _, _) if a == zero => b,
+        _ => Sym::Bin(*op, Box::new(a), Box::new(b)),
+    }
 }
 
 /// Mirror of the Lean `windowCheck`; Lean decides it again in the certificate.
@@ -422,6 +460,7 @@ fn window_check(old: &[(usize, Vec<u8>)], new: &[(usize, Vec<u8>)]) -> bool {
         let (mut a, mut m, mut heights, mut cost) = (Vec::<Sym>::new(), 0usize, Vec::new(), 0usize);
         for (_, b) in instrs {
             let (need, c) = match b[0] {
+                0x01 | 0x03 | 0x16 | 0x17 | 0x1b => (2, 3),
                 0x5f => (0, 2),
                 0x60..=0x7f => (0, 3),
                 op @ 0x80..=0x8f => (usize::from(op - 0x7f), 3),
@@ -437,6 +476,11 @@ fn window_check(old: &[(usize, Vec<u8>)], new: &[(usize, Vec<u8>)]) -> bool {
                 0x5f..=0x7f => a.insert(0, Sym::Lit(U256::from_be_slice(&b[1..]))),
                 op @ 0x80..=0x8f => a.insert(0, a[usize::from(op - 0x80)].clone()),
                 op @ 0x90..=0x9f => a.swap(0, usize::from(op - 0x8f)),
+                op @ (0x01 | 0x03 | 0x16 | 0x17 | 0x1b) => {
+                    let x = a.remove(0);
+                    let y = a.remove(0);
+                    a.insert(0, Sym::Bin(op, Box::new(x), Box::new(y)));
+                }
                 _ => {
                     a.remove(0);
                 }
@@ -452,7 +496,7 @@ fn window_check(old: &[(usize, Vec<u8>)], new: &[(usize, Vec<u8>)]) -> bool {
         return false;
     }
     an.extend((mn..mo).map(Sym::Input));
-    an == ao
+    an.iter().map(norm).eq(ao.iter().map(norm))
         && cn <= co
         && new.len() <= old.len()
         && !old.is_empty()
@@ -573,6 +617,8 @@ fn simple_name(op: u8) -> Option<&'static str> {
         0x54 => "SLOAD",
         0x55 => "SSTORE",
         0x5d => "TSTORE",
+        0x5e => "MCOPY",
+        0x40 => "BLOCKHASH",
         0x59 => "MSIZE",
         0x5c => "TLOAD",
         0xa0 => "LOG0",
@@ -784,6 +830,11 @@ fn wop(bytes: &[u8]) -> String {
         }
         op @ 0x80..=0x8f => format!("WOp.dup {}", op - 0x7f),
         op @ 0x90..=0x9f => format!("WOp.swap {}", op - 0x8f),
+        0x01 => "WOp.bin .add".to_owned(),
+        0x03 => "WOp.bin .sub".to_owned(),
+        0x16 => "WOp.bin .and".to_owned(),
+        0x17 => "WOp.bin .or".to_owned(),
+        0x1b => "WOp.bin .shl".to_owned(),
         _ => "WOp.pop".to_owned(),
     }
 }
@@ -924,6 +975,10 @@ mod tests {
         let candidate = hex::decode("806100200000").unwrap()[..5].to_vec();
         let planned = plan(&original, &candidate).unwrap();
         assert!(matches!(planned.points[0].1, Obligation::Window(_)));
+        // An idempotent mask: x AND m AND m -> x AND m.
+        let mask = hex::decode("60ff1660ff1600").unwrap();
+        let fewer = hex::decode("60ff1660ff5000").unwrap();
+        assert!(matches!(plan(&mask, &fewer).unwrap().points[0].1, Obligation::Window(_)));
         // A window that changes the result is rejected before Lean.
         let bad = hex::decode("8061002100").unwrap();
         assert!(plan_err(&original, &bad).contains("unsupported difference"));

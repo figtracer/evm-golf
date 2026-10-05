@@ -7,9 +7,22 @@ open EvmYul EvmYul.EVM GolfUpstream GolfCountOffset GolfComposition
 /-! Straight-line stack windows (PUSH, DUP, SWAP, POP) with a symbolic stack. -/
 namespace GolfWhole
 
+/-- Binary window operations, as the interpreter applies them to (top, second). -/
+inductive BinK where
+  | add | sub | and | or | shl
+  deriving DecidableEq
+
+def binF : BinK → UInt256 → UInt256 → UInt256
+  | .add => UInt256.add
+  | .sub => UInt256.sub
+  | .and => UInt256.land
+  | .or => UInt256.lor
+  | .shl => flip UInt256.shiftLeft
+
 inductive Sym where
   | input (i : Nat)
   | lit (v : UInt256)
+  | bin (f : BinK) (a b : Sym)
   deriving DecidableEq
 
 instance : Inhabited Sym := ⟨.lit ⟨0⟩⟩
@@ -17,6 +30,7 @@ instance : Inhabited Sym := ⟨.lit ⟨0⟩⟩
 def Sym.val (base : List UInt256) : Sym → UInt256
   | .input i => base.getD i ⟨0⟩
   | .lit v => v
+  | .bin f a b => binF f (a.val base) (b.val base)
 
 def swapList {α : Type} [Inhabited α] (k : Nat) (a : List α) : List α :=
   let top := a.take (k + 1)
@@ -78,6 +92,7 @@ inductive WOp where
   | dup (k : Nat)
   | swap (k : Nat)
   | pop
+  | bin (f : BinK)
   deriving DecidableEq
 
 def WOp.need : WOp → Nat
@@ -86,6 +101,7 @@ def WOp.need : WOp → Nat
   | .dup k => k
   | .swap k => k + 1
   | .pop => 1
+  | .bin _ => 2
 
 def WOp.cost : WOp → Nat
   | .pop => 2
@@ -96,16 +112,20 @@ def WOp.len : WOp → Nat
   | .push _ _ w => w + 1
   | _ => 1
 
-def WOp.apply {α : Type} [Inhabited α] (lit : UInt256 → α) : WOp → List α → List α
+def WOp.apply {α : Type} [Inhabited α] (lit : UInt256 → α) (bin : BinK → α → α → α) :
+    WOp → List α → List α
   | .push _ v _, l => lit v :: l
   | .push0, l => lit ⟨0⟩ :: l
   | .dup k, l => (l.take k).getLast! :: l
   | .swap k, l => swapList k l
   | .pop, l => l.tail
+  | .bin f, a :: b :: l => bin f a b :: l
+  | .bin _, l => l
 
 theorem apply_append (op : WOp) (base : List UInt256) (a : List Sym) (rest : List UInt256)
     (h : op.need ≤ a.length) (k1 : ∀ k, op = .dup k → 1 ≤ k) :
-    op.apply id (a.map (Sym.val base) ++ rest) = (op.apply Sym.lit a).map (Sym.val base) ++ rest := by
+    op.apply id binF (a.map (Sym.val base) ++ rest) =
+      (op.apply Sym.lit Sym.bin a).map (Sym.val base) ++ rest := by
   cases op with
   | push p v w => rfl
   | push0 => rfl
@@ -121,13 +141,17 @@ theorem apply_append (op : WOp) (base : List UInt256) (a : List Sym) (rest : Lis
     cases a with
     | nil => simp at h
     | cons x xs => rfl
+  | bin f =>
+    simp only [WOp.need] at h
+    match a, h with
+    | x :: y :: a', _ => rfl
 
 /-- Symbolic inputs `m, m+1, ...` pulled from below the explicit stack. -/
 def pulls (m n : Nat) : List Sym := (List.range n).map fun i => .input (m + i)
 
 def sstep (op : WOp) (st : List Sym × Nat) : List Sym × Nat :=
   let extra := op.need - st.1.length
-  (op.apply Sym.lit (st.1 ++ pulls st.2 extra), st.2 + extra)
+  (op.apply Sym.lit Sym.bin (st.1 ++ pulls st.2 extra), st.2 + extra)
 
 theorem pulls_val (base : List UInt256) (m n : Nat) (h : m + n ≤ base.length) :
     (pulls m n).map (Sym.val base) ++ base.drop (m + n) = base.drop m := by
@@ -147,7 +171,7 @@ theorem sstep_sound (op : WOp) (base : List UInt256) (a : List Sym) (m : Nat)
     (k1 : ∀ k, op = .dup k → 1 ≤ k)
     (fits : m + (op.need - a.length) ≤ base.length) :
     op.need ≤ (a.map (Sym.val base) ++ base.drop m).length ∧
-    op.apply id (a.map (Sym.val base) ++ base.drop m) =
+    op.apply id binF (a.map (Sym.val base) ++ base.drop m) =
       (sstep op (a, m)).1.map (Sym.val base) ++ base.drop (sstep op (a, m)).2 := by
   have e : a.map (Sym.val base) ++ base.drop m =
       (a ++ pulls m (op.need - a.length)).map (Sym.val base) ++ base.drop (m + (op.need - a.length)) := by
@@ -196,6 +220,11 @@ def WOp.op : WOp → Operation .EVM
   | .dup k => dupOp k
   | .swap k => swapOp k
   | .pop => .POP
+  | .bin .add => .ADD
+  | .bin .sub => .SUB
+  | .bin .and => .AND
+  | .bin .or => .OR
+  | .bin .shl => .SHL
 
 def WOp.arg : WOp → Option (UInt256 × Nat)
   | .push _ v w => some (v, w)
@@ -207,6 +236,7 @@ def WOp.valid : WOp → Bool
   | .dup k => 1 ≤ k && k ≤ 16
   | .swap k => 1 ≤ k && k ≤ 16
   | .pop => true
+  | .bin _ => true
 
 /-- Static facts about a valid window instruction. -/
 structure WFacts (op : WOp) : Prop where
@@ -216,13 +246,13 @@ structure WFacts (op : WOp) : Prop where
   inputs : (δ op.op).getD 0 = op.need
   defined : δ op.op ≠ none
   outputs : ∀ l : List UInt256, op.need ≤ l.length →
-    l.length - (δ op.op).getD 0 + (α op.op).getD 0 = (op.apply id l).length
+    l.length - (δ op.op).getD 0 + (α op.op).getD 0 = (op.apply id binF l).length
   notJump : op.op ≠ .JUMP ∧ op.op ≠ .JUMPI ∧ op.op ≠ .RETURNDATACOPY ∧ op.op ≠ .SSTORE
   static : ∀ st, W op.op st = false
   create : op.op.isCreate = false
   step : ∀ (f : ℕ) (u : State), op.need ≤ u.stack.length →
     EVM.step (f + 1) op.cost (some (op.op, op.arg)) u =
-      .ok ((bump u op.cost).replaceStackAndIncrPC (op.apply id u.stack) op.len)
+      .ok ((bump u op.cost).replaceStackAndIncrPC (op.apply id binF u.stack) op.len)
   dup1 : ∀ k, op = .dup k → 1 ≤ k
 
 theorem dup_ok (k : ℕ) (v : State) (h : k ≤ v.stack.length) :
@@ -289,6 +319,28 @@ theorem wfacts (op : WOp) (v : op.valid = true) : WFacts op := by
         | (simp [WOp.op, swapOp]; done)
         | (intro st; simp [WOp.op, swapOp, W]; done)
         | (intro f u h; exact swap_ok _ (bump u 3) h)
+  | bin f =>
+    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, fun k e => by cases e⟩ <;> cases f <;> first
+      | (intro s; rfl; done)
+      | (intro s; simp [WOp.op, memoryExpansionCost, memoryExpansionCost.μᵢ']; done)
+      | (intro μ; simp [H, WOp.op]; done)
+      | rfl
+      | (simp [WOp.op, δ]; done)
+      | (intro l hl; simp only [WOp.need] at hl
+         match l, hl with
+         | x :: y :: l', _ => simp [WOp.op, WOp.apply, δ, α])
+      | (simp [WOp.op]; done)
+      | (intro st; simp [WOp.op, W]; done)
+      | (intro f u h
+         simp only [WOp.need] at h
+         obtain ⟨x, y, l', hs⟩ : ∃ x y l', u.stack = x :: y :: l' := by
+           match e : u.stack, h with
+           | x :: y :: l', _ => exact ⟨x, y, l', rfl⟩
+         change EVM.execBinOp _ (bump u 3) = _
+         unfold EVM.execBinOp
+         have : (bump u 3).stack = x :: y :: l' := hs
+         simp only [this, Stack.pop2, WOp.apply, hs]
+         rfl)
   | pop =>
     refine ⟨fun _ => rfl, fun s => by simp [WOp.op, memoryExpansionCost, memoryExpansionCost.μᵢ'],
       fun _ => by simp [H, WOp.op], rfl, by simp [WOp.op, δ], ?_, by simp [WOp.op], fun st => by simp [WOp.op, W],
@@ -373,10 +425,10 @@ theorem window_source {code : ByteArray} {j : Array UInt256} {pc e : UInt256} {o
     rw [hst, sound] at post
     rw [← hg] at run
     obtain ⟨M, hts, cost, g', hg', f', hf', fin⟩ :=
-      ih ((bump u op.cost).replaceStackAndIncrPC (op.apply id u.stack) op.len)
+      ih ((bump u op.cost).replaceStackAndIncrPC (op.apply id binF u.stack) op.len)
         (sstep op (a, m)).1 (sstep op (a, m)).2 f r hc
         (by rw [← adv, ← hpc]; rfl) fits
-        (by show op.apply id u.stack = _; rw [hst]; exact sound) run
+        (by show op.apply id binF u.stack = _; rw [hst]; exact sound) run
     have sub := word_sub_toNat u.gasAvailable op.cost (by unfold WOp.cost; split <;> decide) gcost
     refine ⟨M, ?_, ?_, g', ?_, ?_⟩
     · intro h hh
@@ -443,9 +495,9 @@ theorem window_cand {code : ByteArray} {j : Array UInt256} {pc e : UInt256} {ops
       omega
     have sub := word_sub_toNat u.gasAvailable op.cost (by unfold WOp.cost; split <;> decide) gcost
     obtain ⟨g', hg', fin⟩ :=
-      ih ((bump u op.cost).replaceStackAndIncrPC (op.apply id u.stack) op.len)
+      ih ((bump u op.cost).replaceStackAndIncrPC (op.apply id binF u.stack) op.len)
         (sstep op (a, m)).1 (sstep op (a, m)).2 hc (by rw [← adv, ← hpc]; rfl)
-        (by show op.apply id u.stack = _; rw [hst]; exact sound) hM'
+        (by show op.apply id binF u.stack = _; rw [hst]; exact sound) hM'
         (fun h hh => hts h (List.mem_cons_of_mem _ hh))
         (by change scost ops ≤ (u.gasAvailable - UInt256.ofNat op.cost).toNat
             simp only [scost] at gas; omega)
@@ -462,13 +514,111 @@ theorem window_cand {code : ByteArray} {j : Array UInt256} {pc e : UInt256} {ops
       rfl
 
 
+theorem land_self' (a : UInt256) : UInt256.land a a = a := by
+  obtain ⟨x⟩ := a; simp only [UInt256.land, UInt256.mk.injEq]; apply Fin.ext
+  show (x.val &&& x.val) % UInt256.size = x.val
+  rw [Nat.and_self, Nat.mod_eq_of_lt x.isLt]
+theorem land_absorb (a b : UInt256) : UInt256.land a (UInt256.land a b) = UInt256.land a b := by
+  obtain ⟨x⟩ := a; obtain ⟨y⟩ := b
+  simp only [UInt256.land, UInt256.mk.injEq]; apply Fin.ext
+  show (x.val &&& ((x.val &&& y.val) % UInt256.size)) % UInt256.size = (x.val &&& y.val) % UInt256.size
+  have hxy : (x.val &&& y.val) % UInt256.size = x.val &&& y.val :=
+    Nat.mod_eq_of_lt (lt_of_le_of_lt Nat.and_le_left x.isLt)
+  rw [hxy, ← Nat.and_assoc, Nat.and_self, hxy]
+theorem shl_zero (b : UInt256) : UInt256.shiftLeft b ⟨0⟩ = b := by
+  obtain ⟨x⟩ := b; simp only [UInt256.shiftLeft]
+  simp only [ge_iff_le]
+  rw [if_neg (by decide)]
+  congr 1; apply Fin.ext
+  show (x.val <<< (0 : Fin UInt256.size).val) % UInt256.size = x.val
+  simp [Nat.mod_eq_of_lt x.isLt]
+
+theorem lor_self' (a : UInt256) : UInt256.lor a a = a := by
+  obtain ⟨x⟩ := a; simp only [UInt256.lor, UInt256.mk.injEq]; apply Fin.ext
+  show (x.val ||| x.val) % UInt256.size = x.val
+  rw [Nat.or_self, Nat.mod_eq_of_lt x.isLt]
+
+theorem add_zero' (a : UInt256) : UInt256.add a ⟨0⟩ = a := by
+  obtain ⟨x⟩ := a; simp [UInt256.add]
+
+theorem zero_add' (a : UInt256) : UInt256.add ⟨0⟩ a = a := by
+  obtain ⟨x⟩ := a; simp [UInt256.add]
+
+theorem sub_zero' (a : UInt256) : UInt256.sub a ⟨0⟩ = a := by
+  obtain ⟨x⟩ := a; simp [UInt256.sub]
+
+def andRule (a b : Sym) : Sym :=
+  match b with
+  | .bin .and a' _ => if a' = a then b else .bin .and a b
+  | _ => .bin .and a b
+
+def normRule : BinK → Sym → Sym → Sym
+  | .add, a, b => if b = .lit ⟨0⟩ then a else if a = .lit ⟨0⟩ then b else .bin .add a b
+  | .sub, a, b => if b = .lit ⟨0⟩ then a else .bin .sub a b
+  | .and, a, b => if a = b then a else andRule a b
+  | .or, a, b => if a = b then a else .bin .or a b
+  | .shl, a, b => if a = .lit ⟨0⟩ then b else .bin .shl a b
+
+/-- Constant folding and identities used to compare window results. -/
+def normBin (f : BinK) (a b : Sym) : Sym :=
+  match a, b with
+  | .lit x, .lit y => .lit (binF f x y)
+  | _, _ => normRule f a b
+
+def norm : Sym → Sym
+  | .bin f a b => normBin f (norm a) (norm b)
+  | s => s
+
+theorem andRule_val (base : List UInt256) (a b : Sym) :
+    (andRule a b).val base = binF .and (a.val base) (b.val base) := by
+  unfold andRule
+  split
+  · split
+    · subst_vars; simp [Sym.val, binF, land_absorb]
+    · rfl
+  · rfl
+
+theorem normRule_val (base : List UInt256) (f : BinK) (a b : Sym) :
+    (normRule f a b).val base = binF f (a.val base) (b.val base) := by
+  cases f <;> simp only [normRule]
+  · split
+    · subst_vars; simp [Sym.val, binF, add_zero']
+    · split
+      · subst_vars; simp [Sym.val, binF, zero_add']
+      · rfl
+  · split
+    · subst_vars; simp [Sym.val, binF, sub_zero']
+    · rfl
+  · split
+    · subst_vars; simp [binF, land_self']
+    · exact andRule_val base a b
+  · split
+    · subst_vars; simp [binF, lor_self']
+    · rfl
+  · split
+    · subst_vars; simp [Sym.val, binF, flip, shl_zero]
+    · rfl
+
+theorem normBin_val (base : List UInt256) (f : BinK) (a b : Sym) :
+    (normBin f a b).val base = binF f (a.val base) (b.val base) := by
+  unfold normBin
+  split
+  · rfl
+  · exact normRule_val base f a b
+
+theorem norm_val (base : List UInt256) : ∀ s : Sym, (norm s).val base = s.val base
+  | .input _ => rfl
+  | .lit _ => rfl
+  | .bin f a b => by
+    simp only [norm, normBin_val, norm_val base a, norm_val base b, Sym.val]
+
 /-- Decidable window equivalence: the candidate needs no deeper stack, ends with
 the same stack, costs no more gas, runs no more instructions and never grows
 the stack above some height the original reaches. -/
 def windowCheck (opsO opsN : List WOp) : Bool :=
   decide ((srun opsN ([], 0)).2 ≤ (srun opsO ([], 0)).2) &&
-  decide ((srun opsN ([], 0)).1 ++ pulls (srun opsN ([], 0)).2
-    ((srun opsO ([], 0)).2 - (srun opsN ([], 0)).2) = (srun opsO ([], 0)).1) &&
+  decide (((srun opsN ([], 0)).1 ++ pulls (srun opsN ([], 0)).2
+    ((srun opsO ([], 0)).2 - (srun opsN ([], 0)).2)).map norm = (srun opsO ([], 0)).1.map norm) &&
   decide (scost opsN ≤ scost opsO) && decide (opsN.length ≤ opsO.length) &&
   decide (0 < opsO.length) &&
   (sheights opsN ([], 0)).all (fun h => (sheights opsO ([], 0)).any (fun h' => decide (h ≤ h')))
@@ -502,7 +652,10 @@ theorem window_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : A
       (srun opsN ([], 0)).1.map (Sym.val s.stack) ++ s.stack.drop (srun opsN ([], 0)).2 := by
     have hd : s.stack.drop (srun opsO ([], 0)).2 = s.stack.drop ((srun opsN ([], 0)).2 +
         ((srun opsO ([], 0)).2 - (srun opsN ([], 0)).2)) := by congr 1; omega
-    rw [hd, ← heq, List.map_append, List.append_assoc, pulls_val _ _ _ (by omega)]
+    have vals : ∀ l : List Sym, l.map (Sym.val s.stack) = (l.map norm).map (Sym.val s.stack) := by
+      intro l; rw [List.map_map]; congr 1; funext x; exact (norm_val _ x).symm
+    rw [hd, vals (srun opsO ([], 0)).1, ← heq, ← vals, List.map_append, List.append_assoc,
+      pulls_val _ _ _ (by omega)]
   refine ⟨?_, ?_, ?_, rel.maps⟩
   · rw [hstk]
     have h := congrArg (fun z : State => ({ z with

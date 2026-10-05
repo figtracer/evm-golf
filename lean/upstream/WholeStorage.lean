@@ -579,6 +579,40 @@ theorem same_tstore : Same .TSTORE :=
       | some p => obtain ⟨_, _, _⟩ := p; rw [hp] at run; injection run with run; subst run; rfl)
     (fun _ => by simp [H])
 
+theorem mcopy_frameless (a b c : UInt256) (stk : Stack UInt256) :
+    Frameless (fun x : State =>
+      ({ x with toMachineState := x.toMachineState.mcopy a b c } : State).replaceStackAndIncrPC stk) := by
+  refine ⟨fun x => ?_, fun x => by simp only [MachineState.mcopy, writeBytes]; rfl,
+    fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl⟩
+  have m : (E x).toMachineState = { x.toMachineState with gasAvailable := UInt256.ofNat 0 } := rfl
+  show E (({ x with toMachineState := x.toMachineState.mcopy a b c } : State).replaceStackAndIncrPC stk) =
+    E (({ E x with toMachineState := (E x).toMachineState.mcopy a b c } : State).replaceStackAndIncrPC stk)
+  rw [m]
+  simp only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas, EVM.State.replaceStackAndIncrPC,
+    EVM.State.incrPC, MachineState.mcopy, writeBytes]
+
+theorem same_mcopy : Same .MCOPY :=
+  same_popn (EVM.ternaryMachineStateOp MachineState.mcopy) Stack.pop3
+    (fun ⟨stk, a, b, c⟩ y =>
+      ({ y with toMachineState := y.toMachineState.mcopy a b c } : State).replaceStackAndIncrPC stk)
+    (fun _ _ _ _ => rfl)
+    (fun y => by unfold EVM.ternaryMachineStateOp; cases y.stack.pop3 <;> rfl)
+    (fun ⟨_, a, b, c⟩ => mcopy_frameless a b c _) (fun ⟨_, _, _, _⟩ _ => rfl)
+    (fun _ _ h => by
+      simp only [C', h, show Operation.StackMemFlow .MCOPY ∈ InstructionGasGroups.Wcopy from by decide,
+        if_true])
+    (fun _ => rfl) (fun _ => by simp [H])
+
+theorem same_blockhash : Same .BLOCKHASH :=
+  same_popn (EVM.unaryStateOp (fun s v => (s, EvmYul.State.blockHash s v))) Stack.pop
+    (fun ⟨stk, a⟩ y => y.replaceStackAndIncrPC (stk.push (EvmYul.State.blockHash y.toState a)))
+    (fun _ _ _ _ => rfl)
+    (fun y => by unfold EVM.unaryStateOp; cases y.stack.pop <;> rfl)
+    (fun ⟨_, _⟩ => frameless_rfl) (fun ⟨_, _⟩ _ => rfl)
+    (fun _ _ _ => rfl) (fun _ => rfl) (fun _ => by simp [H])
+
+#print axioms same_mcopy
+#print axioms same_blockhash
 #print axioms same_tstore
 #print axioms same_sload
 #print axioms same_sstore

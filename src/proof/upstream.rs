@@ -766,6 +766,8 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfWhole.same_log4",
             "GolfWhole.same_keccak256",
             "GolfWhole.same_tstore",
+            "GolfWhole.same_mcopy",
+            "GolfWhole.same_blockhash",
         ],
     ),
     (
