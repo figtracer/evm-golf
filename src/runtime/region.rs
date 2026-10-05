@@ -338,6 +338,9 @@ enum ImageRoutes {
 struct RenderedImages {
     source: String,
     leaves: Vec<ImageLeaf>,
+    window_start: usize,
+    window_end: usize,
+    parts: Vec<(&'static str, &'static str, ImageNode)>,
 }
 
 struct MaskRegion {
@@ -420,6 +423,7 @@ fn render_images(
 ) -> RenderedImages {
     let mut definitions = String::new();
     let mut leaves = Vec::new();
+    let mut parts = Vec::new();
     for (side, data) in [("original", original), ("candidate", candidate)] {
         let mut route_nodes = Vec::new();
         for (part, block) in [
@@ -447,6 +451,9 @@ fn render_images(
             }
             let node = image_tree(&mut definitions, &format!("{side}{part}"), &nodes, &mut 0);
             writeln!(definitions, "def {side}{part}Bytes : List Nat := {}\ndef {side}{part} : ByteArray := {}\ntheorem {side}{part}Roundtrip : {side}{part}.data.toList.map UInt8.toNat = {side}{part}Bytes := {}\ntheorem {side}{part}Size : {side}{part}.data.size = {} := {}\ntheorem {side}{part}ByteSize : {side}{part}.size = {} := {side}{part}Size", node.bytes, node.code, node.roundtrip, block.len(), node.size, block.len()).unwrap();
+            if routes == ImageRoutes::All && part != "Window" {
+                parts.push((side, part, node.clone()));
+            }
             if routes == ImageRoutes::All || (routes == ImageRoutes::Window && part == "Window") {
                 let base = match part {
                     "Prefix" => 0,
@@ -490,7 +497,13 @@ fn render_images(
     if routes == ImageRoutes::All {
         source = source.replace("maxRecDepth 131072", "maxRecDepth 4096");
     }
-    RenderedImages { source, leaves }
+    RenderedImages {
+        source,
+        leaves,
+        window_start: entry_pc,
+        window_end: entry_pc + window_len,
+        parts,
+    }
 }
 
 fn decoded_facts(

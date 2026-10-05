@@ -95,6 +95,10 @@ enum JumpTerminal {
 
 impl JumpPlan {
     fn validate(&self, terminal: JumpTerminal) -> Result<()> {
+        let shared = self
+            .modules
+            .iter()
+            .any(|(name, _)| matches!(name.as_str(), "JumpExterior" | "JumpSplice"));
         let mut counters = [0usize; 3];
         let mut seen = BTreeSet::new();
         let mut phase = 0;
@@ -106,8 +110,21 @@ impl JumpPlan {
                     phase = 1;
                     vec!["original_byte", "original_membership"]
                 }
+                "JumpExterior" => {
+                    ensure!(phase == 1, "misordered exterior equality module");
+                    phase = 5;
+                    vec!["exterior_prefix", "exterior_suffix"]
+                }
+                "JumpSplice" => {
+                    ensure!(phase == 5, "misordered scanner splice module");
+                    phase = 6;
+                    vec!["tables_equal"]
+                }
                 "JumpCandidate" => {
-                    ensure!(phase == 1, "misordered candidate membership module");
+                    ensure!(
+                        phase == if shared { 6 } else { 1 },
+                        "misordered candidate membership module"
+                    );
                     phase = 2;
                     vec!["candidate_byte", "candidate_membership"]
                 }
@@ -156,7 +173,10 @@ impl JumpPlan {
                     continue;
                 }
                 _ => {
-                    ensure!(phase < 2, "membership nodes after final side certificate");
+                    ensure!(
+                        phase < 2 && (!shared || phase == 0),
+                        "membership nodes after final side certificate or shared source certificate"
+                    );
                     let family = ["JumpCover", "JumpChunk", "JumpNode"]
                         .iter()
                         .position(|prefix| name.starts_with(*prefix))
@@ -187,7 +207,10 @@ impl JumpPlan {
                 .collect();
             ensure!(roots == &expected, "unexpected jump membership roots");
         }
-        ensure!(phase == 4 && counters[1] >= 2, "incomplete jump proof plan");
+        ensure!(
+            phase == 4 && counters[1] >= if shared { 1 } else { 2 },
+            "incomplete jump proof plan"
+        );
         Ok(())
     }
 
@@ -1570,6 +1593,87 @@ mod tests {
             assert!(
                 plan.validate(JumpTerminal::Power).is_err(),
                 "accepted {mutation}: {plan:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_jump_plan_requires_exact_markers_order_and_source_only_nodes() {
+        let mut shared = jump_plan();
+        // The candidate reuses the checked source table rather than emitting another chunk.
+        shared.modules.remove(2);
+        shared.modules.splice(
+            2..2,
+            [
+                (
+                    "JumpExterior".to_owned(),
+                    vec![
+                        "GolfCertificates.JumpMembership.exterior_prefix".to_owned(),
+                        "GolfCertificates.JumpMembership.exterior_suffix".to_owned(),
+                    ],
+                ),
+                (
+                    "JumpSplice".to_owned(),
+                    vec!["GolfCertificates.JumpMembership.tables_equal".to_owned()],
+                ),
+            ],
+        );
+        shared.validate(JumpTerminal::Power).unwrap();
+        for mutation in [
+            "missing-exterior",
+            "missing-splice",
+            "reversed",
+            "duplicate",
+            "wrong-root",
+            "node-before-exterior",
+            "node-after-splice",
+            "no-source-chunk",
+            "early-exterior",
+        ] {
+            let mut altered = JumpPlan {
+                modules: shared.modules.clone(),
+            };
+            match mutation {
+                "missing-exterior" => {
+                    altered.modules.remove(2);
+                }
+                "missing-splice" => {
+                    altered.modules.remove(3);
+                }
+                "reversed" => altered.modules.swap(2, 3),
+                "duplicate" => altered.modules.insert(3, altered.modules[2].clone()),
+                "wrong-root" => {
+                    altered.modules[3].1[0] =
+                        "GolfCertificates.JumpMembership.original_membership".to_owned()
+                }
+                "node-before-exterior" | "node-after-splice" => {
+                    let name = "JumpChunk1";
+                    let node = (
+                        name.to_owned(),
+                        ["size", "complete", "route"]
+                            .map(|suffix| {
+                                format!("GolfCertificates.JumpMembership.{name}_{suffix}")
+                            })
+                            .to_vec(),
+                    );
+                    altered.modules.insert(
+                        if mutation == "node-before-exterior" {
+                            2
+                        } else {
+                            4
+                        },
+                        node,
+                    );
+                }
+                "no-source-chunk" => {
+                    altered.modules.remove(0);
+                }
+                "early-exterior" => altered.modules.swap(1, 2),
+                _ => unreachable!(),
+            }
+            assert!(
+                altered.validate(JumpTerminal::Power).is_err(),
+                "accepted {mutation}"
             );
         }
     }
