@@ -160,6 +160,18 @@ theorem canonical_step_lt (s : EVM.State) (fuel : Nat)
       .ok (binaryPost s (UInt256.lt b a) tail 3) := by
   exact GolfCountOffset.step_lt s fuel 3 arg a b tail stack
 
+theorem bounds_eq (s : EVM.State)
+    (gas : 3 ≤ s.gasAvailable.toNat) (inputs : 2 ≤ s.stack.length)
+    (outputs : s.stack.length - 2 + 1 ≤ 1024) : FullXBounds s .EQ :=
+  ⟨gas, inputs, outputs⟩
+
+theorem canonical_step_eq (s : EVM.State) (fuel : Nat)
+    (arg : Option (UInt256 × Nat))
+    (a b : UInt256) (tail : List UInt256) (stack : s.stack = b :: a :: tail) :
+    EVM.step (fuel + 1) (C' s .EQ) (some (.EQ, arg)) s =
+      .ok (binaryPost s (UInt256.eq b a) tail 3) := by
+  exact GolfCountOffset.step_eq s fuel 3 arg a b tail stack
+
 theorem bounds_shr (s : EVM.State)
     (gas : 3 ≤ s.gasAvailable.toNat) (inputs : 2 ≤ s.stack.length)
     (outputs : s.stack.length - 2 + 1 ≤ 1024) : FullXBounds s .SHR :=
@@ -238,6 +250,8 @@ end GolfPureBounds
 
 #print axioms GolfPureBounds.bounds_shr
 #print axioms GolfPureBounds.canonical_step_shr
+#print axioms GolfPureBounds.bounds_eq
+#print axioms GolfPureBounds.canonical_step_eq
 #print axioms GolfPureBounds.bounds_lt
 #print axioms GolfPureBounds.canonical_step_lt
 #print axioms GolfPureBounds.bounds_iszero

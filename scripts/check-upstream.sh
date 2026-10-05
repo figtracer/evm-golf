@@ -378,11 +378,11 @@ if cargo run --locked -- certify-runtime-region \
 fi
 [[ ! -e "$work/call-entry-return-underflow" ]]
 
-# Canonical LT, ISZERO and SHR compose from an empty call-entry stack through STOP.
-printf '%s\n' 60076002101560021c00 > "$work/compare-stop.hex"
+# Canonical LT, ISZERO, SHR and EQ compose from an empty call-entry stack through STOP.
+printf '%s\n' 60076002101560021c801400 > "$work/compare-stop.hex"
 if ! cargo run --locked -- certify-runtime-region \
   --original "$work/compare-stop.hex" --candidate "$work/compare-stop.hex" \
-  --entry-pc 0 --exit-pc 9 --through-halt --from-call-entry --out "$work/compare-stop-accepted"; then
+  --entry-pc 0 --exit-pc 11 --through-halt --from-call-entry --out "$work/compare-stop-accepted"; then
   cat "$work/compare-stop-accepted"/*.log 2>/dev/null || true
   echo "Failed comparison certificate evidence: $work" >&2
   exit 1
@@ -393,10 +393,10 @@ import sys
 
 with open(sys.argv[1]) as handle:
     report = json.load(handle)
-assert report["entry_pc"] == 0 and report["terminal_pc"] == report["exit_pc"] == 9
+assert report["entry_pc"] == 0 and report["terminal_pc"] == report["exit_pc"] == 11
 assert report["terminal"] == "STOP"
-assert report["source_instruction_count"] == report["candidate_instruction_count"] == 7
-assert report["source_base_gas"] == report["candidate_base_gas"] == 18
+assert report["source_instruction_count"] == report["candidate_instruction_count"] == 9
+assert report["source_base_gas"] == report["candidate_base_gas"] == 24
 assert report["gas_surplus_increase"] == report["execution_count_offset_increase"] == 0
 assert report["required_input_stack_words"] == 0 and report["output_stack_delta"] == 1
 assert report["proof_root"] == "GolfCertificates.CallEntry.call_entry_success"

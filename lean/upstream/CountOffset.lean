@@ -63,6 +63,13 @@ theorem step_lt (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat)
  rw [←specified]
  rfl
 
+theorem step_eq (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat))
+ (a b : UInt256) (tail : List UInt256) (stack : s.stack = b::a::tail) :
+ EVM.step (fuel+1) cost (some (.EQ,arg)) s = .ok (binaryPost s (UInt256.eq b a) tail cost) := by
+ have specified : {s with stack := b::a::tail} = s := by rw [←stack]
+ rw [←specified]
+ rfl
+
 theorem step_shr (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat))
  (a b : UInt256) (tail : List UInt256) (stack : s.stack = b::a::tail) :
  EVM.step (fuel+1) cost (some (.SHR,arg)) s = .ok (binaryPost s (UInt256.shiftRight a b) tail cost) := by
@@ -78,6 +85,7 @@ theorem step_iszero (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × 
  rfl
 
 #print axioms step_shr
+#print axioms step_eq
 #print axioms step_lt
 #print axioms step_iszero
 #print axioms of_exact

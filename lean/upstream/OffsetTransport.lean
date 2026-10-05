@@ -186,6 +186,7 @@ theorem offset_extra_transport (s c next : EVM.State) (fuel candidateFuel surplu
   have costs : C' c op = C' s op := by
     cases allowed with
     | shr => rfl
+    | eq => rfl
     | lt => rfl
     | iszero => rfl
     | sub => rfl
@@ -255,6 +256,21 @@ theorem offset_extra_transport (s c next : EVM.State) (fuel candidateFuel surplu
     subst next
     refine ⟨binaryPost c (UInt256.lt b a) tail 3, cb, ?_, ?_, rfl, rfl⟩
     · exact step_lt c candidateFuel 3 arg a b tail (stackEq.symm.trans stack)
+    · exact binary_preserves frame _ tail 3 (by decide) bounds.gas
+  | eq =>
+    have two : 2 ≤ s.stack.length := bounds.inputs
+    obtain ⟨b,a,tail,stack⟩ : ∃ b a tail, s.stack = b :: a :: tail := by
+      cases hs : s.stack with
+      | nil => simp [hs] at two
+      | cons b xs =>
+        cases xs with
+        | nil => simp [hs] at two
+        | cons a tail => exact ⟨b,a,tail,rfl⟩
+    rw [(show C' s .EQ = 3 from rfl), step_eq s fuel 3 arg a b tail stack] at canonical
+    have post : next = binaryPost s (UInt256.eq b a) tail 3 := (Except.ok.inj canonical).symm
+    subst next
+    refine ⟨binaryPost c (UInt256.eq b a) tail 3, cb, ?_, ?_, rfl, rfl⟩
+    · exact step_eq c candidateFuel 3 arg a b tail (stackEq.symm.trans stack)
     · exact binary_preserves frame _ tail 3 (by decide) bounds.gas
   | shr =>
     have two : 2 ≤ s.stack.length := bounds.inputs

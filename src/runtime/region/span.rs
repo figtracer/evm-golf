@@ -172,7 +172,7 @@ impl Span {
             ensure!(
                 matches!(
                     op,
-                    0x01 | 0x02 | 0x03 | 0x10 | 0x15 | 0x16 | 0x17 | 0x19 | 0x1b | 0x1c | 0x5f..=0x7f | 0x80 | 0x90..=0x9f
+                    0x01 | 0x02 | 0x03 | 0x10 | 0x14 | 0x15 | 0x16 | 0x17 | 0x19 | 0x1b | 0x1c | 0x5f..=0x7f | 0x80 | 0x90..=0x9f
                 ),
                 "unsupported canonical span opcode 0x{op:02x} at PC {pc}"
             );
@@ -531,6 +531,7 @@ impl Span {
                             0x02 => format!("UInt256.mul ({a}) ({b})"),
                             0x03 => format!("UInt256.sub ({a}) ({b})"),
                             0x10 => format!("UInt256.lt ({a}) ({b})"),
+                            0x14 => format!("UInt256.eq ({a}) ({b})"),
                             0x1c => format!("UInt256.shiftRight ({b}) ({a})"),
                             0x16 => format!("({a}) &&& ({b})"),
                             0x17 => format!("({a}) ||| ({b})"),
@@ -662,6 +663,7 @@ impl Span {
                             2 => ("mul", "same"),
                             3 => ("sub", "extra"),
                             0x10 => ("lt", "extra"),
+                            0x14 => ("eq", "extra"),
                             0x1c => ("shr", "extra"),
                             0x15 => ("iszero", "extra"),
                             0x16 => ("and", "extra"),
@@ -717,6 +719,7 @@ impl Span {
                             2 => "mul",
                             3 => "sub",
                             0x10 => "lt",
+                            0x14 => "eq",
                             0x1c => "shr",
                             0x15 => "iszero",
                             0x16 => "and",
@@ -1076,7 +1079,7 @@ fn profile(code: &[u8]) -> Result<Profile> {
                 ensure!(push_value(&instruction.bytes).is_some(), "truncated PUSH");
                 (0, 1, if op == 0x5f { 2 } else { 3 })
             }
-            1 | 3 | 0x10 | 0x16 | 0x17 | 0x1b | 0x1c => (2, -1, 3),
+            1 | 3 | 0x10 | 0x14 | 0x16 | 0x17 | 0x1b | 0x1c => (2, -1, 3),
             2 => (2, -1, 5),
             0x52 => (2, -2, 3),
             0x15 | 0x19 => (1, 0, 3),
@@ -1221,6 +1224,24 @@ mod tests {
     }
 
     #[test]
+    fn equality_preserves_canonical_operand_order_and_profile() {
+        let span = Span::select(&[0x14], &[0x14], 0, 1).unwrap();
+        assert_eq!(
+            (
+                span.required,
+                span.maximum,
+                span.source.delta,
+                span.source.gas
+            ),
+            (2, 1024, -1, 3)
+        );
+        let source = span.render_proof(&[0x14], &[0x14], 0);
+        assert!(source.contains("UInt256.eq (a0) (a1)"));
+        assert!(source.contains("canonical_step_eq"));
+        assert!(Span::select(&[0x10], &[0x14], 0, 1).is_err());
+    }
+
+    #[test]
     fn comparisons_preserve_canonical_operand_order_and_stack_profiles() {
         let lt = Span::select(&[0x10], &[0x10], 0, 1).unwrap();
         assert_eq!(
@@ -1267,6 +1288,13 @@ mod tests {
             .result
         };
         for (ops, stack, expected) in [
+            (vec![0x14], vec![U256::ZERO, U256::ZERO], 1),
+            (vec![0x14], vec![U256::MAX, U256::MAX], 1),
+            (vec![0x14], vec![U256::from(7), U256::from(7)], 1),
+            (vec![0x14], vec![U256::ZERO, U256::MAX], 0),
+            (vec![0x14], vec![U256::MAX, U256::ZERO], 0),
+            (vec![0x14], vec![U256::from(2), U256::from(7)], 0),
+            (vec![0x14, 0x15], vec![U256::from(7), U256::from(7)], 0),
             (vec![0x10], vec![U256::from(2), U256::from(7)], 1),
             (vec![0x10], vec![U256::from(7), U256::from(2)], 0),
             (vec![0x10], vec![U256::MAX, U256::MAX], 0),
@@ -1291,7 +1319,13 @@ mod tests {
             assert_eq!(&output[..32], &U256::from(expected).to_be_bytes::<32>());
             assert_eq!(&output[32..], &U256::from(42).to_be_bytes::<32>());
         }
-        for code in [vec![0x10], vec![0x5f, 0x10], vec![0x15]] {
+        for code in [
+            vec![0x10],
+            vec![0x5f, 0x10],
+            vec![0x15],
+            vec![0x14],
+            vec![0x5f, 0x14],
+        ] {
             assert!(matches!(
                 run(&code),
                 ExecutionResult::Halt {
