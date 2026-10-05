@@ -167,7 +167,7 @@ out = pathlib.Path(sys.argv[1])
 report = json.loads((out / "result.json").read_text())
 assert report["covered_instructions"] == 10
 assert report["power_sites"] == [6]
-assert any("Ξ" in item for item in report["unproved"])
+assert any("Υ" in item for item in report["unproved"])
 assert json.loads((out / "environment.json").read_text())["semantics_profile"]["identity"] == "evm-golf-checked-scanner"
 PY_WHOLE
 printf '%s\n' 34600a57600760031b005b600080fd > "$work/whole-wrong.hex"

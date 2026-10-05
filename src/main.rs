@@ -57,8 +57,8 @@ enum Action {
         out: PathBuf,
     },
     #[command(hide = true)]
-    /// Prove whole-program refinement of a small runtime pair against pinned
-    /// upstream EVM semantics. Supported opcode profile only; no calls, storage or logs.
+    /// Prove whole-program refinement of a runtime pair against pinned upstream
+    /// EVM semantics. Supported opcode profile only; no calls or creation.
     CertifyRuntimeWhole {
         #[arg(long)]
         original: PathBuf,
@@ -157,7 +157,7 @@ fn main() -> Result<()> {
             prepare_parent(&out)?;
             let report = runtime::whole::certify(&original, &candidate, &out)?;
             println!(
-                "Whole-program refinement proved for {} instructions ({} power sites) from pc 0; supported opcode profile, X level, conditioned on original success or revert.\nEvidence: {}",
+                "Whole-program refinement proved for {} instructions ({} power sites); Ξ and X level, supported opcode profile, conditioned on original success or revert.\nEvidence: {}",
                 report.covered_instructions,
                 report.power_sites.len(),
                 out.display()

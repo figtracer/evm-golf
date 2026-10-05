@@ -110,6 +110,11 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
       exact ⟨rfl, by have := rel'.gas; simp; omega⟩
     · simp only [e, beq_iff_eq, if_false]
       exact ⟨rfl, surplus, skipped, rel'⟩
+  | segment h =>
+    obtain ⟨f', s', t', surplus', skipped', k, lt, srun, hp', rel', cand⟩ :=
+      h owner nj jumps (f + 1) s t surplus skipped r rel rfl ok
+    obtain ⟨g, r', run', related⟩ := ih f' lt s' t' surplus' skipped' r rel' hp' srun
+    exact ⟨g + k, r', by rw [cand g]; exact run', related⟩
   | invalid o =>
     have ds : decode s.executionEnv.code s.pc = some (.INVALID, none) := by rw [sc]; exact o
     obtain ⟨z, -⟩ := X_inv (getD_of ds) ok

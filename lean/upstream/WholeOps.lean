@@ -161,6 +161,16 @@ def Running (op : Operation .EVM) : Prop := ∀ μ, H μ op = none
 
 def Halting (op : Operation .EVM) : Prop := op = .STOP ∨ op = .RETURN ∨ op = .REVERT
 
+/-- A proved multi-instruction rewrite: from related states at `pc`, a successful
+source run reaches a covered point after fewer steps, while the candidate reaches
+a related state after a fixed number of interpreter iterations. -/
+def Segment (owner : AccountAddress) (old new : ByteArray) (oj nj : Array UInt256)
+    (P : UInt256 → Prop) (pc : UInt256) : Prop :=
+  ∀ (fuel : ℕ) (s t : State) (surplus skipped : ℕ) (r : ExecutionResult State),
+    DeployedOffset owner old new surplus skipped s t → s.pc = pc → X fuel oj s = .ok r →
+    ∃ (f : ℕ) (s' t' : State) (surplus' skipped' k : ℕ), f < fuel ∧ X f oj s' = .ok r ∧ P s'.pc ∧
+      DeployedOffset owner old new surplus' skipped' s' t' ∧ ∀ g, X (g + k) nj t = X g nj t'
+
 /-- Obligations at one synchronization point. -/
 inductive Point (old new : ByteArray) (oj : Array UInt256) (P : UInt256 → Prop) :
     UInt256 → Prop where
@@ -174,6 +184,9 @@ inductive Point (old new : ByteArray) (oj : Array UInt256) (P : UInt256 → Prop
       (n : (decode new pc).getD (.STOP, .none) = (op, arg)) :
       Point old new oj P pc
   | invalid (pc : UInt256) (o : decode old pc = some (.INVALID, none)) : Point old new oj P pc
+  | segment (pc : UInt256)
+      (h : ∀ owner nj, (∀ x, oj.contains x = true → nj.contains x = true) →
+        Segment owner old new oj nj P pc) : Point old new oj P pc
   | jump (pc : UInt256)
       (o : decode old pc = some (.JUMP, none)) (n : decode new pc = some (.JUMP, none))
       (targets : ∀ x, oj.contains x = true → P x) : Point old new oj P pc

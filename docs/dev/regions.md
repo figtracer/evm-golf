@@ -197,8 +197,8 @@ local; it is not source repository content.
 
 ## Whole programs
 
-`certify-runtime-whole` proves refinement for a complete small runtime pair,
-not just a region:
+`certify-runtime-whole` proves refinement for a complete runtime pair, not just
+a region:
 
 ```sh
 bash scripts/setup-upstream.sh --checked-scanner
@@ -206,22 +206,26 @@ cargo run --locked -- certify-runtime-whole \
   --original runs/original.hex --candidate runs/candidate.hex --out runs/whole-1
 ```
 
-Theorem `whole_certificate`: for any two interpreter states at pc 0 that are
-equal except for the deployed code, the execution count and extra candidate gas,
-if the original `X` run with its checked-scanner jump table returns success or
-revert, the candidate run returns the same kind of result with the same output.
-Successful final states stay related; a candidate revert keeps at least as much
-gas. There is no trace, path or gas premise.
+Theorem `xi_certificate`: run the code-execution function Ξ from a fresh call
+frame whose current and original account maps differ only in the owner's
+deployed code. If the original returns success or revert, the candidate returns
+the same kind of result with the same output. On success the account maps stay
+related, created accounts and substate are equal and the candidate keeps at
+least as much gas; on revert it keeps at least as much gas. `whole_certificate`
+states the same for the interpreter `X` from any related states at pc 0. There
+is no trace, path or gas premise. Jump tables come from the checked-scanner
+profile, computed by a byte-list scanner proved equal to it.
 
 The generator lists every instruction reachable from pc 0 or a JUMPDEST and
-emits one obligation per instruction; Lean checks each against the decoded
-images ([WholeProgram.lean](../../lean/upstream/WholeProgram.lean)). Images may
-differ only at same-width `PUSHn 2^k; MUL` → `PUSHn k; SHL` sites, must have the
-same jump table, and are limited to 1,024 bytes. Reachable instructions must be in
-the supported profile: stack, arithmetic, comparison and bitwise opcodes, `MLOAD`,
-`MSTORE`, `MSTORE8`, calldata and call-context reads, `JUMP`, `JUMPI`, `JUMPDEST`,
-`STOP`, `RETURN`, `REVERT` and undefined opcodes. Calls, storage, logs, `GAS`, code
-reads and creation are rejected.
+emits one obligation per instruction, split across modules that each stay
+within the per-module budget ([WholeProgram.lean](../../lean/upstream/WholeProgram.lean)).
+Images up to the EIP-170 limit are accepted. They may differ only at same-width
+`PUSHn 2^k; MUL` → `PUSHn k; SHL` sites and must have the same jump table.
+Reachable instructions must be in the supported profile: stack, arithmetic,
+comparison and bitwise opcodes; memory, `KECCAK256`, calldata, call-context and
+block reads; `SLOAD`, `SSTORE`, `TLOAD`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`,
+`JUMPDEST`, `STOP`, `RETURN`, `REVERT` and undefined opcodes. Calls, creation,
+`GAS`, code reads, `TSTORE` and `SELFDESTRUCT` are rejected.
 
-Not proved: transaction-level (Ξ/Υ) equivalence, exceptional original runs,
-other rewrite families and formal correspondence with revm.
+Not proved: message-call (Θ) and transaction (Υ) equivalence, exceptional
+original runs, other rewrite families and formal correspondence with revm.

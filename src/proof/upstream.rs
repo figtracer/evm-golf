@@ -755,6 +755,42 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfWhole.congruent_revert",
         ],
     ),
+    (
+        "WholeStorage",
+        include_str!("../../lean/upstream/WholeStorage.lean"),
+        &[
+            "GolfWhole.same_sload",
+            "GolfWhole.same_sstore",
+            "GolfWhole.same_tload",
+            "GolfWhole.same_log0",
+            "GolfWhole.same_log4",
+            "GolfWhole.same_keccak256",
+        ],
+    ),
+    (
+        "WholeScan",
+        include_str!("../../lean/upstream/WholeScan.lean"),
+        &["GolfWhole.dj_scan", "GolfWhole.decode_ofBytes"],
+    ),
+    (
+        "WholeCover",
+        include_str!("../../lean/upstream/WholeCover.lean"),
+        &[
+            "GolfWhole.jumps_points",
+            "GolfWhole.next_of",
+            "GolfWhole.cover_app",
+        ],
+    ),
+    (
+        "XiEntry",
+        include_str!("../../lean/upstream/XiEntry.lean"),
+        &["GolfXiEntry.xi_of_success", "GolfXiEntry.fresh_related"],
+    ),
+    (
+        "WholeXi",
+        include_str!("../../lean/upstream/WholeXi.lean"),
+        &["GolfWhole.xi_refines"],
+    ),
 ];
 
 const MASK_MODULES: &[(&str, &str, &[&str])] = &[
@@ -1549,7 +1585,10 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             .chain((0..chunks).map(|i| (format!("WholePoints{i}"), Vec::new())))
             .chain(std::iter::once((
                 "WholeCertificate".to_owned(),
-                vec!["GolfWholeCertificate.whole_certificate".to_owned()],
+                vec![
+                    "GolfWholeCertificate.whole_certificate".to_owned(),
+                    "GolfWholeCertificate.xi_certificate".to_owned(),
+                ],
             )))
             .collect(),
         RegionKind::SpanJump(span, jump) => {

@@ -13,9 +13,9 @@ use std::{collections::BTreeSet, fmt::Write as _, fs, path::Path};
 use super::{Instruction, decode};
 use crate::proof;
 
-/// Each obligation decodes against the full image in the kernel, so cost grows
-/// with size times instruction count.
-pub const MAX_WHOLE_BYTES: usize = 1024;
+/// Obligations decode through a byte-list lemma, so per-instruction cost is
+/// nearly independent of image size; the limit is EIP-170.
+pub const MAX_WHOLE_BYTES: usize = super::MAX_RUNTIME_BYTES;
 
 #[derive(Debug, Serialize)]
 pub struct WholeCertificate {
@@ -41,6 +41,7 @@ enum Obligation {
         op: String,
         arg: String,
         same: String,
+        len: usize,
     },
     Jump,
     Jumpi,
@@ -66,7 +67,7 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
     }
     let lean_version = proof::verify_region(out, proof::RegionKind::Whole(modules.len() - 2))?;
     let report = WholeCertificate {
-        claim: "whole-program refinement of the canonical interpreter X from pc 0",
+        claim: "whole-program refinement of the code-execution function Ξ and its interpreter X",
         original_keccak256: keccak256(original).to_string(),
         candidate_keccak256: keccak256(candidate).to_string(),
         runtime_bytes: original.len(),
@@ -79,13 +80,13 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
             })
             .collect(),
         assumptions: [
-            "both runs start at pc 0 from states equal except deployed code, execution count and extra candidate gas",
+            "Ξ: a fresh call frame whose current and original account maps differ only in the owner's deployed code; X: states at pc 0 equal except deployed code, execution count and extra candidate gas",
             "valid jump tables are computed by the checked-scanner profile of D_J",
-            "if the original run returns success or revert, so does the candidate, with equal output; success states stay related and revert gas is not lower",
+            "if the original returns success or revert, so does the candidate, with equal output; on success, related account maps, equal substate and no less gas; on revert, no less gas",
         ],
         unproved: [
-            "transaction-level (Ξ/Υ) equivalence",
-            "opcodes outside the supported profile, including calls, storage and logs",
+            "transaction-level (Υ) and message-call (Θ) equivalence",
+            "opcodes outside the supported profile, including calls, creation, GAS, code reads and TSTORE",
             "exceptional original runs (the claim is conditioned on original success or revert)",
             "revm correspondence",
         ],
@@ -244,6 +245,7 @@ fn classify(instruction: &Instruction) -> Result<Obligation> {
         op: format!("Operation.{name}"),
         arg: "none".to_owned(),
         same: format!("same_{}", name.to_lowercase()),
+        len: 1,
     };
     Ok(match op {
         0x60..=0x7f => {
@@ -255,12 +257,14 @@ fn classify(instruction: &Instruction) -> Result<Obligation> {
                     U256::from_be_slice(&instruction.bytes[1..])
                 ),
                 same: format!("(same_push .PUSH{width} (by decide))"),
+                len: width + 1,
             }
         }
         0x5f => Obligation::Same {
             op: "(Operation.Push .PUSH0)".to_owned(),
             arg: "none".to_owned(),
             same: "same_push0".to_owned(),
+            len: 1,
         },
         0x80..=0x8f => simple(&format!("DUP{}", op - 0x7f)),
         0x90..=0x9f => simple(&format!("SWAP{}", op - 0x8f)),
@@ -338,72 +342,168 @@ fn simple_name(op: u8) -> Option<&'static str> {
         0x52 => "MSTORE",
         0x53 => "MSTORE8",
         0x5b => "JUMPDEST",
+        0x20 => "KECCAK256",
+        0x37 => "CALLDATACOPY",
+        0x3d => "RETURNDATASIZE",
+        0x41 => "COINBASE",
+        0x42 => "TIMESTAMP",
+        0x43 => "NUMBER",
+        0x45 => "GASLIMIT",
+        0x46 => "CHAINID",
+        0x54 => "SLOAD",
+        0x55 => "SSTORE",
+        0x59 => "MSIZE",
+        0x5c => "TLOAD",
+        0xa0 => "LOG0",
+        0xa1 => "LOG1",
+        0xa2 => "LOG2",
+        0xa3 => "LOG3",
+        0xa4 => "LOG4",
         _ => return None,
     })
 }
 
-fn byte_array(code: &[u8]) -> String {
-    let bytes: Vec<String> = code.iter().map(u8::to_string).collect();
-    format!("⟨#[{}]⟩", bytes.join(", "))
-}
-
-fn word_array(values: &[usize]) -> String {
-    let words: Vec<String> = values
-        .iter()
-        .map(|v| format!("UInt256.ofNat {v}"))
-        .collect();
-    format!("#[{}]", words.join(", "))
-}
-
 /// Obligations per point module; each module must compile within the
 /// per-module proof budget.
-const POINTS_PER_MODULE: usize = 64;
+const POINTS_PER_MODULE: usize = 48;
+const BYTES_PER_CHUNK: usize = 1024;
 
 const HEADER: &str = "set_option Elab.async false\nset_option maxRecDepth 131072\nset_option maxHeartbeats 4000000\nopen EvmYul EvmYul.EVM GolfUpstream GolfCountOffset GolfComposition GolfWhole\nnamespace GolfWholeCertificate\n\n";
 
+fn nat_list(values: impl Iterator<Item = usize>) -> String {
+    let items: Vec<String> = values.map(|v| v.to_string()).collect();
+    format!("[{}]", items.join(", "))
+}
+
+/// Right-nested concatenation of named lists.
+fn nested(names: &[String]) -> String {
+    match names {
+        [] => "[]".to_owned(),
+        [one] => one.clone(),
+        [first, rest @ ..] => format!("{first} ++ ({})", nested(rest)),
+    }
+}
+
+/// Membership of chunk `k` in the right-nested concatenation of `n` chunks.
+fn in_chunk_term(k: usize, n: usize) -> String {
+    let mut term = if k + 1 == n {
+        "h".to_owned()
+    } else {
+        "List.mem_append.mpr (Or.inl h)".to_owned()
+    };
+    for _ in 0..k {
+        term = format!("List.mem_append.mpr (Or.inr ({term}))");
+    }
+    term
+}
+
 fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String)> {
     let mut modules = Vec::new();
-    let mut image = format!("import WholeProgram\n{HEADER}");
-    let pcs: Vec<String> = plan
-        .points
-        .iter()
-        .map(|(pc, _)| format!("UInt256.ofNat {pc}"))
-        .collect();
+    let mut image = format!("import WholeXi\nimport WholeStorage\n{HEADER}");
+    for (side, code) in [("old", original), ("new", candidate)] {
+        let mut names = Vec::new();
+        for (i, chunk) in code.chunks(BYTES_PER_CHUNK).enumerate() {
+            let name = format!("{side}Chunk{i}");
+            writeln!(
+                image,
+                "def {name} : List Nat := {}",
+                nat_list(chunk.iter().map(|b| usize::from(*b)))
+            )
+            .unwrap();
+            names.push(name);
+        }
+        writeln!(
+            image,
+            "def {side}Bytes : List Nat := {}\ndef {side}Code : ByteArray := ofBytes {side}Bytes",
+            nested(&names)
+        )
+        .unwrap();
+    }
+    let chunks: Vec<_> = plan.points.chunks(POINTS_PER_MODULE).collect();
+    let chunk_of = |pc: usize| {
+        chunks
+            .iter()
+            .position(|chunk| chunk.iter().any(|(p, _)| *p == pc))
+            .expect("successor is a covered point")
+    };
+    let mut point_names = Vec::new();
+    for (k, chunk) in chunks.iter().enumerate() {
+        let name = format!("pointsChunk{k}");
+        writeln!(
+            image,
+            "def {name} : List Nat := {}",
+            nat_list(chunk.iter().map(|(pc, _)| *pc))
+        )
+        .unwrap();
+        point_names.push(name);
+    }
     writeln!(
         image,
-        "def oldCode : ByteArray := {}\ndef newCode : ByteArray := {}\ndef jumps : Array UInt256 := {}\ndef points : List UInt256 := [{}]\nabbrev P (pc : UInt256) : Prop := points.contains pc = true\n\ntheorem targets : ∀ x, jumps.contains x = true → P x :=\n  jumps_sub jumps points (by decide +kernel)\ntheorem old_jumps : D_J oldCode (UInt256.ofNat 0) = jumps := by decide +kernel\ntheorem new_jumps : D_J newCode (UInt256.ofNat 0) = jumps := by decide +kernel\nend GolfWholeCertificate",
-        byte_array(original),
-        byte_array(candidate),
-        word_array(&plan.jumpdests),
-        pcs.join(", ")
+        "def pointsN : List Nat := {}\nabbrev P (pc : UInt256) : Prop := (pointsN.map UInt256.ofNat).contains pc = true\ndef jumpsN : List Nat := {}\ndef jumps : Array UInt256 := (jumpsN.map UInt256.ofNat).toArray\n",
+        nested(&point_names),
+        nat_list(plan.jumpdests.iter().copied())
     )
     .unwrap();
+    for k in 0..chunks.len() {
+        writeln!(
+            image,
+            "theorem in_chunk{k} {{x : Nat}} (h : x ∈ pointsChunk{k}) : x ∈ pointsN := {}",
+            in_chunk_term(k, chunks.len())
+        )
+        .unwrap();
+    }
+    image.push_str(
+        "
+theorem targets : ∀ x, jumps.contains x = true → P x :=
+  jumps_points jumpsN pointsN (by decide +kernel)
+theorem old_jumps : D_J oldCode (UInt256.ofNat 0) = jumps := by
+  rw [show oldCode = ofBytes oldBytes from rfl, dj_scan oldBytes (by decide +kernel) (by decide +kernel)]
+  decide +kernel
+theorem new_jumps : D_J newCode (UInt256.ofNat 0) = jumps := by
+  rw [show newCode = ofBytes newBytes from rfl, dj_scan newBytes (by decide +kernel) (by decide +kernel)]
+  decide +kernel
+end GolfWholeCertificate
+",
+    );
     modules.push(("WholeImage".to_owned(), image));
-    let chunks: Vec<_> = plan.points.chunks(POINTS_PER_MODULE).collect();
-    for (index, chunk) in chunks.iter().enumerate() {
+    for (k, chunk) in chunks.iter().enumerate() {
         let mut s = format!("import WholeImage\n{HEADER}");
         for (pc, obligation) in *chunk {
             writeln!(
                 s,
                 "theorem point_{pc} : Point oldCode newCode jumps P (UInt256.ofNat {pc}) :=\n  {}",
-                obligation_term(obligation)
+                obligation_term(*pc, obligation, &chunk_of)
             )
             .unwrap();
         }
-        s.push_str("end GolfWholeCertificate\n");
-        modules.push((format!("WholePoints{index}"), s));
+        writeln!(
+            s,
+            "\ntheorem cover{k} : ∀ x, (pointsChunk{k}.map UInt256.ofNat).contains x = true →\n    Point oldCode newCode jumps P x :="
+        )
+        .unwrap();
+        for (pc, _) in *chunk {
+            writeln!(s, "  cover_cons point_{pc} <|").unwrap();
+        }
+        s.push_str("  cover_nil\nend GolfWholeCertificate\n");
+        modules.push((format!("WholePoints{k}"), s));
     }
     let imports: String = (0..chunks.len())
         .map(|i| format!("import WholePoints{i}\n"))
         .collect();
-    let mut s = format!("{imports}{HEADER}");
-    s.push_str("theorem cover : ∀ pc, P pc → Point oldCode newCode jumps P pc :=\n");
-    for (pc, _) in &plan.points {
-        writeln!(s, "  cover_cons point_{pc} <|").unwrap();
+    let covers: Vec<String> = (0..chunks.len()).map(|k| format!("cover{k}")).collect();
+    let mut cover = covers.last().expect("at least one point").clone();
+    for name in covers.iter().rev().skip(1) {
+        cover = format!("cover_app {name} ({cover})");
     }
-    s.push_str(
-        "  cover_nil
-
+    let mut s = format!("{imports}{HEADER}");
+    writeln!(
+        s,
+        "theorem cover : ∀ pc, P pc → Point oldCode newCode jumps P pc :=\n  {cover}"
+    )
+    .unwrap();
+    writeln!(
+        s,
+        "
 /-- From any pair of states at pc 0 that differ only in deployed code, execution
 count and extra candidate gas, every successful or reverting original run of `X`
 is matched by a candidate run with equal output and related final state. -/
@@ -417,39 +517,86 @@ theorem whole_certificate (owner : AccountAddress) (fuel surplus skipped : ℕ) 
   rw [old_jumps] at ok
   rw [new_jumps]
   exact whole_refines owner oldCode newCode jumps jumps P cover (fun _ h => h)
-    fuel s t surplus skipped r rel (by rw [start]; decide +kernel) ok
+    fuel s t surplus skipped r rel (by rw [start]; exact start_of (in_chunk{} (by decide +kernel))) ok
+
+/-- The same claim for the code-execution function Ξ, from a fresh call frame
+whose account maps differ only in the owner's deployed code. -/
+theorem xi_certificate (owner : AccountAddress) (fuel : ℕ)
+    (created : Batteries.RBSet AccountAddress compare) (genesis : BlockHeader)
+    (blocks : ProcessedBlocks) (σ σ₀ τ τ₀ : AccountMap .EVM) (g : UInt256)
+    (A : Substate) (I : ExecutionEnv .EVM)
+    (current : MapsRelated owner oldCode newCode σ τ)
+    (original : MapsRelated owner oldCode newCode σ₀ τ₀)
+    (oldCurrent : ∃ a, σ.find? owner = some a ∧ a.code = oldCode)
+    (oldOriginal : ∃ a, σ₀.find? owner = some a ∧ a.code = oldCode)
+    (newCurrent : ∃ a, τ.find? owner = some a ∧ a.code = newCode)
+    (newOriginal : ∃ a, τ₀.find? owner = some a ∧ a.code = newCode)
+    (R : ExecutionResult (Batteries.RBSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate))
+    (run : Ξ fuel created genesis blocks σ σ₀ g A {{I with codeOwner := owner, code := oldCode}} = .ok R) :
+    ∃ f R', Ξ f created genesis blocks τ τ₀ g A {{I with codeOwner := owner, code := newCode}} = .ok R' ∧
+      XiRelated owner oldCode newCode R R' :=
+  xi_refines owner oldCode newCode
+    (fun fuel s t surplus skipped r rel start ok =>
+      whole_certificate owner fuel surplus skipped s t r rel start ok)
+    fuel created genesis blocks σ σ₀ τ τ₀ g A I current original oldCurrent oldOriginal
+    newCurrent newOriginal R run
 
 #print axioms whole_certificate
-end GolfWholeCertificate
-",
-    );
+#print axioms xi_certificate
+end GolfWholeCertificate",
+        chunk_of(0)
+    )
+    .unwrap();
     modules.push(("WholeCertificate".to_owned(), s));
     modules
 }
 
-fn obligation_term(obligation: &Obligation) -> String {
+fn obligation_term(
+    pc: usize,
+    obligation: &Obligation,
+    chunk_of: &dyn Fn(usize) -> usize,
+) -> String {
     const K: &str = "(by decide +kernel)";
+    let old = |at: usize| format!("(decode_fact oldBytes {at} (by decide) {K})");
+    let new = |at: usize| format!("(decode_fact newBytes {at} (by decide) {K})");
+    let next = |target: usize| {
+        format!(
+            "(next_of (target := {target}) {K} (in_chunk{} {K}))",
+            chunk_of(target)
+        )
+    };
+    let width = |instruction_len: usize| pc + instruction_len;
     match obligation {
-        Obligation::Same { op, arg, same } => {
-            format!(".same _ {op} {arg} {same}.1 {same}.2.1 {same}.2.2 {K} {K} {K}")
-        }
-        Obligation::Jump => format!(".jump _ {K} {K} targets"),
-        Obligation::Jumpi => format!(".jumpi _ {K} {K} {K} targets"),
+        Obligation::Same { op, arg, same, len } => format!(
+            ".same _ {op} {arg} {same}.1 {same}.2.1 {same}.2.2 {} {} {}",
+            old(pc),
+            new(pc),
+            next(width(*len))
+        ),
+        Obligation::Jump => format!(".jump _ {} {} targets", old(pc), new(pc)),
+        Obligation::Jumpi => format!(".jumpi _ {} {} {} targets", old(pc), new(pc), next(pc + 1)),
         Obligation::Halt {
             op,
             which,
             congruent,
-        } => {
-            format!(".halt _ {op} none {congruent} {which} {K} {K}")
-        }
-        Obligation::FallOff => {
-            format!(".halt _ Operation.STOP none congruent_stop (Or.inl rfl) {K} {K}")
-        }
-        Obligation::Invalid => format!(".invalid _ {K}"),
-        Obligation::Power(site) => format!(
-            ".power _ .PUSH{} {} {} (by decide) (by decide) ⟨{K}, {K}⟩ ⟨{K}, {K}⟩ {K}",
-            site.width, site.width, site.exponent
+        } => format!(
+            ".halt _ {op} none {congruent} {which} (decode_getD oldBytes {pc} (by decide) {K}) (decode_getD newBytes {pc} (by decide) {K})"
         ),
+        Obligation::FallOff => format!(
+            ".halt _ Operation.STOP none congruent_stop (Or.inl rfl) (decode_getD oldBytes {pc} (by decide) {K}) (decode_getD newBytes {pc} (by decide) {K})"
+        ),
+        Obligation::Invalid => format!(".invalid _ {}", old(pc)),
+        Obligation::Power(site) => {
+            let mul = site.pc + site.width + 1;
+            format!(
+                ".power _ .PUSH{w} {w} {k} (by decide) (by decide) ⟨{}, (decode_fact' oldBytes {mul} {K} (by decide) {K})⟩ ⟨{}, (decode_fact' newBytes {mul} {K} (by decide) {K})⟩ {}",
+                old(pc),
+                new(pc),
+                next(mul + 1),
+                w = site.width,
+                k = site.exponent
+            )
+        }
     }
 }
 
