@@ -3,8 +3,8 @@ use anyhow::Result;
 use revm::primitives::{HashMap, hex, keccak256};
 
 use super::{
-    MAX_PROPOSAL_SITES, Rewrite, RewriteProposalBatch, RewriteProposalSite, decode, layout,
-    push_value, window_proposal,
+    Instruction, MAX_PROPOSAL_SITES, Rewrite, RewriteProposalBatch, RewriteProposalSite, decode,
+    layout, push_value, window_proposal,
 };
 
 // A finite heuristic, not exhaustive optimization. These bounds cover the
@@ -118,6 +118,9 @@ pub(super) fn discover(original: &[u8]) -> Result<RewriteProposalBatch> {
     for (index, first) in instructions.iter().enumerate() {
         if !analysis.reachable.contains(&first.pc) {
             continue;
+        }
+        if let Some(candidate) = literal_candidate(&instructions[index..]) {
+            candidates.push(candidate);
         }
         let mut state = State::initial();
         let mut source_ops = 0;
@@ -239,10 +242,102 @@ pub(super) fn discover(original: &[u8]) -> Result<RewriteProposalBatch> {
     })
 }
 
+// Literal-bearing windows missed by the stack-only enumeration. Every proposal
+// still passes the shared symbolic/fault checker and the whole-image guards.
+fn literal_candidate(instructions: &[Instruction]) -> Option<Candidate> {
+    let first = instructions.first()?;
+    let second = instructions.get(1)?;
+    let third = instructions.get(2)?;
+    let (count, after, saving) = if first.bytes == [0x5f]
+        && (0x81..=0x88).contains(&second.bytes[0])
+        && third.bytes == [0x01]
+    {
+        (3, vec![second.bytes[0] - 1, 0x5f, 0x50], 1)
+    } else {
+        let fourth = instructions.get(3)?;
+        if first.bytes == [0x90]
+            && push_value(&second.bytes).is_some()
+            && second.bytes.len() <= 31
+            && third.bytes == [0x91]
+            && fourth.bytes == [0x90]
+        {
+            let mut after = vec![second.bytes[0] + 2, 0, 0];
+            after.extend_from_slice(&second.bytes[1..]);
+            after.push(0x91);
+            (4, after, if second.bytes[0] == 0x5f { 5 } else { 6 })
+        } else if push_value(&first.bytes).is_some()
+            && first.bytes.len() <= 31
+            && instructions.get(1..6).is_some_and(|tail| {
+                tail.iter()
+                    .zip([0x90, 0x93, 0x92, 0x91, 0x90])
+                    .all(|(instruction, op)| instruction.bytes == [op])
+            })
+        {
+            let mut after = vec![0x92, 0x91, 0x90, first.bytes[0] + 2, 0, 0];
+            after.extend_from_slice(&first.bytes[1..]);
+            (6, after, if first.bytes[0] == 0x5f { 5 } else { 6 })
+        } else if second.bytes == [0x16]
+            && fourth.bytes == [0x16]
+            && push_value(&first.bytes).is_some()
+            && push_value(&first.bytes) == push_value(&third.bytes)
+        {
+            let mut after: Vec<_> = instructions[..4]
+                .iter()
+                .flat_map(|instruction| instruction.bytes.iter().copied())
+                .collect();
+            *after.last_mut()? = 0x50;
+            (4, after, 1)
+        } else {
+            return None;
+        }
+    };
+    let before: Vec<_> = instructions[..count]
+        .iter()
+        .flat_map(|instruction| instruction.bytes.iter().copied())
+        .collect();
+    let proof = window_proposal::certificate(&before, &after).ok()?;
+    Some(Candidate {
+        start: first.pc,
+        end: first.pc + before.len(),
+        before,
+        after,
+        required: proof.required,
+        saving,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::runtime::from_hex;
+
+    #[test]
+    fn discovers_literal_windows_with_shared_certificate_guards() {
+        for (before, after) in [
+            ("5f8101", "805f50"),
+            ("5f8801", "875f50"),
+            ("906101c69190", "63000001c691"),
+            ("905f9190", "61000091"),
+            ("610f9a9093929190", "9291906300000f9a"),
+            ("5f9093929190", "929190610000"),
+            ("60ff1660ff16", "60ff1660ff50"),
+        ] {
+            let code = from_hex(&format!("5f5f5f5f5f5f5f5f{before}00")).unwrap();
+            let batch = discover(&code).unwrap();
+            assert_eq!(batch.sites.len(), 1, "{before}");
+            assert_eq!(batch.sites[0].original_pc, 8);
+            assert_eq!(batch.sites[0].before, before);
+            assert_eq!(batch.sites[0].after, after);
+        }
+        for hidden in ["005f8101", "625f810100", "5f5f60ff1660fe1600"] {
+            assert!(
+                discover(&from_hex(hidden).unwrap())
+                    .unwrap()
+                    .sites
+                    .is_empty()
+            );
+        }
+    }
 
     #[test]
     fn discovers_deterministic_permutations_and_checked_dup_aliases() {
