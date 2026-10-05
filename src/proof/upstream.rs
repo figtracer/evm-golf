@@ -76,6 +76,7 @@ pub(crate) enum RegionKind<'a> {
     Mask,
     ChunkedSpan(&'a SpanPlan),
     MemorySpan(&'a MemoryPlan),
+    MemoryJump(&'a MemoryPlan, &'a JumpPlan),
     SpanJump(&'a SpanPlan, &'a JumpPlan),
 }
 
@@ -85,8 +86,15 @@ pub(crate) struct JumpPlan {
     pub(crate) modules: Vec<(String, Vec<String>)>,
 }
 
+#[derive(Clone, Copy)]
+enum JumpTerminal {
+    Power,
+    Span,
+    Memory,
+}
+
 impl JumpPlan {
-    fn validate(&self, span: bool) -> Result<()> {
+    fn validate(&self, terminal: JumpTerminal) -> Result<()> {
         let mut counters = [0usize; 3];
         let mut seen = BTreeSet::new();
         let mut phase = 0;
@@ -108,33 +116,39 @@ impl JumpPlan {
                     phase = 3;
                     vec!["original_membership", "candidate_membership"]
                 }
-                "JumpRegionProof" | "SpanJumpProof" => {
-                    ensure!(
-                        name == if span {
-                            "SpanJumpProof"
-                        } else {
-                            "JumpRegionProof"
-                        },
-                        "wrong jump boundary kind"
-                    );
+                "JumpRegionProof" | "SpanJumpProof" | "MemoryJumpProof" => {
+                    let (module, expected) = match terminal {
+                        JumpTerminal::Power => (
+                            "JumpRegionProof",
+                            [
+                                "GolfCertificates.Jump.source_count",
+                                "GolfCertificates.Jump.source_gas",
+                                "GolfCertificates.Jump.compiler_jump_boundary",
+                            ],
+                        ),
+                        JumpTerminal::Span => (
+                            "SpanJumpProof",
+                            [
+                                "GolfCertificates.SpanJump.source_count",
+                                "GolfCertificates.SpanJump.source_gas",
+                                "GolfCertificates.SpanJump.span_jump_boundary",
+                            ],
+                        ),
+                        JumpTerminal::Memory => (
+                            "MemoryJumpProof",
+                            [
+                                "GolfCertificates.MemoryJump.source_count",
+                                "GolfCertificates.MemoryJump.source_gas",
+                                "GolfCertificates.MemoryJump.memory_jump_boundary",
+                            ],
+                        ),
+                    };
+                    ensure!(name == module, "wrong jump boundary kind");
                     ensure!(
                         phase == 3 && position + 1 == self.modules.len(),
                         "jump boundary must be the final generated module"
                     );
                     phase = 4;
-                    let expected = if span {
-                        [
-                            "GolfCertificates.SpanJump.source_count",
-                            "GolfCertificates.SpanJump.source_gas",
-                            "GolfCertificates.SpanJump.span_jump_boundary",
-                        ]
-                    } else {
-                        [
-                            "GolfCertificates.Jump.source_count",
-                            "GolfCertificates.Jump.source_gas",
-                            "GolfCertificates.Jump.compiler_jump_boundary",
-                        ]
-                    };
                     ensure!(
                         roots.iter().map(String::as_str).eq(expected),
                         "unexpected jump boundary roots"
@@ -588,25 +602,34 @@ const JUMP_MODULES: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
-const SPAN_JUMP_MODULES: &[(&str, &str, &[&str])] = &[
-    (
-        "OffsetJump",
-        include_str!("../../lean/upstream/OffsetJump.lean"),
-        &[
-            "GolfOffsetJump.jump_preserves",
-            "GolfOffsetJump.paired_jump",
-        ],
-    ),
-    (
-        "SpanJump",
-        include_str!("../../lean/upstream/SpanJump.lean"),
-        &[
-            "GolfSpanJump.source_count",
-            "GolfSpanJump.source_gas",
-            "GolfSpanJump.summary_jump",
-        ],
-    ),
-];
+const OFFSET_JUMP_MODULES: &[(&str, &str, &[&str])] = &[(
+    "OffsetJump",
+    include_str!("../../lean/upstream/OffsetJump.lean"),
+    &[
+        "GolfOffsetJump.jump_preserves",
+        "GolfOffsetJump.paired_jump",
+    ],
+)];
+
+const SPAN_JUMP_MODULES: &[(&str, &str, &[&str])] = &[(
+    "SpanJump",
+    include_str!("../../lean/upstream/SpanJump.lean"),
+    &[
+        "GolfSpanJump.source_count",
+        "GolfSpanJump.source_gas",
+        "GolfSpanJump.summary_jump",
+    ],
+)];
+
+const MEMORY_JUMP_MODULES: &[(&str, &str, &[&str])] = &[(
+    "PathJump",
+    include_str!("../../lean/upstream/PathJump.lean"),
+    &[
+        "GolfPathJump.source_count",
+        "GolfPathJump.source_gas",
+        "GolfPathJump.summary_jump",
+    ],
+)];
 
 const MASK_MODULES: &[(&str, &str, &[&str])] = &[
     (
@@ -947,13 +970,20 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             plan.validate()?;
             Some(plan.modules())
         }
+        RegionKind::MemoryJump(memory, jump) => {
+            memory.validate()?;
+            jump.validate(JumpTerminal::Memory)?;
+            let mut modules = memory.modules();
+            modules.extend(jump.modules.clone());
+            Some(modules)
+        }
         RegionKind::PowerJump(plan) => {
-            plan.validate(false)?;
+            plan.validate(JumpTerminal::Power)?;
             Some(plan.generated_modules())
         }
         RegionKind::SpanJump(span, jump) => {
             span.validate()?;
-            jump.validate(true)?;
+            jump.validate(JumpTerminal::Span)?;
             let mut modules = span.modules();
             modules.extend(jump.modules.clone());
             Some(modules)
@@ -1036,7 +1066,10 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         paths.push(checkout.join(".lake/build/lib/lean"));
         packages.push(json!({"name": package.name, "revision": package.rev, "checkout": checkout}));
     }
-    let checked_profile = if matches!(kind, RegionKind::PowerJump(_) | RegionKind::SpanJump(_, _)) {
+    let checked_profile = if matches!(
+        kind,
+        RegionKind::PowerJump(_) | RegionKind::SpanJump(_, _) | RegionKind::MemoryJump(_, _)
+    ) {
         let profile = check_scanner_profile(&root, &lean, &semantics, &out)?;
         paths = vec![out.clone()];
         paths.extend(env::split_paths(
@@ -1089,21 +1122,27 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         RegionKind::Mask
         | RegionKind::ChunkedSpan(_)
         | RegionKind::MemorySpan(_)
+        | RegionKind::MemoryJump(_, _)
         | RegionKind::SpanJump(_, _) => MASK_MODULES,
     };
     let composition = match kind {
-        RegionKind::ChunkedSpan(_) | RegionKind::MemorySpan(_) | RegionKind::SpanJump(_, _) => {
-            SPAN_MODULES
-        }
+        RegionKind::ChunkedSpan(_)
+        | RegionKind::MemorySpan(_)
+        | RegionKind::MemoryJump(_, _)
+        | RegionKind::SpanJump(_, _) => SPAN_MODULES,
         RegionKind::Power | RegionKind::PowerJump(_) | RegionKind::Mask => &[],
     };
     let chunks = match kind {
-        RegionKind::ChunkedSpan(_) | RegionKind::MemorySpan(_) | RegionKind::SpanJump(_, _) => {
-            CHUNK_MODULES
-        }
+        RegionKind::ChunkedSpan(_)
+        | RegionKind::MemorySpan(_)
+        | RegionKind::MemoryJump(_, _)
+        | RegionKind::SpanJump(_, _) => CHUNK_MODULES,
         _ => &[],
     };
-    let memory = if matches!(kind, RegionKind::MemorySpan(_)) {
+    let memory = if matches!(
+        kind,
+        RegionKind::MemorySpan(_) | RegionKind::MemoryJump(_, _)
+    ) {
         MEMORY_MODULES
     } else {
         &[]
@@ -1112,6 +1151,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         kind,
         RegionKind::ChunkedSpan(_)
             | RegionKind::MemorySpan(_)
+            | RegionKind::MemoryJump(_, _)
             | RegionKind::PowerJump(_)
             | RegionKind::SpanJump(_, _)
     ) {
@@ -1119,13 +1159,32 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     } else {
         &[]
     };
-    let jump_modules = if matches!(kind, RegionKind::PowerJump(_) | RegionKind::SpanJump(_, _)) {
+    let jump_modules = if matches!(
+        kind,
+        RegionKind::PowerJump(_) | RegionKind::SpanJump(_, _) | RegionKind::MemoryJump(_, _)
+    ) {
         JUMP_MODULES
     } else {
         &[]
     };
-    let span_power = if matches!(kind, RegionKind::SpanJump(_, _)) {
+    let span_power = if matches!(
+        kind,
+        RegionKind::SpanJump(_, _) | RegionKind::MemoryJump(_, _)
+    ) {
         POWER_MODULES
+    } else {
+        &[]
+    };
+    let offset_jump = if matches!(
+        kind,
+        RegionKind::SpanJump(_, _) | RegionKind::MemoryJump(_, _)
+    ) {
+        OFFSET_JUMP_MODULES
+    } else {
+        &[]
+    };
+    let memory_jump = if matches!(kind, RegionKind::MemoryJump(_, _)) {
+        MEMORY_JUMP_MODULES
     } else {
         &[]
     };
@@ -1143,7 +1202,9 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         .chain(chunks)
         .chain(memory)
         .chain(jump_modules)
+        .chain(offset_jump)
         .chain(span_jump)
+        .chain(memory_jump)
     {
         let path = out.join(format!("{name}.lean"));
         ensure!(
@@ -1163,7 +1224,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             "GolfCertificates.Mask.afterDecoded",
             "GolfCertificates.Mask.compiler_mask_boundary",
         ],
-        RegionKind::MemorySpan(_) => &[],
+        RegionKind::MemorySpan(_) | RegionKind::MemoryJump(_, _) => &[],
         RegionKind::ChunkedSpan(_) | RegionKind::SpanJump(_, _) => &[
             "GolfCertificates.Span.source_gas",
             "GolfCertificates.Span.bound_trace",
@@ -1182,6 +1243,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     let generated: &[(&str, &[&str])] = match kind {
         RegionKind::ChunkedSpan(_)
         | RegionKind::MemorySpan(_)
+        | RegionKind::MemoryJump(_, _)
         | RegionKind::PowerJump(_)
         | RegionKind::SpanJump(_, _) => &[],
         RegionKind::Power | RegionKind::Mask => &[
@@ -1193,6 +1255,11 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     let generated = match kind {
         RegionKind::ChunkedSpan(plan) => plan.modules(),
         RegionKind::MemorySpan(plan) => plan.modules(),
+        RegionKind::MemoryJump(memory, jump) => {
+            let mut modules = memory.modules();
+            modules.extend(jump.modules.clone());
+            modules
+        }
         RegionKind::PowerJump(plan) => plan.generated_modules(),
         RegionKind::SpanJump(span, jump) => {
             let mut modules = span.modules();
@@ -1214,6 +1281,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         kind,
         RegionKind::ChunkedSpan(_)
             | RegionKind::MemorySpan(_)
+            | RegionKind::MemoryJump(_, _)
             | RegionKind::PowerJump(_)
             | RegionKind::SpanJump(_, _)
     ) {
@@ -1235,7 +1303,9 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         .chain(chunks)
         .chain(memory)
         .chain(jump_modules)
+        .chain(offset_jump)
         .chain(span_jump)
+        .chain(memory_jump)
         .map(|(name, _, roots)| {
             (
                 (*name).to_owned(),
@@ -1404,7 +1474,7 @@ fn check_checkout(path: &Path, revision: &str, out: &Path, name: &str) -> Result
 #[cfg(test)]
 mod tests {
     use super::{
-        JumpPlan, Manifest, MemoryPlan, PathLeafKind, RegionKind, SpanNode, SpanPlan,
+        JumpPlan, JumpTerminal, Manifest, MemoryPlan, PathLeafKind, RegionKind, SpanNode, SpanPlan,
         check_output_separation, validate_manifest, verify_region,
     };
     use std::fs;
@@ -1484,7 +1554,7 @@ mod tests {
 
     #[test]
     fn jump_plan_rejects_missing_duplicate_reordered_and_unexpected_roots() {
-        jump_plan().validate(false).unwrap();
+        jump_plan().validate(JumpTerminal::Power).unwrap();
         for mutation in ["missing", "duplicate", "reordered", "root", "gap"] {
             let mut plan = jump_plan();
             match mutation {
@@ -1498,7 +1568,7 @@ mod tests {
                 _ => unreachable!(),
             }
             assert!(
-                plan.validate(false).is_err(),
+                plan.validate(JumpTerminal::Power).is_err(),
                 "accepted {mutation}: {plan:?}"
             );
         }
@@ -1540,15 +1610,15 @@ mod tests {
             compositions: vec![],
         };
         let mut jump = jump_plan();
-        assert!(jump.validate(true).is_err());
+        assert!(jump.validate(JumpTerminal::Span).is_err());
         *jump.modules.last_mut().unwrap() = (
             "SpanJumpProof".to_owned(),
             ["source_count", "source_gas", "span_jump_boundary"]
                 .map(|name| format!("GolfCertificates.SpanJump.{name}"))
                 .to_vec(),
         );
-        jump.validate(true).unwrap();
-        assert!(jump.validate(false).is_err());
+        jump.validate(JumpTerminal::Span).unwrap();
+        assert!(jump.validate(JumpTerminal::Power).is_err());
         for mutation in ["missing-span", "missing-membership", "extra", "cached"] {
             let out = tempfile::tempdir().unwrap();
             for (name, _) in span.modules().into_iter().chain(jump.modules.clone()) {
@@ -1756,6 +1826,74 @@ mod tests {
                 }),
                 "{error}"
             );
+            assert!(!out.path().join("environment.json").exists());
+        }
+    }
+
+    #[test]
+    fn memory_jump_requires_its_own_terminal_kind_and_complete_inventory() {
+        let memory = MemoryPlan {
+            leaves: vec![PathLeafKind::Store, PathLeafKind::Pure],
+            compositions: vec![(SpanNode::Leaf(0), SpanNode::Leaf(1))],
+        };
+        let mut jump = jump_plan();
+        assert!(jump.validate(JumpTerminal::Memory).is_err());
+        *jump.modules.last_mut().unwrap() = (
+            "MemoryJumpProof".to_owned(),
+            ["source_count", "source_gas", "memory_jump_boundary"]
+                .map(|name| format!("GolfCertificates.MemoryJump.{name}"))
+                .to_vec(),
+        );
+        jump.validate(JumpTerminal::Memory).unwrap();
+        assert!(jump.validate(JumpTerminal::Power).is_err());
+        assert!(jump.validate(JumpTerminal::Span).is_err());
+        for mutation in [
+            "missing-path",
+            "missing-membership",
+            "extra",
+            "cached",
+            "wrong-roots",
+            "wrong-kind",
+        ] {
+            let out = tempfile::tempdir().unwrap();
+            let mut altered = JumpPlan {
+                modules: jump.modules.clone(),
+            };
+            for (name, _) in memory.modules().into_iter().chain(altered.modules.clone()) {
+                fs::write(out.path().join(format!("{name}.lean")), "").unwrap();
+            }
+            let expected = match mutation {
+                "missing-path" => {
+                    fs::remove_file(out.path().join("PathLeaf0.lean")).unwrap();
+                    "module set differs"
+                }
+                "missing-membership" => {
+                    fs::remove_file(out.path().join("JumpMembership.lean")).unwrap();
+                    "module set differs"
+                }
+                "extra" => {
+                    fs::write(out.path().join("SpanJumpProof.lean"), "").unwrap();
+                    "module set differs"
+                }
+                "cached" => {
+                    fs::write(out.path().join("MemoryJumpProof.olean"), "").unwrap();
+                    "cached Lean artifacts"
+                }
+                "wrong-roots" => {
+                    altered.modules.last_mut().unwrap().1[0] =
+                        "GolfCertificates.SpanJump.source_count".to_owned();
+                    "unexpected jump boundary roots"
+                }
+                "wrong-kind" => {
+                    altered.modules.last_mut().unwrap().0 = "SpanJumpProof".to_owned();
+                    "wrong jump boundary kind"
+                }
+                _ => unreachable!(),
+            };
+            let error = verify_region(out.path(), RegionKind::MemoryJump(&memory, &altered))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{mutation}: {error}");
             assert!(!out.path().join("environment.json").exists());
         }
     }

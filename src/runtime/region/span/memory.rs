@@ -40,6 +40,23 @@ pub struct MemorySpanCertificate {
     pub lean_version: String,
 }
 
+/// A selected path followed by its statically known JUMP.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum SelectedSpanJumpCertificate {
+    Pure(SpanJumpCertificate),
+    Memory(MemorySpanJumpCertificate),
+}
+
+#[derive(Debug, Serialize)]
+pub struct MemorySpanJumpCertificate {
+    #[serde(flatten)]
+    pub span: MemorySpanCertificate,
+    pub jump_pc: usize,
+    pub pushed_destination: usize,
+    pub scanner_scope: &'static str,
+}
+
 #[derive(Debug)]
 enum Part {
     Pure(Span),
@@ -144,14 +161,8 @@ impl MemoryPath {
         &self,
         original: &[u8],
         candidate: &[u8],
+        rendered: RenderedImages,
     ) -> Result<(MemoryPlan, Vec<(String, String)>)> {
-        let rendered = render_images(
-            original,
-            candidate,
-            self.entry,
-            self.exit - self.entry,
-            ImageRoutes::Window,
-        );
         let mut sources = vec![("Images.lean".to_owned(), rendered.source)];
         let mut plan = MemoryPlan {
             leaves: Vec::new(),
@@ -223,6 +234,43 @@ impl MemoryPath {
         sources.push(("MemoryRegionProof.lean".to_owned(), root));
         Ok((plan, sources))
     }
+
+    fn report(
+        &self,
+        original: &[u8],
+        candidate: &[u8],
+        lean_version: String,
+    ) -> MemorySpanCertificate {
+        MemorySpanCertificate {
+            claim: "conditional internal memory-span residual interpreter calls",
+            original_keccak256: keccak256(original).to_string(),
+            candidate_keccak256: keccak256(candidate).to_string(),
+            entry_pc: self.entry,
+            exit_pc: self.exit,
+            source_instruction_count: self.source.count,
+            candidate_instruction_count: self.candidate.count,
+            source_base_gas: self.source.gas,
+            candidate_base_gas: self.candidate.gas,
+            gas_requirement: "initial gas >= GolfCertificates.Memory.sourceCost(initial state): source base gas plus canonical expansion at each actual MSTORE stage",
+            gas_surplus_increase: self.source.gas - self.candidate.gas,
+            required_input_stack_words: self.required,
+            maximum_input_stack_words: self.maximum,
+            output_stack_delta: self.source.delta,
+            execution_count_offset_increase: self.source.count - self.candidate.count,
+            power_rewrites: self.powers,
+            mask_rewrites: self.masks,
+            memory_operations: self.stores,
+            proof_root: "GolfCertificates.Memory.memory_boundary",
+            unproved: [
+                "entry reachability",
+                "suffix outcomes",
+                "whole-contract and all-gas equivalence",
+                "canonical transaction entry",
+                "revm correspondence",
+            ],
+            lean_version,
+        }
+    }
 }
 
 fn path_node(node: SpanNode) -> (String, String) {
@@ -255,7 +303,14 @@ pub fn certify_selected_span(
             .map(SelectedSpanCertificate::Pure);
     }
     let path = MemoryPath::select(original, candidate, entry, exit)?;
-    let (plan, sources) = path.sources(original, candidate)?;
+    let rendered = render_images(
+        original,
+        candidate,
+        entry,
+        exit - entry,
+        ImageRoutes::Window,
+    );
+    let (plan, sources) = path.sources(original, candidate, rendered)?;
     proof::check_region_output(out)?;
     fs::create_dir(out)
         .with_context(|| format!("use a new output directory: {}", out.display()))?;
@@ -265,35 +320,7 @@ pub fn certify_selected_span(
         fs::write(out.join(name), source)?;
     }
     let lean_version = proof::verify_region(out, proof::RegionKind::MemorySpan(&plan))?;
-    let report = MemorySpanCertificate {
-        claim: "conditional internal memory-span residual interpreter calls",
-        original_keccak256: keccak256(original).to_string(),
-        candidate_keccak256: keccak256(candidate).to_string(),
-        entry_pc: entry,
-        exit_pc: exit,
-        source_instruction_count: path.source.count,
-        candidate_instruction_count: path.candidate.count,
-        source_base_gas: path.source.gas,
-        candidate_base_gas: path.candidate.gas,
-        gas_requirement: "initial gas >= GolfCertificates.Memory.sourceCost(initial state): source base gas plus canonical expansion at each actual MSTORE stage",
-        gas_surplus_increase: path.source.gas - path.candidate.gas,
-        required_input_stack_words: path.required,
-        maximum_input_stack_words: path.maximum,
-        output_stack_delta: path.source.delta,
-        execution_count_offset_increase: path.source.count - path.candidate.count,
-        power_rewrites: path.powers,
-        mask_rewrites: path.masks,
-        memory_operations: path.stores,
-        proof_root: "GolfCertificates.Memory.memory_boundary",
-        unproved: [
-            "entry reachability",
-            "suffix outcomes",
-            "whole-contract and all-gas equivalence",
-            "canonical transaction entry",
-            "revm correspondence",
-        ],
-        lean_version,
-    };
+    let report = path.report(original, candidate, lean_version);
     fs::write(
         out.join("result.json"),
         serde_json::to_string_pretty(&report)? + "\n",
@@ -301,9 +328,242 @@ pub fn certify_selected_span(
     Ok(SelectedSpanCertificate::Memory(report))
 }
 
+/// Execute a selected pure or memory path and its immediately following static JUMP.
+pub fn certify_selected_span_through_jump(
+    original: &[u8],
+    candidate: &[u8],
+    entry: usize,
+    exit: usize,
+    out: &Path,
+) -> Result<SelectedSpanJumpCertificate> {
+    ensure!(
+        original.len() <= MAX_RUNTIME_BYTES && candidate.len() <= MAX_RUNTIME_BYTES,
+        "runtime exceeds EIP-170 size limit"
+    );
+    if !decode(original)
+        .iter()
+        .any(|i| entry <= i.pc && i.pc < exit && i.bytes[0] == 0x52)
+    {
+        return certify_span_through_jump(original, candidate, entry, exit, out)
+            .map(SelectedSpanJumpCertificate::Pure);
+    }
+    let path = MemoryPath::select(original, candidate, entry, exit)?;
+    ensure!(
+        original.get(exit) == Some(&0x56) && candidate.get(exit) == Some(&0x56),
+        "span exit must be JUMP in both images"
+    );
+    let destination = match path.parts.last() {
+        Some(Part::Pure(span)) => match span.segments.last().map(|segment| &segment.kind) {
+            Some(SegmentKind::Same {
+                op: 0x5f..=0x7f,
+                value,
+                ..
+            }) => *value,
+            _ => bail!("through-jump span must end in an unchanged literal PUSH0..32"),
+        },
+        _ => bail!("through-jump span must end in an unchanged literal PUSH0..32"),
+    };
+    ensure!(
+        destination < U256::from(original.len()),
+        "jump destination is outside the full images"
+    );
+    let destination = destination.to::<usize>();
+    let rendered = render_images(original, candidate, entry, exit - entry, ImageRoutes::All);
+    let membership =
+        super::super::jump::membership_sources(original, candidate, destination, &rendered)?;
+    let jump_decodes = routed_decoded_facts(original, candidate, exit, exit + 1, &rendered.leaves)
+        .replace("GolfOpcodeDecode.decode_jump", "jump_decode");
+    let (plan, mut sources) = path.sources(original, candidate, rendered)?;
+    let root_node = plan
+        .compositions
+        .len()
+        .checked_sub(1)
+        .map_or(SpanNode::Leaf(0), SpanNode::Compose);
+    let (_, summary) = path_node(root_node);
+    let mut terminal = include_str!("../../../../lean/upstream/templates/MemoryJump.lean.in")
+        .replace("$root_summary", &summary)
+        .replace("$jump_decodes", &jump_decodes);
+    for (key, value) in [
+        ("$entry_pc", entry),
+        ("$jump_pc", exit),
+        ("$destination", destination),
+        ("$source_steps", path.source.count),
+        ("$target_steps", path.candidate.count),
+        ("$required", path.required),
+        ("$maximum", path.maximum),
+        ("$powers", path.powers),
+        ("$masks", path.masks),
+    ] {
+        terminal = terminal.replace(key, &value.to_string());
+    }
+    let mut jump_plan = proof::JumpPlan {
+        modules: membership
+            .iter()
+            .map(|(name, _, roots)| (name.clone(), roots.clone()))
+            .collect(),
+    };
+    jump_plan.modules.push((
+        "MemoryJumpProof".to_owned(),
+        vec![
+            "GolfCertificates.MemoryJump.source_count".to_owned(),
+            "GolfCertificates.MemoryJump.source_gas".to_owned(),
+            "GolfCertificates.MemoryJump.memory_jump_boundary".to_owned(),
+        ],
+    ));
+    sources.extend(
+        membership
+            .into_iter()
+            .map(|(name, source, _)| (format!("{name}.lean"), source)),
+    );
+    sources.push(("MemoryJumpProof.lean".to_owned(), terminal));
+    proof::check_jump_output(out)?;
+    if let Some(parent) = out.parent().filter(|path| !path.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    fs::create_dir(out)
+        .with_context(|| format!("use a new output directory: {}", out.display()))?;
+    fs::write(out.join("original.hex"), hex::encode(original) + "\n")?;
+    fs::write(out.join("candidate.hex"), hex::encode(candidate) + "\n")?;
+    for (name, source) in sources {
+        fs::write(out.join(name), source)?;
+    }
+    let lean_version = proof::verify_region(out, proof::RegionKind::MemoryJump(&plan, &jump_plan))?;
+    let mut span = path.report(original, candidate, lean_version);
+    span.claim = "conditional checked-scanner internal memory span through JUMP";
+    span.exit_pc = destination;
+    span.source_instruction_count += 1;
+    span.candidate_instruction_count += 1;
+    span.source_base_gas += 8;
+    span.candidate_base_gas += 8;
+    span.output_stack_delta -= 1;
+    span.gas_requirement = "initial gas >= GolfCertificates.MemoryJump.sourceCost(initial state): source base gas plus canonical expansion at each actual MSTORE stage";
+    span.proof_root = "GolfCertificates.MemoryJump.memory_jump_boundary";
+    let report = MemorySpanJumpCertificate {
+        span,
+        jump_pc: exit,
+        pushed_destination: destination,
+        scanner_scope: "checked-scanner semantics; equivalence with the original opaque upstream scanner is unproved",
+    };
+    fs::write(
+        out.join("result.json"),
+        serde_json::to_string_pretty(&report)? + "\n",
+    )?;
+    Ok(SelectedSpanJumpCertificate::Memory(report))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_memory_jump_rejects_without_creating_parents() {
+        for (name, code, exit, expected) in [
+            (
+                "missing-jump",
+                vec![0x52, 0x60, 4, 0, 0x5b],
+                3,
+                "exit must be JUMP",
+            ),
+            (
+                "final-store",
+                vec![0x52, 0x56, 0x5b],
+                1,
+                "unchanged literal PUSH",
+            ),
+            (
+                "final-swap",
+                vec![0x52, 0x60, 5, 0x90, 0x56, 0x5b],
+                4,
+                "unchanged literal PUSH",
+            ),
+            (
+                "outside",
+                vec![0x52, 0x60, 99, 0x56, 0x5b],
+                3,
+                "outside the full images",
+            ),
+            (
+                "not-destination",
+                vec![0x52, 0x60, 0, 0x56, 0x5b],
+                3,
+                "must contain JUMPDEST",
+            ),
+            (
+                "payload",
+                vec![0x52, 0x60, 6, 0x56, 0x61, 0, 0x5b],
+                3,
+                "inside PUSH data",
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let out = temp.path().join("missing-parent").join(name);
+            let error =
+                certify_selected_span_through_jump(&code, &code, 0, exit, &out).unwrap_err();
+            assert!(error.to_string().contains(expected), "{name}: {error:#}");
+            assert_eq!(
+                fs::read_dir(temp.path()).unwrap().count(),
+                0,
+                "{name} wrote before rejection"
+            );
+        }
+    }
+
+    #[test]
+    fn memory_jump_generation_keeps_dynamic_cost_and_distinct_mask_counts() {
+        let mut original = [&[0x52][..], &MASK_BEFORE, &[0x60, 0, 0x56, 0x5b]].concat();
+        let mut candidate = [&[0x52][..], &MASK_AFTER, &[0x60, 0, 0x56, 0x5b]].concat();
+        let destination = original.len() - 1;
+        let exit = destination - 1;
+        original[exit - 1] = destination as u8;
+        candidate[exit - 1] = destination as u8;
+        let path = MemoryPath::select(&original, &candidate, 0, exit).unwrap();
+        let rendered = render_images(&original, &candidate, 0, exit, ImageRoutes::All);
+        let memberships = super::super::super::jump::membership_sources(
+            &original,
+            &candidate,
+            destination,
+            &rendered,
+        )
+        .unwrap();
+        assert_eq!(memberships.last().unwrap().0, "JumpMembership");
+        let (plan, sources) = path.sources(&original, &candidate, rendered).unwrap();
+        assert_eq!(plan.leaves.len(), 2);
+        assert_eq!(
+            sources
+                .iter()
+                .filter(|(name, _)| name == "Images.lean")
+                .count(),
+            1
+        );
+        assert!(
+            sources
+                .iter()
+                .any(|(name, source)| name == "MemoryRegionProof.lean"
+                    && source.contains(".cost s")
+                    && !source.contains('$'))
+        );
+        let report = path.report(&original, &candidate, "uncompiled test".to_owned());
+        assert_eq!(
+            (
+                report.source_instruction_count + 1,
+                report.candidate_instruction_count + 1
+            ),
+            (15, 12)
+        );
+        assert_eq!(
+            (report.source_base_gas + 8, report.candidate_base_gas + 8),
+            (50, 41)
+        );
+        assert_eq!(
+            (
+                report.gas_surplus_increase,
+                report.execution_count_offset_increase
+            ),
+            (9, 3)
+        );
+        assert_eq!(report.output_stack_delta - 1, -1);
+        assert!(report.gas_requirement.contains("canonical expansion"));
+    }
 
     #[test]
     fn decoded_stores_partition_without_empty_pure_parts() {

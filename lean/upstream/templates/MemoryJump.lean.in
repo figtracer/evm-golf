@@ -1,0 +1,71 @@
+import MemoryRegionProof
+import JumpMembership
+import OpcodeDecode
+import PathJump
+set_option Elab.async false
+set_option maxRecDepth 4096
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream GolfCountOffset GolfPathSummary
+namespace GolfCertificates.MemoryJump
+
+private theorem jump_decode (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 86)) :
+    decode code pc = some ((Operation.JUMP : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+$jump_decodes
+
+def sourceCost (s : EVM.State) : Nat := $root_summary.cost s + 8
+
+def sourceExit (xs : List UInt256) (s : EVM.State) : EVM.State :=
+  GolfPathJump.terminalPost $root_summary (UInt256.ofNat $destination) xs s
+
+def outputStack (xs : List UInt256) : List UInt256 :=
+  ($root_summary.stackMap xs).tail
+
+private theorem terminal_head (xs : List UInt256) :
+    $root_summary.stackMap xs =
+      UInt256.ofNat $destination :: ($root_summary.stackMap xs).tail := by rfl
+
+theorem source_count (xs : List UInt256) (s : EVM.State) :
+    (sourceExit xs s).execLength = s.execLength+$source_steps+1 := by
+  exact GolfPathJump.source_count $root_summary (UInt256.ofNat $destination) xs s
+
+theorem source_gas (xs : List UInt256) (s : EVM.State)
+    (gas : sourceCost s ≤ s.gasAvailable.toNat) :
+    (sourceExit xs s).gasAvailable.toNat = s.gasAvailable.toNat-sourceCost s := by
+  exact GolfPathJump.source_gas $root_summary (UInt256.ofNat $destination) xs s gas
+
+-- Executes the terminal JUMP; the landing instruction and its suffix remain residual.
+theorem memory_jump_boundary {owner surplus skipped s t}
+    (related : DeployedOffset owner originalCode candidateCode surplus skipped s t)
+    (xs : List UInt256) (fuel : Nat)
+    (pc : s.pc = UInt256.ofNat $entry_pc) (stack : s.stack = xs)
+    (gas : sourceCost s ≤ s.gasAvailable.toNat)
+    (low : $required ≤ xs.length) (height : xs.length ≤ $maximum) :
+    ∃ ce : EVM.State,
+      X (fuel+$source_steps+2) (D_J originalCode (UInt256.ofNat 0)) s =
+        X (fuel+1) (D_J originalCode (UInt256.ofNat 0)) (sourceExit xs s) ∧
+      X (fuel+$target_steps+2) (D_J candidateCode (UInt256.ofNat 0)) t =
+        X (fuel+1) (D_J candidateCode (UInt256.ofNat 0)) ce ∧
+      DeployedOffset owner originalCode candidateCode (surplus+2*$powers+9*$masks)
+        (skipped+3*$masks) (sourceExit xs s) ce ∧
+      (sourceExit xs s).pc = UInt256.ofNat $destination ∧
+      ce.pc = UInt256.ofNat $destination ∧
+      (sourceExit xs s).stack = outputStack xs ∧ ce.stack = outputStack xs ∧
+      (sourceExit xs s).gasAvailable.toNat = s.gasAvailable.toNat-sourceCost s ∧
+      (sourceExit xs s).execLength = s.execLength+$source_steps+1 ∧
+      ce.execLength = t.execLength+$target_steps+1 := by
+  exact GolfPathJump.summary_jump $root_summary (UInt256.ofNat $destination)
+    (fun xs _ _ => terminal_head xs) (by decide)
+    originalAt$jump_pc candidateAt$jump_pc
+    GolfCertificates.JumpMembership.original_membership
+    GolfCertificates.JumpMembership.candidate_membership
+    related xs fuel pc stack gas low height
+
+#print axioms source_count
+#print axioms source_gas
+#print axioms memory_jump_boundary
+end GolfCertificates.MemoryJump

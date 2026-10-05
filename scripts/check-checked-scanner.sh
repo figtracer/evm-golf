@@ -121,4 +121,35 @@ expected = {
 assert expected in text, text
 PY
  done
+# Memory expansion remains state-dependent when the terminal JUMP is executed.
+printf '%s\n' 52526001600160e01b03166001600160e01b03196017565b00 > "$work/memory-original.hex"
+printf '%s\n' 52526001600160e01b03166400ffffffff60e01b6017565b00 > "$work/memory-candidate.hex"
+cargo run --locked -- certify-runtime-region \
+  --original "$work/memory-original.hex" --candidate "$work/memory-candidate.hex" \
+  --entry-pc 0 --exit-pc 22 --through-jump --out "$work/memory-accepted" \
+  2>&1 | tee "$work/memory.log"
+python3 - "$work/memory-accepted" <<'PY_MEMORY'
+import json
+import pathlib
+import sys
+
+out = pathlib.Path(sys.argv[1])
+report = json.loads((out / "result.json").read_text())
+assert report["jump_pc"] == 22
+assert report["exit_pc"] == report["pushed_destination"] == 23
+assert report["source_instruction_count"] == 16
+assert report["candidate_instruction_count"] == 13
+assert report["source_base_gas"] == 53
+assert report["candidate_base_gas"] == 44
+assert report["gas_surplus_increase"] == 9
+assert report["execution_count_offset_increase"] == 3
+assert report["memory_operations"] == 2
+assert report["required_input_stack_words"] == 5
+assert report["maximum_input_stack_words"] == 1024
+assert report["output_stack_delta"] == -3
+assert "source_gas_minimum" not in report
+assert report["proof_root"] == "GolfCertificates.MemoryJump.memory_jump_boundary"
+assert "sourceCost" in report["gas_requirement"]
+assert json.loads((out / "environment.json").read_text())["semantics_profile"]["identity"] == "evm-golf-checked-scanner"
+PY_MEMORY
 printf 'Checked-scanner region checks passed. Local evidence: %s\n' "$work"

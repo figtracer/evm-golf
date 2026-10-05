@@ -209,11 +209,18 @@ fn main() -> Result<()> {
                 prepare_parent(&out)?;
             }
             let (exit_pc, boundary) = if let (Some(jump_pc), true) = (exit_pc, through_jump) {
-                let report = runtime::region::certify_span_through_jump(
+                let report = runtime::region::certify_selected_span_through_jump(
                     &original, &candidate, entry_pc, jump_pc, &out,
                 )?;
                 (
-                    report.span.exit_pc,
+                    match report {
+                        runtime::region::SelectedSpanJumpCertificate::Pure(report) => {
+                            report.span.exit_pc
+                        }
+                        runtime::region::SelectedSpanJumpCertificate::Memory(report) => {
+                            report.span.exit_pc
+                        }
+                    },
                     "Stops before executing the destination JUMPDEST",
                 )
             } else if through_jump {

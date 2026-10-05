@@ -15,7 +15,10 @@ use crate::{
 };
 
 mod memory;
-pub use memory::{MemorySpanCertificate, SelectedSpanCertificate, certify_selected_span};
+pub use memory::{
+    MemorySpanCertificate, MemorySpanJumpCertificate, SelectedSpanCertificate,
+    SelectedSpanJumpCertificate, certify_selected_span, certify_selected_span_through_jump,
+};
 
 // Canonical instruction count bounds per-leaf proof work; rewrite atoms stay whole.
 // Local mixed/swap checks fit the existing module cap at this representation size.

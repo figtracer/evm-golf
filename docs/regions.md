@@ -151,13 +151,15 @@ it does not establish whole-contract or all-gas equivalence. Unchanged supported
 spans are accepted with zero savings. Bytes outside the span remain independently
 bound, without certification of their behavior.
 
-For pure spans, add `--through-jump` to execute the JUMP at `--exit-pc`. The span must
+Add `--through-jump` to execute the JUMP at `--exit-pc`. The span must
 end in an unchanged literal `PUSH0`–`PUSH32`; the checker proves that its destination
 is valid in both full images. This requires the checked-scanner setup above.
 The result distinguishes `jump_pc` from the landing `exit_pc`, includes the JUMP’s
 gas and instruction count, and stops before executing the destination JUMPDEST.
+For memory paths, the gas requirement includes expansion plus the JUMP’s 8 gas.
 
-Rust callers can use `region::certify_span_through_jump` for this mode,
+Rust callers can use `region::certify_selected_span_through_jump` for this mode,
+`region::certify_span_through_jump` for pure spans,
 `region::certify_selected_span` for pure or memory spans,
 `region::certify_span` for pure spans,
 `region::certify_selected` for automatic pattern selection, or `region::certify`
