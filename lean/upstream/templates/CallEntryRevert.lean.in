@@ -1,0 +1,55 @@
+import XiRevert
+import TerminalProof
+set_option Elab.async false
+set_option maxRecDepth 4096
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream GolfCountOffset GolfCertificates GolfXiEntry
+namespace GolfCertificates.CallEntry
+-- The empty-entry stack is derived from the same certified summary as execution.
+def returnStack : List UInt256 := $root_summary.stackMap []
+def address : UInt256 := returnStack.getD 0 (UInt256.ofNat 0)
+def size : UInt256 := returnStack.getD 1 (UInt256.ofNat 0)
+def tail : List UInt256 := returnStack.drop 2
+private theorem operands : $root_summary.stackMap [] = address :: size :: tail := by
+  decide +kernel
+private theorem physical : ($root_summary.stackMap []).length ≤ 1024 := by
+  decide +kernel
+private theorem readable : size.toNat < 2^64 := by
+  decide +kernel
+
+theorem call_entry_revert (fuel : Nat) (owner : AccountAddress)
+    (created : Batteries.RBSet AccountAddress compare) (genesis : BlockHeader)
+    (blocks : ProcessedBlocks) (σ σ₀ τ τ₀ : AccountMap .EVM) (g : UInt256)
+    (A : Substate) (I : ExecutionEnv .EVM)
+    (current : MapsRelated owner originalCode candidateCode σ τ)
+    (original : MapsRelated owner originalCode candidateCode σ₀ τ₀)
+    (oldCurrent : ∃ a, σ.find? owner = some a ∧ a.code = originalCode)
+    (oldOriginal : ∃ a, σ₀.find? owner = some a ∧ a.code = originalCode)
+    (newCurrent : ∃ a, τ.find? owner = some a ∧ a.code = candidateCode)
+    (newOriginal : ∃ a, τ₀.find? owner = some a ∧ a.code = candidateCode)
+    (gas : GolfCertificates.Terminal.sourceCost
+      (fresh created genesis blocks σ σ₀ g A {I with codeOwner := owner, code := originalCode})
+        ≤ g.toNat) :
+    ∃ sf cf : EVM.State, ∃ output : ByteArray,
+      Ξ (fuel+$source_steps+3) created genesis blocks σ σ₀ g A
+        {I with codeOwner := owner, code := originalCode} = .ok (.revert sf.gasAvailable output) ∧
+      Ξ (fuel+$target_steps+3) created genesis blocks τ τ₀ g A
+        {I with codeOwner := owner, code := candidateCode} = .ok (.revert cf.gasAvailable output) ∧
+      DeployedOffset owner originalCode candidateCode $surplus $skipped sf cf := by
+  let s := fresh created genesis blocks σ σ₀ g A {I with codeOwner := owner, code := originalCode}
+  let t := fresh created genesis blocks τ τ₀ g A {I with codeOwner := owner, code := candidateCode}
+  have related : DeployedOffset owner originalCode candidateCode 0 0 s t :=
+    fresh_related owner originalCode candidateCode created genesis blocks σ σ₀ τ τ₀ g A I
+      current original oldCurrent oldOriginal newCurrent newOriginal
+  obtain ⟨cf, oldRun, newRun, rel, _⟩ :=
+    GolfCertificates.Terminal.terminal_revert related [] address size tail fuel rfl rfl gas
+      (by decide) (by decide) operands physical readable
+  refine ⟨GolfPathRevert.terminalPost $root_summary address size tail s, cf,
+    GolfPathRevert.output $root_summary address size s, ?_, ?_, rel⟩
+  · exact xi_of_revert (fuel+$source_steps+2) created genesis blocks σ σ₀ g A
+      {I with codeOwner := owner, code := originalCode} _ _ oldRun
+  · exact xi_of_revert (fuel+$target_steps+2) created genesis blocks τ τ₀ g A
+      {I with codeOwner := owner, code := candidateCode} _ _ newRun
+
+#print axioms call_entry_revert
+end GolfCertificates.CallEntry

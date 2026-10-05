@@ -59,7 +59,7 @@ enum Action {
         /// Execute the region's trailing JUMP with checked destination proofs.
         #[arg(long)]
         through_jump: bool,
-        /// Execute the explicit STOP or RETURN at --exit-pc.
+        /// Execute the explicit STOP, RETURN or REVERT at --exit-pc.
         #[arg(long, requires = "exit_pc", conflicts_with = "through_jump")]
         through_halt: bool,
         /// Prove fresh canonical call entry through the selected terminal instruction.
@@ -229,7 +229,9 @@ fn main() -> Result<()> {
                 };
                 (
                     report.span.exit_pc,
-                    if from_call_entry {
+                    if report.terminal == "REVERT" {
+                        "Proves paired canonical revert, equal output and related remaining gas; rollback is excluded"
+                    } else if from_call_entry {
                         "Proves paired canonical call-entry success and equal output; transaction validation is excluded"
                     } else {
                         "Executes STOP or RETURN with paired success and equal canonical output"

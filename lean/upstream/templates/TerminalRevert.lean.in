@@ -1,0 +1,60 @@
+import MemoryRegionProof
+import OpcodeDecode
+import PathRevert
+set_option Elab.async false
+set_option maxRecDepth 4096
+set_option maxHeartbeats 2000000
+open EvmYul EvmYul.EVM GolfUpstream GolfCountOffset GolfPathSummary GolfByteRouting
+namespace GolfCertificates.Terminal
+private theorem terminal_decode (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 253)) :
+    decode code pc = some ((Operation.REVERT : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+$terminal_decodes
+def sourceCost (s : EVM.State) : Nat := GolfPathRevert.sourceCost $root_summary s
+def sourceExit (address size : UInt256) (tail : List UInt256) (s : EVM.State) : EVM.State :=
+  GolfPathRevert.terminalPost $root_summary address size tail s
+theorem source_count (address size : UInt256) (tail : List UInt256) (s : EVM.State) :
+    (sourceExit address size tail s).execLength = s.execLength+$source_steps+1 := by
+  exact GolfPathRevert.source_count $root_summary address size tail s
+theorem source_gas (address size : UInt256) (tail : List UInt256) (s : EVM.State)
+    (gas : sourceCost s ≤ s.gasAvailable.toNat) :
+    (sourceExit address size tail s).gasAvailable.toNat = s.gasAvailable.toNat-sourceCost s := by
+  exact GolfPathRevert.source_gas $root_summary address size tail s gas
+theorem terminal_revert
+    {owner surplus skipped s t}
+    (related : DeployedOffset owner originalCode candidateCode surplus skipped s t)
+    (xs : List UInt256) (address size : UInt256) (tail : List UInt256) (fuel : Nat)
+    (pc : s.pc = $root_summary.entry) (stack : s.stack = xs)
+    (gas : GolfPathRevert.sourceCost $root_summary s ≤ s.gasAvailable.toNat)
+    (low : $required ≤ xs.length) (height : xs.length ≤ $root_summary.maximum)
+    (revertStack : $root_summary.stackMap xs = address :: size :: tail)
+    (physical : ($root_summary.stackMap xs).length ≤ 1024)
+    (readable : size.toNat < 2^64) :
+    ∃ ce : EVM.State,
+      X (fuel+$root_summary.sourceSteps+2) (D_J originalCode (UInt256.ofNat 0)) s =
+        .ok (.revert (GolfPathRevert.terminalPost $root_summary address size tail s).gasAvailable (GolfPathRevert.output $root_summary address size s)) ∧
+      X (fuel+$root_summary.targetSteps+2) (D_J candidateCode (UInt256.ofNat 0)) t =
+        .ok (.revert ce.gasAvailable (GolfPathRevert.output $root_summary address size s)) ∧
+      DeployedOffset owner originalCode candidateCode (surplus+2*$root_summary.powers+9*$root_summary.masks)
+        (skipped+3*$root_summary.masks) (GolfPathRevert.terminalPost $root_summary address size tail s) ce ∧
+      (GolfPathRevert.terminalPost $root_summary address size tail s).stack = tail ∧ ce.stack = tail ∧
+      (GolfPathRevert.terminalPost $root_summary address size tail s).H_return = GolfPathRevert.output $root_summary address size s ∧
+      ce.H_return = GolfPathRevert.output $root_summary address size s ∧
+      (GolfPathRevert.terminalPost $root_summary address size tail s).gasAvailable.toNat =
+        s.gasAvailable.toNat-GolfPathRevert.sourceCost $root_summary s ∧
+      (GolfPathRevert.terminalPost $root_summary address size tail s).execLength = s.execLength+$root_summary.sourceSteps+1 ∧
+      ce.execLength = t.execLength+$root_summary.targetSteps+1 := by
+  have bodyLow : $root_summary.required ≤ xs.length := by
+    have bound : $root_summary.required ≤ $required := by decide
+    omega
+  exact GolfPathRevert.summary_revert $root_summary
+    originalAt$exit_pc candidateAt$exit_pc related xs address size tail fuel fuel
+    pc stack gas bodyLow height revertStack physical readable
+
+#print axioms source_count
+#print axioms source_gas
+#print axioms terminal_revert
+end GolfCertificates.Terminal

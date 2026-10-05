@@ -159,20 +159,23 @@ The result distinguishes `jump_pc` from the landing `exit_pc`, includes the JUMP
 gas and instruction count, and stops before executing the destination JUMPDEST.
 For memory paths, the gas requirement includes expansion plus the JUMP’s 8 gas.
 
-Add `--through-halt` to execute an explicit `STOP` or `RETURN` at `--exit-pc`
+Add `--through-halt` to execute an explicit `STOP`, `RETURN` or `REVERT` at `--exit-pc`
 using the original upstream profile. It cannot be combined with `--through-jump`.
-The proof gives paired success and equal canonical output. RETURN requires
+The proof gives paired success for STOP/RETURN or paired revert for REVERT, with
+equal canonical output and related remaining gas. RETURN and REVERT require
 `address :: size :: tail` at the body endpoint, a physical stack of at most 1,024
 words, and `size < 2^64`; its gas requirement includes expansion after the body.
 The result distinguishes `terminal_pc` from the resulting `exit_pc`. Entry
 reachability, all-gas equivalence and memory-reader FFI correctness remain unproved.
 
 Add `--from-call-entry` with `--through-halt` and `--entry-pc 0` to check
-canonical call initialization and successful execution of a supported terminating
-program. The program must accept an empty initial stack; RETURN operands and
+canonical call initialization and execution of a supported terminating
+program. The program must accept an empty initial stack; RETURN/REVERT operands and
 size bounds are checked by Lean. The theorem retains deployed-account linkage,
 related account maps and sufficient source gas as premises. It proves paired
-canonical `Ξ` success and equal output, not transaction or all-gas equivalence.
+canonical `Ξ` success or revert and equal output, not transaction or all-gas
+equivalence. REVERT results do not contain a returned machine state; `exit_pc`
+describes the internal terminal step. Caller and transaction rollback are not proved.
 
 Rust callers can use `region::certify_selected_span_through_jump` for jump spans,
 `region::certify_span_through_jump` for pure spans,

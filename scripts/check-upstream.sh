@@ -402,4 +402,44 @@ assert report["required_input_stack_words"] == 0 and report["output_stack_delta"
 assert report["proof_root"] == "GolfCertificates.CallEntry.call_entry_success"
 PY_COMPARE_STOP
 
+# REVERT shares the memory path but certifies a distinct terminal outcome.
+printf '%s\n' 60076020025f5260205ffd > "$work/revert-original.hex"
+printf '%s\n' 600760051b5f5260205ffd > "$work/revert-candidate.hex"
+printf '%s\n' 60076020025f5260206080fd > "$work/revert-expand-original.hex"
+printf '%s\n' 600760051b5f5260206080fd > "$work/revert-expand-candidate.hex"
+for fixture in revert revert-expand; do
+  end=10
+  mode=()
+  if [[ "$fixture" == revert-expand ]]; then
+    end=11
+    mode=(--from-call-entry)
+  fi
+  if ! cargo run --locked -- certify-runtime-region \
+    --original "$work/$fixture-original.hex" --candidate "$work/$fixture-candidate.hex" \
+    --entry-pc 0 --exit-pc "$end" --through-halt "${mode[@]}" --out "$work/$fixture-accepted"; then
+    cat "$work/$fixture-accepted"/*.log 2>/dev/null || true
+    exit 1
+  fi
+done
+python3 - "$work/revert-accepted" "$work/revert-expand-accepted" <<'PY_REVERT'
+import json, pathlib, sys
+for i, directory in enumerate(sys.argv[1:]):
+    path = pathlib.Path(directory)
+    report = json.loads((path / "result.json").read_text())
+    root = "GolfCertificates.CallEntry.call_entry_revert" if i else "GolfCertificates.Terminal.terminal_revert"
+    assert report["terminal"] == "REVERT" and report["terminal_pc"] == 10+i
+    assert report["exit_pc"] == 11+i and report["required_input_stack_words"] == 0
+    assert report["source_instruction_count"] == report["candidate_instruction_count"] == 8
+    assert report["proof_root"] == root and "revert" in report["claim"]
+    assert report["gas_surplus_increase"] == 2 and report["memory_operations"] == 1
+    assert "REVERT expansion evaluated after the body" in report["gas_requirement"]
+    assert "rollback" in report["output_condition"]
+    log = "CallEntryProof.log" if i else "TerminalProof.log"
+    assert f"'{root}' depends on axioms:" in (path / log).read_text()
+    if i:
+        environment = json.loads((path / "environment.json").read_text())
+        assert "canonical Ξ revert" in environment["claim_scope"]
+        assert "success" not in environment["claim_scope"]
+PY_REVERT
+
 echo "Upstream region checks passed. Local evidence: $work"

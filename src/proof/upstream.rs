@@ -86,6 +86,7 @@ pub(crate) enum RegionKind<'a> {
 pub(crate) enum TerminalKind {
     Stop,
     Return,
+    Revert,
 }
 
 /// Ordered modules emitted by the trusted full-image membership generator.
@@ -448,22 +449,37 @@ impl MemoryPlan {
         modules
     }
 
-    fn terminal_modules(&self) -> Vec<(String, Vec<String>)> {
+    fn terminal_modules(&self, terminal: TerminalKind) -> Vec<(String, Vec<String>)> {
         let mut modules = self.modules();
         modules.push((
             "TerminalProof".to_owned(),
-            ["source_count", "source_gas", "terminal_success"]
-                .map(|name| format!("GolfCertificates.Terminal.{name}"))
-                .to_vec(),
+            [
+                "source_count",
+                "source_gas",
+                if matches!(terminal, TerminalKind::Revert) {
+                    "terminal_revert"
+                } else {
+                    "terminal_success"
+                },
+            ]
+            .map(|name| format!("GolfCertificates.Terminal.{name}"))
+            .to_vec(),
         ));
         modules
     }
 
-    fn call_entry_modules(&self) -> Vec<(String, Vec<String>)> {
-        let mut modules = self.terminal_modules();
+    fn call_entry_modules(&self, terminal: TerminalKind) -> Vec<(String, Vec<String>)> {
+        let mut modules = self.terminal_modules(terminal);
         modules.push((
             "CallEntryProof".to_owned(),
-            vec!["GolfCertificates.CallEntry.call_entry_success".to_owned()],
+            vec![
+                if matches!(terminal, TerminalKind::Revert) {
+                    "GolfCertificates.CallEntry.call_entry_revert"
+                } else {
+                    "GolfCertificates.CallEntry.call_entry_success"
+                }
+                .to_owned(),
+            ],
         ));
         modules
     }
@@ -977,6 +993,39 @@ const RETURN_MODULES: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
+const REVERT_MODULES: &[(&str, &str, &[&str])] = &[
+    (
+        "RevertTerminal",
+        include_str!("../../lean/upstream/RevertTerminal.lean"),
+        &[
+            "CanonicalRevert.cost_revert",
+            "CanonicalRevert.expansion_equal",
+            "CanonicalRevert.terminal_gas",
+            "CanonicalRevert.terminal_count",
+            "CanonicalRevert.terminal_output",
+            "CanonicalRevert.step_revert",
+            "CanonicalRevert.X_revert",
+            "CanonicalRevert.revert_preserves",
+            "CanonicalRevert.revert_pair",
+        ],
+    ),
+    (
+        "PathRevert",
+        include_str!("../../lean/upstream/PathRevert.lean"),
+        &[
+            "GolfPathRevert.source_count",
+            "GolfPathRevert.source_gas",
+            "GolfPathRevert.summary_revert",
+        ],
+    ),
+];
+
+const CALL_REVERT_MODULES: &[(&str, &str, &[&str])] = &[(
+    "XiRevert",
+    include_str!("../../lean/upstream/XiRevert.lean"),
+    &["GolfXiEntry.xi_of_revert"],
+)];
+
 const CALL_ENTRY_MODULES: &[(&str, &str, &[&str])] = &[(
     "XiEntry",
     include_str!("../../lean/upstream/XiEntry.lean"),
@@ -1083,13 +1132,13 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             plan.validate()?;
             Some(plan.modules())
         }
-        RegionKind::Terminal(plan, _) => {
+        RegionKind::Terminal(plan, terminal) => {
             plan.validate()?;
-            Some(plan.terminal_modules())
+            Some(plan.terminal_modules(terminal))
         }
-        RegionKind::CallEntry(plan, _) => {
+        RegionKind::CallEntry(plan, terminal) => {
             plan.validate()?;
-            Some(plan.call_entry_modules())
+            Some(plan.call_entry_modules(terminal))
         }
         RegionKind::MemoryJump(memory, jump) => {
             memory.validate()?;
@@ -1220,7 +1269,9 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         "lean_version": version.trim(), "lean": lean, "upstream_revision": REVISION,
         "semantics": semantics, "packages": packages, "lean_path": paths,
         "module_timeout_seconds": MODULE_TIMEOUT.as_secs(),
-        "claim_scope": if matches!(kind, RegionKind::CallEntry(_, _)) {
+        "claim_scope": if matches!(kind, RegionKind::CallEntry(_, TerminalKind::Revert)) {
+            "conditional paired canonical Ξ revert from fresh call entry with equal output and related remaining gas; no caller rollback, transaction validation, arbitrary contextual, whole-contract or all-gas equivalence"
+        } else if matches!(kind, RegionKind::CallEntry(_, _)) {
             "conditional paired canonical Ξ success from fresh call entry with equal output; no transaction validation, arbitrary contextual, whole-contract or all-gas equivalence"
         } else {
             "internal region boundary and residual canonical X calls; no whole-contract equivalence"
@@ -1334,10 +1385,17 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         | RegionKind::CallEntry(_, TerminalKind::Stop) => STOP_MODULES,
         RegionKind::Terminal(_, TerminalKind::Return)
         | RegionKind::CallEntry(_, TerminalKind::Return) => RETURN_MODULES,
+        RegionKind::Terminal(_, TerminalKind::Revert)
+        | RegionKind::CallEntry(_, TerminalKind::Revert) => REVERT_MODULES,
         _ => &[],
     };
     let call_entry = if matches!(kind, RegionKind::CallEntry(_, _)) {
         CALL_ENTRY_MODULES
+    } else {
+        &[]
+    };
+    let call_revert = if matches!(kind, RegionKind::CallEntry(_, TerminalKind::Revert)) {
+        CALL_REVERT_MODULES
     } else {
         &[]
     };
@@ -1355,6 +1413,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         .chain(memory_jump)
         .chain(terminal)
         .chain(call_entry)
+        .chain(call_revert)
     {
         let path = out.join(format!("{name}.lean"));
         ensure!(
@@ -1410,8 +1469,8 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     let generated = match kind {
         RegionKind::ChunkedSpan(plan) => plan.modules(),
         RegionKind::MemorySpan(plan) => plan.modules(),
-        RegionKind::Terminal(plan, _) => plan.terminal_modules(),
-        RegionKind::CallEntry(plan, _) => plan.call_entry_modules(),
+        RegionKind::Terminal(plan, terminal) => plan.terminal_modules(terminal),
+        RegionKind::CallEntry(plan, terminal) => plan.call_entry_modules(terminal),
         RegionKind::MemoryJump(memory, jump) => {
             let mut modules = memory.modules();
             modules.extend(jump.modules.clone());
@@ -1467,6 +1526,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         .chain(memory_jump)
         .chain(terminal)
         .chain(call_entry)
+        .chain(call_revert)
         .map(|(name, _, roots)| {
             (
                 (*name).to_owned(),
@@ -1648,7 +1708,7 @@ mod tests {
         };
         for mutation in ["missing", "extra", "cached"] {
             let out = tempfile::tempdir().unwrap();
-            for (name, _) in plan.call_entry_modules() {
+            for (name, _) in plan.call_entry_modules(TerminalKind::Stop) {
                 fs::write(out.path().join(format!("{name}.lean")), "").unwrap();
             }
             match mutation {
@@ -1673,14 +1733,18 @@ mod tests {
 
     #[test]
     fn terminal_inventory_rejects_missing_extra_cached_and_invalid_plans() {
-        for terminal in [TerminalKind::Stop, TerminalKind::Return] {
+        for terminal in [
+            TerminalKind::Stop,
+            TerminalKind::Return,
+            TerminalKind::Revert,
+        ] {
             for mutation in ["missing", "extra", "cached", "empty"] {
                 let mut plan = MemoryPlan {
                     leaves: vec![PathLeafKind::Pure],
                     compositions: vec![],
                 };
                 let out = tempfile::tempdir().unwrap();
-                for (name, _) in plan.terminal_modules() {
+                for (name, _) in plan.terminal_modules(terminal) {
                     fs::write(out.path().join(format!("{name}.lean")), "").unwrap();
                 }
                 match mutation {
@@ -1700,6 +1764,40 @@ mod tests {
                 };
                 assert!(error.contains(expected), "{terminal:?}/{mutation}: {error}");
             }
+        }
+    }
+
+    #[test]
+    fn revert_inventory_has_distinct_outcome_roots_and_rejects_supplied_helpers() {
+        let plan = MemoryPlan {
+            leaves: vec![PathLeafKind::Pure],
+            compositions: vec![],
+        };
+        let modules = plan.call_entry_modules(TerminalKind::Revert);
+        assert_eq!(
+            modules.last().unwrap().1,
+            ["GolfCertificates.CallEntry.call_entry_revert"]
+        );
+        assert_eq!(
+            modules[modules.len() - 2].1.last().unwrap(),
+            "GolfCertificates.Terminal.terminal_revert"
+        );
+        for helper in ["XiRevert.lean", "XiRevert.olean", "RevertTerminal.lean"] {
+            let out = tempfile::tempdir().unwrap();
+            for (name, _) in &modules {
+                fs::write(out.path().join(format!("{name}.lean")), "").unwrap();
+            }
+            fs::write(out.path().join(helper), "").unwrap();
+            let error = verify_region(
+                out.path(),
+                RegionKind::CallEntry(&plan, TerminalKind::Revert),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("generated") || error.contains("cached"),
+                "{error}"
+            );
         }
     }
 

@@ -460,7 +460,7 @@ pub struct TerminalCertificate {
     pub output_condition: &'static str,
 }
 
-/// Execute STOP or RETURN, keeping input-state and RETURN operand conditions explicit.
+/// Execute STOP, RETURN or REVERT with explicit input-state and memory operand conditions.
 pub fn certify_selected_span_through_halt(
     original: &[u8],
     candidate: &[u8],
@@ -505,9 +505,15 @@ fn certify_terminal(
             include_str!("../../../../lean/upstream/templates/TerminalReturn.lean.in"),
             2usize,
         ),
-        _ => bail!("span exit must be the same explicit STOP or RETURN in both images"),
+        (Some(0xfd), Some(0xfd)) => (
+            proof::TerminalKind::Revert,
+            "REVERT",
+            include_str!("../../../../lean/upstream/templates/TerminalRevert.lean.in"),
+            2usize,
+        ),
+        _ => bail!("span exit must be the same explicit STOP, RETURN or REVERT in both images"),
     };
-    // RETURN can consume surviving caller words, not just words produced by the span.
+    // RETURN and REVERT can consume surviving caller words, not just words produced by the span.
     let required = path
         .required
         .max((consumed as isize - path.source.delta).max(0) as usize);
@@ -553,6 +559,9 @@ fn certify_terminal(
             }
             proof::TerminalKind::Return => {
                 include_str!("../../../../lean/upstream/templates/CallEntryReturn.lean.in")
+            }
+            proof::TerminalKind::Revert => {
+                include_str!("../../../../lean/upstream/templates/CallEntryRevert.lean.in")
             }
         };
         let source = template
@@ -612,11 +621,28 @@ fn certify_terminal(
             "revm correspondence",
         ];
     }
+    if matches!(kind, proof::TerminalKind::Revert) {
+        span.claim = if from_call_entry {
+            "conditional paired canonical Ξ call-entry revert with equal output and related remaining gas"
+        } else {
+            "conditional paired canonical revert with equal output and related remaining gas after an internal span"
+        };
+        span.proof_root = if from_call_entry {
+            "GolfCertificates.CallEntry.call_entry_revert"
+        } else {
+            "GolfCertificates.Terminal.terminal_revert"
+        };
+        span.gas_requirement = "initial gas >= GolfCertificates.Terminal.sourceCost(initial source state): source body cost plus REVERT expansion evaluated after the body";
+    }
     let report = TerminalCertificate {
         span,
         terminal_pc: exit,
         terminal: name,
-        output_condition: if from_call_entry && consumed == 0 {
+        output_condition: if matches!(kind, proof::TerminalKind::Revert) && from_call_entry {
+            "canonical fresh PC0/empty stack/memory; related linked current/original maps; operands, physical bound and size<2^64 checked from stackMap[]; equal canonical memory output and related remaining gas; no caller or transaction rollback claim"
+        } else if matches!(kind, proof::TerminalKind::Revert) {
+            "body stackMap equals address :: size :: tail, has at most 1024 words, and size.toNat<2^64; equal canonical padded memory output and related remaining gas; exit_pc describes the internal step, not a returned state; no rollback claim"
+        } else if from_call_entry && consumed == 0 {
             "shared environment; related current/original account maps with owner/code witnesses in both; canonical fresh PC0/empty stack/memory; empty canonical output"
         } else if from_call_entry {
             "shared environment; related current/original account maps with owner/code witnesses in both; canonical fresh PC0/empty stack/memory; RETURN operands, physical bound and size<2^64 discharged from certified stackMap[]"
@@ -644,6 +670,7 @@ mod tests {
             (vec![0x60, 2, 2, 0], 0, 3, "empty input stack"),
             // The body needs no input, but RETURN still needs a second operand.
             (vec![0x5f, 0xf3], 0, 1, "empty input stack"),
+            (vec![0x5f, 0xfd], 0, 1, "empty input stack"),
         ] {
             let temp = tempfile::tempdir().unwrap();
             let out = temp.path().join("new-parent").join("result");
@@ -661,6 +688,8 @@ mod tests {
             (vec![0x5f, 0x00], vec![0x5f, 0xf3], 1),
             (vec![0x60, 0xf3, 0x00], vec![0x60, 0xf3, 0x00], 1),
             (vec![0x5f], vec![0x5f], 1),
+            (vec![0x5f, 0x5f, 0xfd], vec![0x5f, 0x5f, 0xf3], 2),
+            (vec![0x60, 0xfd, 0], vec![0x60, 0xfd, 0], 1),
         ] {
             let temp = tempfile::tempdir().unwrap();
             let out = temp.path().join("new-parent").join("result");
@@ -689,6 +718,17 @@ mod tests {
             (path.required, path.source.delta, path.maximum),
             (2, 0, 1024)
         );
+    }
+
+    #[test]
+    fn revert_rejects_changed_output_bytes_before_writing() {
+        let before = [0x60, 7, 0x5f, 0x52, 0x60, 32, 0x5f, 0xfd];
+        let mut after = before;
+        after[1] = 8;
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join("new-parent").join("result");
+        assert!(certify_selected_span_through_halt(&before, &after, 0, 7, &out).is_err());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     }
 
     #[test]

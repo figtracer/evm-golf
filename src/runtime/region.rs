@@ -615,6 +615,7 @@ fn decoded_operation(bytes: &[u8]) -> (String, String) {
         op => match op {
             0x00 => "Operation.STOP",
             0xf3 => "Operation.RETURN",
+            0xfd => "Operation.REVERT",
             0x02 => "Operation.MUL",
             0x01 => "Operation.ADD",
             0x5f => "Operation.PUSH0",

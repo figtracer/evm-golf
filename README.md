@@ -18,7 +18,8 @@ For contract bytecode, see the [runtime guide](docs/runtime.md). The optional
 [region checker](docs/regions.md) verifies selected arithmetic, bitwise, and memory spans,
 including supported rewrites and stack permutations, against pinned EVM semantics.
 It can also check a trailing static jump, or paired success and equal output at
-`STOP` or `RETURN` under explicit stack, gas, and state conditions.
+`STOP` or `RETURN`, or paired revert at `REVERT`, under explicit stack, gas,
+and state conditions.
 Eligible terminating programs can also be checked from canonical call initialization.
 
 - **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
