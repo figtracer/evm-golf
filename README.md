@@ -18,7 +18,7 @@ supported stack rearrangements, zero additions, and repeated masks.
 See the [runtime guide](docs/runtime.md) for contract optimization and the
 [region checker](docs/regions.md) for conditional proofs against pinned EVM semantics.
 
-- **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
+- **Optimize** — Search expressions with e-graphs and reduce gas or size in supported runtimes.
 - **Verify** — Check expression equivalence and emitted bytecode against a Lean model.
 - **Compete** — Submit solutions to fixed puzzles and generate verified leaderboards.
 - **Evaluate** — Replay agent proposals and compare them with the built-in optimizer.
@@ -66,13 +66,16 @@ for verification, leaderboards, and batch submissions.
 ## Status
 
 EVM Golf is an experimental CLI targeting Cancun. It optimizes expressions and
-supported complete runtime bytecode. Fixed-layout mode handles dynamic jumps
-without moving byte offsets; unsupported operations are rejected.
+complete deployed runtimes within a restricted opcode subset; arbitrary contracts
+are not yet supported. Fixed-layout mode can reduce execution gas while preserving
+byte size and offsets, including dynamic jump destinations. Compact mode can also
+reduce byte size.
 
 Expression proofs use a limited Lean bytecode model. Runtime optimization checks
-local Lean certificates and supplied transaction cases. The optional upstream
-checker proves conditional execution of supported regions, including eligible
-terminating programs from call entry. These checks do not establish whole-contract
+local Lean certificates and supplied transaction cases; it does not prove full
+runtime execution. Discovery emits unverified proposals that must pass these checks.
+The optional upstream checker proves conditional execution of supported regions,
+including eligible terminating programs from call entry. These checks do not establish whole-contract
 equivalence for every input, state, or gas limit. `check-runtime` provides concrete
 replay only.
 
