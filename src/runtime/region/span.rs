@@ -172,7 +172,7 @@ impl Span {
             ensure!(
                 matches!(
                     op,
-                    0x01 | 0x02 | 0x03 | 0x10 | 0x15 | 0x16 | 0x17 | 0x19 | 0x1b | 0x5f..=0x7f | 0x80 | 0x90..=0x9f
+                    0x01 | 0x02 | 0x03 | 0x10 | 0x15 | 0x16 | 0x17 | 0x19 | 0x1b | 0x1c | 0x5f..=0x7f | 0x80 | 0x90..=0x9f
                 ),
                 "unsupported canonical span opcode 0x{op:02x} at PC {pc}"
             );
@@ -531,6 +531,7 @@ impl Span {
                             0x02 => format!("UInt256.mul ({a}) ({b})"),
                             0x03 => format!("UInt256.sub ({a}) ({b})"),
                             0x10 => format!("UInt256.lt ({a}) ({b})"),
+                            0x1c => format!("UInt256.shiftRight ({b}) ({a})"),
                             0x16 => format!("({a}) &&& ({b})"),
                             0x17 => format!("({a}) ||| ({b})"),
                             0x1b => format!("UInt256.shiftLeft ({b}) ({a})"),
@@ -661,6 +662,7 @@ impl Span {
                             2 => ("mul", "same"),
                             3 => ("sub", "extra"),
                             0x10 => ("lt", "extra"),
+                            0x1c => ("shr", "extra"),
                             0x15 => ("iszero", "extra"),
                             0x16 => ("and", "extra"),
                             0x17 => ("or", "extra"),
@@ -715,6 +717,7 @@ impl Span {
                             2 => "mul",
                             3 => "sub",
                             0x10 => "lt",
+                            0x1c => "shr",
                             0x15 => "iszero",
                             0x16 => "and",
                             0x17 => "or",
@@ -1073,7 +1076,7 @@ fn profile(code: &[u8]) -> Result<Profile> {
                 ensure!(push_value(&instruction.bytes).is_some(), "truncated PUSH");
                 (0, 1, if op == 0x5f { 2 } else { 3 })
             }
-            1 | 3 | 0x10 | 0x16 | 0x17 | 0x1b => (2, -1, 3),
+            1 | 3 | 0x10 | 0x16 | 0x17 | 0x1b | 0x1c => (2, -1, 3),
             2 => (2, -1, 5),
             0x52 => (2, -2, 3),
             0x15 | 0x19 => (1, 0, 3),
@@ -1152,6 +1155,72 @@ mod tests {
     }
 
     #[test]
+    fn shr_preserves_canonical_operand_order_and_profile() {
+        let span = Span::select(&[0x1c], &[0x1c], 0, 1).unwrap();
+        assert_eq!(
+            (
+                span.required,
+                span.maximum,
+                span.source.delta,
+                span.source.gas
+            ),
+            (2, 1024, -1, 3)
+        );
+        let source = span.render_proof(&[0x1c], &[0x1c], 0);
+        assert!(source.contains("UInt256.shiftRight (a1) (a0)"));
+        assert!(source.contains("canonical_step_shr"));
+        assert!(Span::select(&[0x1b], &[0x1c], 0, 1).is_err());
+    }
+
+    #[test]
+    fn shr_revm_controls_cover_order_and_oversized_shifts() {
+        use crate::runtime::{Case, execute};
+        use revm::context::result::{ExecutionResult, HaltReason};
+        let run = |code: &[u8]| {
+            execute(
+                code,
+                &Case {
+                    calldata: String::new(),
+                    gas_limit: 200_000,
+                    value: String::new(),
+                    storage: Default::default(),
+                },
+            )
+            .unwrap()
+            .result
+        };
+        for (value, shift, expected) in [
+            (U256::from(128), U256::from(2), U256::from(32)),
+            (U256::from(2), U256::from(128), U256::ZERO),
+            (U256::MAX, U256::ZERO, U256::MAX),
+            (U256::MAX, U256::from(255), U256::from(1)),
+            (U256::MAX, U256::from(256), U256::ZERO),
+            (U256::MAX, U256::MAX, U256::ZERO),
+        ] {
+            let mut code = Vec::new();
+            for word in [U256::from(42), value, shift] {
+                code.push(0x7f);
+                code.extend(word.to_be_bytes::<32>());
+            }
+            code.extend([0x1c, 0x5f, 0x52, 0x60, 32, 0x52, 0x60, 64, 0x5f, 0xf3]);
+            let result = run(&code);
+            assert!(result.is_success(), "{result:?}");
+            let output = result.output().unwrap();
+            assert_eq!(&output[..32], &expected.to_be_bytes::<32>());
+            assert_eq!(&output[32..], &U256::from(42).to_be_bytes::<32>());
+        }
+        for code in [vec![0x1c], vec![0x5f, 0x1c]] {
+            assert!(matches!(
+                run(&code),
+                ExecutionResult::Halt {
+                    reason: HaltReason::StackUnderflow,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
     fn comparisons_preserve_canonical_operand_order_and_stack_profiles() {
         let lt = Span::select(&[0x10], &[0x10], 0, 1).unwrap();
         assert_eq!(
@@ -1175,7 +1244,7 @@ mod tests {
         assert!(source.contains("UInt256.isZero (a0)"));
         assert!(source.contains("canonical_step_iszero"));
         assert!(Span::select(&[0x10], &[0x15], 0, 1).is_err());
-        for unsupported in [0x11, 0x1c] {
+        for unsupported in [0x11, 0x1d] {
             assert!(Span::select(&[unsupported], &[unsupported], 0, 1).is_err());
         }
     }
