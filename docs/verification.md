@@ -24,7 +24,7 @@ metadata is accepted. One certificate covers the whole runtime and proves:
   candidate reaches in two steps the same program counter and stack that the
   original reaches after also running the trampoline, including the same stack
   faults, for every input stack. Jump destinations are computed from the bytes
-  and proved equal in both images.
+  and proved equal in both images, and each trampoline is unchanged.
 
 Only Lean's foundational axioms (`propext`, `Classical.choice`, `Quot.sound`)
 may appear in the axiom report, and every expected theorem must be reported.

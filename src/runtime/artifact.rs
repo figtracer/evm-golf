@@ -453,6 +453,7 @@ theorem thread_dests : GolfWindowArtifact.jumpTargets (scan original) = dests :=
   trampolinePush := by decide +kernel
   trampolineValue := by decide +kernel
   trampolineJump := by decide +kernel
+  trampolineKept := by decide +kernel
   sourceValid := by decide +kernel
   targetValid := by decide +kernel
 theorem thread_{i} (stack : List Nat) : ∃ k, k ≤ 3 ∧

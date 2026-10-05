@@ -14,7 +14,9 @@ inductive Outcome where
   | unsupported
   deriving DecidableEq
 
-/-- One PUSH, JUMPDEST, JUMP or JUMPI step; `dests` are the valid destinations. -/
+/-- One PUSH, JUMPDEST, JUMP or JUMPI step; `dests` are the valid destinations.
+Truncated PUSH immediates (zero-padded by the EVM) are outside this model;
+every PUSH used by a `Site` is followed by an instruction byte. -/
 def step (code dests : List Nat) (pc : Nat) (stack : List Nat) : Outcome :=
   match code[pc]? with
   | none => .unsupported
@@ -109,6 +111,8 @@ structure Site (original candidate dests : List Nat) where
   trampolineValue :
     immediate ((original.drop (source + 2)).take trampolineWidth) = target
   trampolineJump : original[source + 2 + trampolineWidth]? = some 86
+  trampolineKept : (candidate.drop source).take (trampolineWidth + 3) =
+    (original.drop source).take (trampolineWidth + 3)
   sourceValid : dests.contains source = true
   targetValid : dests.contains target = true
 
@@ -118,7 +122,7 @@ theorem sound {original candidate dests : List Nat} (site : Site original candid
     (stack : List Nat) :
     ∃ k, k ≤ 3 ∧ run original dests (2 + k) (.running site.pc stack) =
       run candidate dests 2 (.running site.pc stack) := by
-  obtain ⟨pc, w, j, x, y, v, isJump, op, cp, ov, cv, oj, cj, wb, vb, jd, tp, tv, tj, xs, ys⟩ := site
+  obtain ⟨pc, w, j, x, y, v, isJump, op, cp, ov, cv, oj, cj, wb, vb, jd, tp, tv, tj, _, xs, ys⟩ := site
   by_cases full : 1024 ≤ stack.length
   · refine ⟨0, by omega, ?_⟩
     rw [run_running, run_running, step_push_full op wb full, step_push_full cp wb full,
