@@ -152,4 +152,30 @@ assert report["proof_root"] == "GolfCertificates.MemoryJump.memory_jump_boundary
 assert "sourceCost" in report["gas_requirement"]
 assert json.loads((out / "environment.json").read_text())["semantics_profile"]["identity"] == "evm-golf-checked-scanner"
 PY_MEMORY
+# Whole-program refinement: a branch, a revert path and one PUSH 2^k; MUL site.
+printf '%s\n' 34600a576007600402005b600080fd > "$work/whole-original.hex"
+printf '%s\n' 34600a57600760021b005b600080fd > "$work/whole-candidate.hex"
+cargo run --locked -- certify-runtime-whole \
+  --original "$work/whole-original.hex" --candidate "$work/whole-candidate.hex" \
+  --out "$work/whole-accepted" 2>&1 | tee "$work/whole.log"
+python3 - "$work/whole-accepted" <<'PY_WHOLE'
+import json
+import pathlib
+import sys
+
+out = pathlib.Path(sys.argv[1])
+report = json.loads((out / "result.json").read_text())
+assert report["covered_instructions"] == 10
+assert report["power_sites"] == [6]
+assert any("Ξ" in item for item in report["unproved"])
+assert json.loads((out / "environment.json").read_text())["semantics_profile"]["identity"] == "evm-golf-checked-scanner"
+PY_WHOLE
+printf '%s\n' 34600a57600760031b005b600080fd > "$work/whole-wrong.hex"
+if cargo run --locked -- certify-runtime-whole \
+  --original "$work/whole-original.hex" --candidate "$work/whole-wrong.hex" \
+  --out "$work/whole-rejected"; then
+  echo 'Incorrect whole-program candidate was accepted.' >&2
+  exit 1
+fi
+[[ ! -e "$work/whole-rejected/result.json" ]]
 printf 'Checked-scanner region checks passed. Local evidence: %s\n' "$work"

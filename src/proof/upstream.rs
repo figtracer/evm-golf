@@ -80,6 +80,8 @@ pub(crate) enum RegionKind<'a> {
     CallEntry(&'a MemoryPlan, TerminalKind),
     MemoryJump(&'a MemoryPlan, &'a JumpPlan),
     SpanJump(&'a SpanPlan, &'a JumpPlan),
+    /// Whole-program certificate split into this many point modules.
+    Whole(usize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -698,6 +700,63 @@ const MEMORY_JUMP_MODULES: &[(&str, &str, &[&str])] = &[(
     ],
 )];
 
+const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
+    (
+        "OffsetPower",
+        include_str!("../../lean/upstream/OffsetPower.lean"),
+        &[
+            "GolfComposition.offset_pc",
+            "GolfComposition.offset_stack",
+            "GolfComposition.offset_power_boundary",
+        ],
+    ),
+    (
+        "OffsetTransport",
+        include_str!("../../lean/upstream/OffsetTransport.lean"),
+        &[
+            "GolfComposition.offset_step_transport",
+            "GolfComposition.offset_extended_transport",
+            "GolfComposition.offset_extra_transport",
+        ],
+    ),
+    (
+        "WholeUnfold",
+        include_str!("../../lean/upstream/WholeUnfold.lean"),
+        &[
+            "GolfWhole.X_succ",
+            "GolfWhole.Z_inv",
+            "GolfWhole.Z_of",
+            "GolfWhole.X_ok_inv",
+            "GolfWhole.X_stop_inv",
+            "GolfWhole.power_case",
+        ],
+    ),
+    (
+        "WholeOps",
+        include_str!("../../lean/upstream/WholeOps.lean"),
+        &[
+            "GolfWhole.X_inv",
+            "GolfWhole.X_run",
+            "GolfWhole.Z_transport",
+            "GolfWhole.congruent_of",
+            "GolfWhole.advances_of",
+            "GolfWhole.machine_frameless",
+        ],
+    ),
+    (
+        "WholeProgram",
+        include_str!("../../lean/upstream/WholeProgram.lean"),
+        &[
+            "GolfWhole.whole_refines",
+            "GolfWhole.same_push",
+            "GolfWhole.same_push0",
+            "GolfWhole.congruent_stop",
+            "GolfWhole.congruent_return",
+            "GolfWhole.congruent_revert",
+        ],
+    ),
+];
+
 const MASK_MODULES: &[(&str, &str, &[&str])] = &[
     (
         "CountOffset",
@@ -1238,7 +1297,10 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     }
     let checked_profile = if matches!(
         kind,
-        RegionKind::PowerJump(_) | RegionKind::SpanJump(_, _) | RegionKind::MemoryJump(_, _)
+        RegionKind::PowerJump(_)
+            | RegionKind::SpanJump(_, _)
+            | RegionKind::MemoryJump(_, _)
+            | RegionKind::Whole(_)
     ) {
         let profile = check_scanner_profile(&root, &lean, &semantics, &out)?;
         paths = vec![out.clone()];
@@ -1269,7 +1331,9 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         "lean_version": version.trim(), "lean": lean, "upstream_revision": REVISION,
         "semantics": semantics, "packages": packages, "lean_path": paths,
         "module_timeout_seconds": MODULE_TIMEOUT.as_secs(),
-        "claim_scope": if matches!(kind, RegionKind::CallEntry(_, TerminalKind::Revert)) {
+        "claim_scope": if matches!(kind, RegionKind::Whole(_)) {
+            "whole-program X refinement from pc 0 for the supported opcode profile, conditioned on original success or revert; no transaction-level, call, storage or log equivalence"
+        } else if matches!(kind, RegionKind::CallEntry(_, TerminalKind::Revert)) {
             "conditional paired canonical Ξ revert from fresh call entry with equal output and related remaining gas; no caller rollback, transaction validation, arbitrary contextual, whole-contract or all-gas equivalence"
         } else if matches!(kind, RegionKind::CallEntry(_, _)) {
             "conditional paired canonical Ξ success from fresh call entry with equal output; no transaction validation, arbitrary contextual, whole-contract or all-gas equivalence"
@@ -1302,6 +1366,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         | RegionKind::CallEntry(_, _)
         | RegionKind::MemoryJump(_, _)
         | RegionKind::SpanJump(_, _) => MASK_MODULES,
+        RegionKind::Whole(_) => &MASK_MODULES[..3],
     };
     let composition = match kind {
         RegionKind::ChunkedSpan(_)
@@ -1310,6 +1375,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         | RegionKind::CallEntry(_, _)
         | RegionKind::MemoryJump(_, _)
         | RegionKind::SpanJump(_, _) => SPAN_MODULES,
+        RegionKind::Whole(_) => WHOLE_MODULES,
         RegionKind::Power | RegionKind::PowerJump(_) | RegionKind::Mask => &[],
     };
     let chunks = match kind {
@@ -1436,7 +1502,8 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         RegionKind::MemorySpan(_)
         | RegionKind::Terminal(_, _)
         | RegionKind::CallEntry(_, _)
-        | RegionKind::MemoryJump(_, _) => &[],
+        | RegionKind::MemoryJump(_, _)
+        | RegionKind::Whole(_) => &[],
         RegionKind::ChunkedSpan(_) | RegionKind::SpanJump(_, _) => &[
             "GolfCertificates.Span.source_gas",
             "GolfCertificates.Span.bound_trace",
@@ -1465,6 +1532,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             ("Decode", &[]),
             ("RegionProof", region_roots),
         ],
+        RegionKind::Whole(_) => &[],
     };
     let generated = match kind {
         RegionKind::ChunkedSpan(plan) => plan.modules(),
@@ -1477,6 +1545,13 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             modules
         }
         RegionKind::PowerJump(plan) => plan.generated_modules(),
+        RegionKind::Whole(chunks) => std::iter::once(("WholeImage".to_owned(), Vec::new()))
+            .chain((0..chunks).map(|i| (format!("WholePoints{i}"), Vec::new())))
+            .chain(std::iter::once((
+                "WholeCertificate".to_owned(),
+                vec!["GolfWholeCertificate.whole_certificate".to_owned()],
+            )))
+            .collect(),
         RegionKind::SpanJump(span, jump) => {
             let mut modules = span.modules();
             modules.extend(jump.modules.clone());

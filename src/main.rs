@@ -57,6 +57,17 @@ enum Action {
         out: PathBuf,
     },
     #[command(hide = true)]
+    /// Prove whole-program refinement of a small runtime pair against pinned
+    /// upstream EVM semantics. Supported opcode profile only; no calls, storage or logs.
+    CertifyRuntimeWhole {
+        #[arg(long)]
+        original: PathBuf,
+        #[arg(long)]
+        candidate: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    #[command(hide = true)]
     /// Certify a supported internal region with pinned upstream EVM semantics.
     /// Supports arithmetic, bitwise and memory spans; not whole-contract equivalence.
     CertifyRuntimeRegion {
@@ -133,6 +144,22 @@ fn main() -> Result<()> {
             runtime::scenario::check(&original, &candidate, &scenarios, &out)?;
             println!(
                 "Supplied scenarios passed concrete replay. No whole-contract equivalence proof.\nEvidence: {}",
+                out.display()
+            );
+        }
+        Action::CertifyRuntimeWhole {
+            original,
+            candidate,
+            out,
+        } => {
+            let original = runtime::input::read_bytecode(&original)?;
+            let candidate = runtime::input::read_bytecode(&candidate)?;
+            prepare_parent(&out)?;
+            let report = runtime::whole::certify(&original, &candidate, &out)?;
+            println!(
+                "Whole-program refinement proved for {} instructions ({} power sites) from pc 0; supported opcode profile, X level, conditioned on original success or revert.\nEvidence: {}",
+                report.covered_instructions,
+                report.power_sites.len(),
                 out.display()
             );
         }

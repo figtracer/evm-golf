@@ -14,9 +14,10 @@
 | `src/runtime/artifact.rs` | Full-image Lean certificates (layout and batch) |
 | `src/runtime/scenario.rs`, `calls.rs`, `precompile.rs` | Account fixtures and guarded revm replay |
 | `src/runtime/region*` | Developer region certificates against upstream semantics |
+| `src/runtime/whole.rs` | Developer whole-program certificates against upstream semantics |
 | `src/proof.rs`, `src/proof/upstream.rs` | Pinned Lean runners and axiom audit |
 | `lean/` | Model, stack, composition, layout, window and jump threading proofs |
-| `lean/upstream/` | Upstream interpreter region lemmas and templates |
+| `lean/upstream/` | Upstream interpreter region and whole-program lemmas, templates |
 | `examples/quickstart/` | Minimal runnable project |
 | `tests/` | CLI, replay and proof regression tests |
 
@@ -38,8 +39,8 @@ cargo test --locked -- --ignored --test-threads=1
 The region checker has its own toolchain: `bash scripts/setup-upstream.sh`, then
 `bash scripts/check-upstream.sh` and, after `setup-upstream.sh --checked-scanner`,
 `bash scripts/check-checked-scanner.sh`. See [regions.md](regions.md). Its CLI
-command, `certify-runtime-region`, and the replay-only `check-runtime` are hidden
-from `--help`.
+commands, `certify-runtime-region` and `certify-runtime-whole`, and the replay-only
+`check-runtime` are hidden from `--help`.
 
 ## Rules for changes
 

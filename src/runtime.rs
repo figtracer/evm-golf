@@ -32,6 +32,7 @@ mod proposal_search;
 pub mod region;
 pub mod scenario;
 mod search;
+pub mod whole;
 mod window_proposal;
 pub use search::{SearchReport, SearchStage, SearchStopReason, search_scenarios};
 

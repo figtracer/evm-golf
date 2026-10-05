@@ -88,7 +88,9 @@ Accepted changes carry local Lean certificates over bounded stack and control-fl
 models, bound to the exact full bytecode, plus replay of your transactions. That is
 not whole-contract equivalence: inputs, states and gas limits outside your
 scenarios are not covered, and contracts are optimized independently.
-Only a subset of opcodes and control flow is supported. See
+Only a subset of opcodes and control flow is supported. A developer command
+proves whole-program refinement against EVMYulLean, but only for small call-free,
+storage-free runtimes with the power rewrite. See
 [verification](docs/verification.md) for the exact boundary and
 [runtime support](docs/runtime.md) for what can be optimized.
 
