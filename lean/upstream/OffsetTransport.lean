@@ -183,7 +183,13 @@ theorem offset_extra_transport (s c next : EVM.State) (fuel candidateFuel surplu
       next.executionEnv.code = s.executionEnv.code ∧
       cn.executionEnv.code = c.executionEnv.code := by
   have stackEq := offset_stack frame
-  have costs : C' c op = C' s op := by cases allowed <;> rfl
+  have costs : C' c op = C' s op := by
+    cases allowed with
+    | sub => rfl
+    | and => rfl
+    | not => rfl
+    | bor => rfl
+    | exchange e => rw [GolfSwapFamily.cost, GolfSwapFamily.cost]
   have cb : FullXBounds c op := {
     gas := by rw [costs]; have := bounds.gas; have := frame.gas; omega
     inputs := by rw [←stackEq]; exact bounds.inputs
@@ -231,6 +237,37 @@ theorem offset_extra_transport (s c next : EVM.State) (fuel candidateFuel surplu
     refine ⟨binaryPost c (UInt256.lnot a) tail 3, cb, ?_, ?_, rfl, rfl⟩
     · exact step_not c candidateFuel 3 arg a tail (stackEq.symm.trans stack)
     · exact binary_preserves frame _ tail 3 (by decide) bounds.gas
+
+  | bor =>
+    have two : 2 ≤ s.stack.length := bounds.inputs
+    obtain ⟨b,a,tail,stack⟩ : ∃ b a tail, s.stack = b :: a :: tail := by
+      cases hs : s.stack with
+      | nil => simp [hs] at two
+      | cons b xs =>
+        cases xs with
+        | nil => simp [hs] at two
+        | cons a tail => exact ⟨b,a,tail,rfl⟩
+    rw [(show C' s .OR = 3 from rfl), step_or s fuel 3 arg a b tail stack] at canonical
+    have post : next = binaryPost s (b ||| a) tail 3 := (Except.ok.inj canonical).symm
+    subst next
+    refine ⟨binaryPost c (b ||| a) tail 3, cb, ?_, ?_, rfl, rfl⟩
+    · exact step_or c candidateFuel 3 arg a b tail (stackEq.symm.trans stack)
+    · exact binary_preserves frame _ tail 3 (by decide) bounds.gas
+  | exchange e =>
+    have low : GolfSwapFamily.depth e+1 ≤ s.stack.length := by
+      simpa only [GolfSwapFamily.inputs,Option.getD_some] using bounds.inputs
+    obtain ⟨a,z,middle,tail,index,stack⟩ := GolfSwapFamily.stack_decompose s e low
+    rw [GolfSwapFamily.cost,
+      GolfSwapFamily.step_prefix s e fuel 3 arg a z middle tail index stack] at canonical
+    have post : next = binaryPost s z (middle ++ a :: tail) 3 :=
+      (Except.ok.inj canonical).symm
+    subst next
+    refine ⟨binaryPost c z (middle ++ a :: tail) 3, cb, ?_, ?_, rfl, rfl⟩
+    · rw [GolfSwapFamily.cost]
+      exact GolfSwapFamily.step_prefix c e candidateFuel 3 arg a z middle tail index
+        (stackEq.symm.trans stack)
+    · exact binary_preserves frame z (middle ++ a :: tail) 3 (by decide)
+        (by simpa only [GolfSwapFamily.cost] using bounds.gas)
 
 #print axioms offset_step_transport
 #print axioms offset_extended_transport

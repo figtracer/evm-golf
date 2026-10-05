@@ -592,16 +592,17 @@ fn decoded_operation(bytes: &[u8]) -> (String, String) {
     let width = bytes.len() - 1;
     let opcode = match bytes[0] {
         0x60..=0x7f => format!("Operation.Push .PUSH{width}"),
+        op @ 0x90..=0x9f => format!("Operation.SWAP{}", op - 0x8f),
         op => match op {
             0x02 => "Operation.MUL",
             0x01 => "Operation.ADD",
-            0x90 => "Operation.SWAP1",
             0x5f => "Operation.PUSH0",
             0x80 => "Operation.DUP1",
             0x56 => "Operation.JUMP",
             0x1b => "Operation.SHL",
             0x03 => "Operation.SUB",
             0x16 => "Operation.AND",
+            0x17 => "Operation.OR",
             0x19 => "Operation.NOT",
             _ => unreachable!("trusted region template contains only supported opcodes"),
         }

@@ -1,4 +1,5 @@
 import CountOffset
+import SwapOperations
 
 /-! Abstract-state bounds and canonical-cost steps for supported pure operations. -/
 set_option Elab.async false
@@ -147,6 +148,27 @@ theorem canonical_step_not (s : EVM.State) (fuel : Nat)
       .ok (binaryPost s (UInt256.lnot a) tail 3) := by
   exact GolfCountOffset.step_not s fuel 3 arg a tail stack
 
+theorem bounds_or (s : EVM.State)
+    (gas : 3 ≤ s.gasAvailable.toNat) (inputs : 2 ≤ s.stack.length)
+    (outputs : s.stack.length - 2 + 1 ≤ 1024) : FullXBounds s .OR :=
+  ⟨gas, inputs, outputs⟩
+
+theorem canonical_step_or (s : EVM.State) (fuel : Nat)
+    (arg : Option (UInt256 × Nat)) (a b : UInt256) (tail : List UInt256)
+    (stack : s.stack = b :: a :: tail) :
+    EVM.step (fuel+1) (C' s .OR) (some (.OR,arg)) s =
+      .ok (binaryPost s (b ||| a) tail 3) := by
+  exact GolfCountOffset.step_or s fuel 3 arg a b tail stack
+
+theorem canonical_step_exchange (s : EVM.State) (e : Operation.ExOp) (fuel : Nat)
+    (arg : Option (UInt256 × Nat)) (a z : UInt256) (middle tail : List UInt256)
+    (index : middle.length+1 = GolfSwapFamily.depth e)
+    (stack : s.stack = a :: (middle ++ z :: tail)) :
+    EVM.step (fuel+1) (C' s (.Exchange e)) (some (.Exchange e,arg)) s =
+      .ok (binaryPost s z (middle ++ a :: tail) 3) := by
+  rw [GolfSwapFamily.cost]
+  exact GolfSwapFamily.step_prefix s e fuel 3 arg a z middle tail index stack
+
 end GolfPureBounds
 
 #print axioms GolfPureBounds.bounds_push
@@ -173,3 +195,7 @@ end GolfPureBounds
 #print axioms GolfPureBounds.canonical_step_sub
 #print axioms GolfPureBounds.canonical_step_and
 #print axioms GolfPureBounds.canonical_step_not
+
+#print axioms GolfPureBounds.bounds_or
+#print axioms GolfPureBounds.canonical_step_or
+#print axioms GolfPureBounds.canonical_step_exchange

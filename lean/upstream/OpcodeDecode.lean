@@ -77,6 +77,150 @@ theorem decode_not (code : ByteArray) (pc : UInt256)
 #print axioms decode_sub
 #print axioms decode_and
 #print axioms decode_not
+theorem decode_or (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 23)) :
+    decode code pc = some ((Operation.OR : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_or
+
+theorem decode_swap2 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 145)) :
+    decode code pc = some ((Operation.SWAP2 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap2
+
+theorem decode_swap3 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 146)) :
+    decode code pc = some ((Operation.SWAP3 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap3
+
+theorem decode_swap4 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 147)) :
+    decode code pc = some ((Operation.SWAP4 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap4
+
+theorem decode_swap5 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 148)) :
+    decode code pc = some ((Operation.SWAP5 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap5
+
+theorem decode_swap6 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 149)) :
+    decode code pc = some ((Operation.SWAP6 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap6
+
+theorem decode_swap7 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 150)) :
+    decode code pc = some ((Operation.SWAP7 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap7
+
+theorem decode_swap8 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 151)) :
+    decode code pc = some ((Operation.SWAP8 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap8
+
+theorem decode_swap9 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 152)) :
+    decode code pc = some ((Operation.SWAP9 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap9
+
+theorem decode_swap10 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 153)) :
+    decode code pc = some ((Operation.SWAP10 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap10
+
+theorem decode_swap11 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 154)) :
+    decode code pc = some ((Operation.SWAP11 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap11
+
+theorem decode_swap12 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 155)) :
+    decode code pc = some ((Operation.SWAP12 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap12
+
+theorem decode_swap13 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 156)) :
+    decode code pc = some ((Operation.SWAP13 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap13
+
+theorem decode_swap14 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 157)) :
+    decode code pc = some ((Operation.SWAP14 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap14
+
+theorem decode_swap15 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 158)) :
+    decode code pc = some ((Operation.SWAP15 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap15
+
+theorem decode_swap16 (code : ByteArray) (pc : UInt256)
+    (fetched : code.get? pc.toNat = some (UInt8.ofNat 159)) :
+    decode code pc = some ((Operation.SWAP16 : Operation .EVM), none) := by
+  unfold decode
+  rw [fetched]
+  rfl
+
+#print axioms decode_swap16
+
 end GolfOpcodeDecode
 
 namespace GolfOpcodeDecode

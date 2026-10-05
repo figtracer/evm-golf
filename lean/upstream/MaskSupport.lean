@@ -1,4 +1,5 @@
 import CountOffset
+import SwapOperations
 set_option Elab.async false
 set_option maxRecDepth 4096
 set_option maxHeartbeats 2000000
@@ -53,10 +54,38 @@ theorem spend_nat (gas : UInt256) (steps : Nat) (enough : 3*steps ≤ gas.toNat)
    rw [spend,word_sub_toNat _ 3 (by decide) hg,ih hn]
    omega
 
+@[simp] theorem mem_or (s : EVM.State) : memoryExpansionCost s .OR = 0 := by
+ simp [memoryExpansionCost,memoryExpansionCost.μᵢ']
+@[simp] theorem cost_or (s : EVM.State) : C' s .OR = 3 := rfl
+
+theorem X_next_or (s next : EVM.State) (fuel : Nat) (jumps : Array UInt256)
+ (arg : Option (UInt256 × Nat))
+ (decoded : decode s.executionEnv.code s.pc = some (.OR,arg))
+ (bounds : FullXBounds s .OR)
+ (canonical : EVM.step (fuel+1) (C' s .OR) (some (.OR,arg)) s = .ok next) :
+ X (fuel+2) jumps s = X (fuel+1) jumps next := by
+ have gas := bounds.gas
+ have inputs := bounds.inputs
+ have outputs := bounds.outputs
+ conv_lhs => unfold X
+ simp only [decoded]
+ simp [mem_or,cost_or,Operation.isCreate,δ,α,
+  show ¬s.gasAvailable.toNat < 3 by exact Nat.not_lt.mpr gas,
+  show ¬s.stack.length < 2 by exact Nat.not_lt.mpr inputs,
+  show ¬1024 < s.stack.length - 2 + 1 by exact Nat.not_lt.mpr outputs]
+ change (do
+   let n ← EVM.step (fuel+1) 3 (some (.OR,arg)) s
+   X (fuel+1) jumps n) = _
+ rw [cost_or] at canonical
+ rw [canonical]
+ rfl
+
 inductive ExtraOp : Operation .EVM → Prop where
  | sub : ExtraOp .SUB
  | and : ExtraOp .AND
  | not : ExtraOp .NOT
+ | bor : ExtraOp .OR
+ | exchange (e : Operation.ExOp) : ExtraOp (.Exchange e)
 
 theorem X_next_extra (s next : EVM.State) (fuel : Nat) (jumps : Array UInt256)
  (op : Operation .EVM) (arg : Option (UInt256 × Nat)) (allowed : ExtraOp op)
@@ -117,6 +146,12 @@ theorem X_next_extra (s next : EVM.State) (fuel : Nat) (jumps : Array UInt256)
    rw [canonical]
    rfl
 
+ | bor => exact X_next_or s next fuel jumps arg decoded bounds canonical
+ | exchange e => exact GolfSwapFamily.X_next s next e fuel jumps arg decoded bounds canonical
+
+#print axioms mem_or
+#print axioms cost_or
+#print axioms X_next_or
 #print axioms word_add_nat
 #print axioms snapshot_push
 #print axioms snapshot_binary

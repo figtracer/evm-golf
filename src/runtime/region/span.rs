@@ -164,7 +164,7 @@ impl Span {
             ensure!(
                 matches!(
                     op,
-                    0x01 | 0x02 | 0x03 | 0x16 | 0x19 | 0x1b | 0x5f..=0x7f | 0x80 | 0x90
+                    0x01 | 0x02 | 0x03 | 0x16 | 0x17 | 0x19 | 0x1b | 0x5f..=0x7f | 0x80 | 0x90..=0x9f
                 ),
                 "unsupported canonical span opcode 0x{op:02x} at PC {pc}"
             );
@@ -482,8 +482,8 @@ impl Span {
                             1,
                         )
                     }
-                    0x90 => {
-                        words.swap(0, 1);
+                    0x90..=0x9f => {
+                        words.swap(0, usize::from(op - 0x8f));
                         (
                             format!(
                                 "binaryPost ({prev}) ({}) ({}) 3",
@@ -511,6 +511,7 @@ impl Span {
                             0x02 => format!("UInt256.mul ({a}) ({b})"),
                             0x03 => format!("UInt256.sub ({a}) ({b})"),
                             0x16 => format!("({a}) &&& ({b})"),
+                            0x17 => format!("({a}) ||| ({b})"),
                             0x1b => format!("UInt256.shiftLeft ({b}) ({a})"),
                             _ => unreachable!(),
                         };
@@ -618,12 +619,28 @@ impl Span {
                                 "GolfPureBounds.canonical_step_push ({prev}) .PUSH{width} (UInt256.ofNat {value}) {width} ({source_fuel}) (by decide)"
                             ),
                         )
+                    } else if (0x91..=0x9f).contains(&op) {
+                        let depth = usize::from(op - 0x8f);
+                        let middle = initial_words[1..depth].join(", ");
+                        (
+                            format!(".SWAP{depth}"),
+                            "none".into(),
+                            format!("(CanonicalMaskWindow.ExtraOp.exchange .SWAP{depth})"),
+                            "extra",
+                            format!(
+                                "GolfPureBounds.canonical_step_exchange ({prev}) .SWAP{depth} ({source_fuel}) none ({}) ({}) [{middle}] ({}) (by rfl) stack{i}",
+                                initial_words[0],
+                                initial_words[depth],
+                                lean_stack(&initial_words[depth + 1..])
+                            ),
+                        )
                     } else {
                         let (name, constructor) = match op {
                             1 => ("add", "extended"),
                             2 => ("mul", "same"),
                             3 => ("sub", "extra"),
                             0x16 => ("and", "extra"),
+                            0x17 => ("or", "extra"),
                             0x19 => ("not", "extra"),
                             0x1b => ("shl", "same"),
                             0x5f => ("push0", "extended"),
@@ -648,7 +665,11 @@ impl Span {
                         (
                             format!(".{}", name.to_uppercase()),
                             "none".into(),
-                            format!(".{name}"),
+                            if op == 0x17 {
+                                ".bor".into()
+                            } else {
+                                format!(".{name}")
+                            },
                             constructor,
                             format!(
                                 "GolfPureBounds.canonical_step_{name} ({prev}) ({source_fuel}) none{args}"
@@ -660,6 +681,8 @@ impl Span {
                     }
                     let bounds = if width > 0 {
                         format!("GolfPureBounds.bounds_push ({prev}) .PUSH{width} (by decide)")
+                    } else if (0x91..=0x9f).contains(&op) {
+                        format!("GolfSwapFamily.bounds ({prev}) .SWAP{}", op - 0x8f)
                     } else {
                         let name = match op {
                             0x5f => "push0",
@@ -669,13 +692,22 @@ impl Span {
                             2 => "mul",
                             3 => "sub",
                             0x16 => "and",
+                            0x17 => "or",
                             0x19 => "not",
                             0x1b => "shl",
                             _ => unreachable!(),
                         };
                         format!("GolfPureBounds.bounds_{name} ({prev})")
                     };
-                    writeln!(preparations, " have bounds{i} : FullXBounds ({prev}) {operation} := {bounds}\n  (GolfPureBounds.remaining_enough _ _ {previous_spent} {cost} {total_gas} (by decide) gas g{i})\n  (by simp only [stack{i},List.length_cons]; omega)\n  (by simp only [stack{i},List.length_cons]; omega)\n have step{i} : EVM.step (({source_fuel})+1) (C' ({prev}) {operation}) (some ({operation},{argument})) ({prev}) = .ok ({next}) := {step}").unwrap();
+                    let input_bound = if (0x91..=0x9f).contains(&op) {
+                        format!(
+                            "change {} ≤ ({prev}).stack.length; ",
+                            usize::from(op - 0x8f) + 1
+                        )
+                    } else {
+                        String::new()
+                    };
+                    writeln!(preparations, " have bounds{i} : FullXBounds ({prev}) {operation} := {bounds}\n  (GolfPureBounds.remaining_enough _ _ {previous_spent} {cost} {total_gas} (by decide) gas g{i})\n  (by {input_bound}simp only [stack{i},List.length_cons]; omega)\n  (by simp only [stack{i},List.length_cons]; omega)\n have step{i} : EVM.step (({source_fuel})+1) (C' ({prev}) {operation}) (some ({operation},{argument})) ({prev}) = .ok ({next}) := {step}").unwrap();
                     writeln!(constructors," apply MixedTrace.{constructor} ({prev}) ({next}) {trace_final} ({source_fuel}) ({target_fuel}) {powers} {masks} {operation} {argument} {allowed} original{i} candidate{i} bounds{i} step{i}").unwrap();
                 }
             }
@@ -1016,11 +1048,11 @@ fn profile(code: &[u8]) -> Result<Profile> {
                 ensure!(push_value(&instruction.bytes).is_some(), "truncated PUSH");
                 (0, 1, if op == 0x5f { 2 } else { 3 })
             }
-            1 | 3 | 0x16 | 0x1b => (2, -1, 3),
+            1 | 3 | 0x16 | 0x17 | 0x1b => (2, -1, 3),
             2 => (2, -1, 5),
             0x19 => (1, 0, 3),
             0x80 => (1, 1, 3),
-            0x90 => (2, 0, 3),
+            0x90..=0x9f => (isize::from(op - 0x8f) + 1, 0, 3),
             _ => bail!("unsupported canonical span opcode 0x{op:02x}"),
         };
         result.required = result.required.max((need - result.delta).max(0) as usize);
@@ -1035,6 +1067,161 @@ fn profile(code: &[u8]) -> Result<Profile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_swap_depth_preserves_full_symbolic_stack_and_tail() {
+        for depth in 1u8..=16 {
+            let code = [0x8f + depth];
+            let span = Span::select(&code, &code, 0, 1).unwrap();
+            assert_eq!(span.required, usize::from(depth) + 1);
+            assert_eq!(span.maximum, 1024);
+            assert_eq!(
+                (span.source.delta, span.source.peak, span.source.gas),
+                (0, 0, 3)
+            );
+            let source = span.render_proof(&code, &code, 0);
+            // Endpoint permutation oracle: every intervening word remains in order.
+            let indices = std::iter::once(depth)
+                .chain(1..depth)
+                .chain(std::iter::once(0));
+            let expected = indices
+                .map(|index| format!("(a{index}) :: "))
+                .collect::<String>()
+                + "tail";
+            let stack_theorem = source
+                .split("theorem source_stack")
+                .nth(1)
+                .unwrap()
+                .split("theorem source_count")
+                .next()
+                .unwrap();
+            assert!(
+                stack_theorem.contains(&format!(".stack = {expected} := by")),
+                "SWAP{depth}"
+            );
+            if depth == 1 {
+                assert!(source.contains("canonical_step_swap1"));
+            } else {
+                assert!(source.contains(&format!("ExtraOp.exchange .SWAP{depth}")));
+                assert!(source.contains(&format!("GolfSwapFamily.bounds (s) .SWAP{depth}")));
+            }
+        }
+        // SWAP2 followed by OR must retain the original top below the merged word.
+        let code = [0x91, 0x17];
+        let span = Span::select(&code, &code, 0, 2).unwrap();
+        assert_eq!(
+            (
+                span.required,
+                span.maximum,
+                span.source.delta,
+                span.source.gas
+            ),
+            (3, 1024, -1, 6)
+        );
+        let source = span.render_proof(&code, &code, 0);
+        assert!(source.contains("def value0 (a0 a1 a2 : UInt256) : UInt256 := ((a2) ||| (a1))"));
+        assert!(source.contains(".stack = ((value0 a0 a1 a2)) :: (a0) :: tail := by"));
+        assert!(source.contains("canonical_step_or"));
+        assert!(source.contains("powers := 0") && source.contains("masks := 0"));
+    }
+
+    #[test]
+    fn swap_and_or_revm_controls_check_all_words_and_fault_boundaries() {
+        use crate::runtime::{Case, execute};
+        use revm::context::result::{ExecutionResult, HaltReason};
+        let run = |code: &[u8]| {
+            execute(
+                code,
+                &Case {
+                    calldata: String::new(),
+                    gas_limit: 200_000,
+                    value: String::new(),
+                    storage: Default::default(),
+                },
+            )
+            .unwrap()
+            .result
+        };
+        let returned_stack = |ops: &[u8], stack: &[U256], output_words: usize| {
+            let mut code = Vec::new();
+            for word in stack.iter().rev() {
+                code.push(0x7f);
+                code.extend(word.to_be_bytes::<32>());
+            }
+            code.extend_from_slice(ops);
+            for i in 0..output_words {
+                code.push(0x61);
+                code.extend(((i * 32) as u16).to_be_bytes());
+                code.push(0x52);
+            }
+            code.push(0x61);
+            code.extend(((output_words * 32) as u16).to_be_bytes());
+            code.extend([0x5f, 0xf3]);
+            let result = run(&code);
+            assert!(result.is_success(), "{result:?}");
+            result
+                .output()
+                .unwrap()
+                .as_chunks::<32>()
+                .0
+                .iter()
+                .map(|word| U256::from_be_bytes(*word))
+                .collect::<Vec<_>>()
+        };
+        for depth in 1usize..=16 {
+            let opcode = 0x8f + depth as u8;
+            let stack = (1..=depth + 4).map(U256::from).collect::<Vec<_>>();
+            let expected = std::iter::once(stack[depth])
+                .chain(stack[1..depth].iter().copied())
+                .chain(std::iter::once(stack[0]))
+                .chain(stack[depth + 1..].iter().copied())
+                .collect::<Vec<_>>();
+            assert_eq!(returned_stack(&[opcode], &stack, stack.len()), expected);
+            for height in 0..=depth {
+                let mut code = vec![0x5f; height];
+                code.extend([opcode, 0]);
+                assert!(
+                    matches!(
+                        run(&code),
+                        ExecutionResult::Halt {
+                            reason: HaltReason::StackUnderflow,
+                            ..
+                        }
+                    ),
+                    "SWAP{depth} height{height}"
+                );
+            }
+            let mut code = vec![0x5f; 1024];
+            code.extend([opcode, 0]);
+            assert!(run(&code).is_success(), "SWAP{depth} at the stack limit");
+        }
+        for (a, b, c) in [
+            (U256::from(0x11), U256::from(0x0f), U256::from(0xf0)),
+            (U256::MAX, U256::ZERO, U256::from(1) << 255),
+            (U256::ZERO, U256::MAX, U256::MAX),
+        ] {
+            let tail = [U256::from(0x1234), U256::from(0x5678)];
+            let stack = [a, b, c, tail[0], tail[1]];
+            assert_eq!(
+                returned_stack(&[0x91, 0x17], &stack, 4),
+                [b | c, a, tail[0], tail[1]]
+            );
+        }
+        for height in 0..2 {
+            let mut code = vec![0x5f; height];
+            code.extend([0x17, 0]);
+            assert!(matches!(
+                run(&code),
+                ExecutionResult::Halt {
+                    reason: HaltReason::StackUnderflow,
+                    ..
+                }
+            ));
+        }
+        let mut code = vec![0x5f; 1024];
+        code.extend([0x17, 0]);
+        assert!(run(&code).is_success(), "OR shrinks a full stack");
+    }
 
     #[test]
     fn through_jump_rejects_invalid_inputs_before_output_writes() {

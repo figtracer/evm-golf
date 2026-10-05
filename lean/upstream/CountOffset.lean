@@ -43,6 +43,13 @@ theorem step_and (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat
  simp [EVM.step,stack,binaryPost,EVM.State.replaceStackAndIncrPC,EVM.State.incrPC,Stack.push]
  rfl
 
+theorem step_or (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat))
+ (a b : UInt256) (tail : List UInt256) (stack : s.stack = b::a::tail) :
+ EVM.step (fuel+1) cost (some (.OR,arg)) s = .ok (binaryPost s (b ||| a) tail cost) := by
+ have specified : {s with stack := b::a::tail} = s := by rw [←stack]
+ rw [←specified]
+ rfl
+
 theorem step_not (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat))
  (a : UInt256) (tail : List UInt256) (stack : s.stack = a::tail) :
  EVM.step (fuel+1) cost (some (.NOT,arg)) s = .ok (binaryPost s (UInt256.lnot a) tail cost) := by
@@ -53,5 +60,6 @@ theorem step_not (s : EVM.State) (fuel cost : Nat) (arg : Option (UInt256 × Nat
 #print axioms zero_to_exact
 #print axioms step_sub
 #print axioms step_and
+#print axioms step_or
 #print axioms step_not
 end GolfCountOffset

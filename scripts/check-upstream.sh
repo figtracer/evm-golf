@@ -183,4 +183,24 @@ assert report["maximum_input_stack_words"] == 1022
 assert report["output_stack_delta"] == 1
 PY_EXTRA
 
+# All exchange depths followed by OR exercise symbolic stack lengths and ordering.
+printf '%s\n' 909192939495969798999a9b9c9d9e9f17 > "$work/swaps.hex"
+cargo run --locked -- certify-runtime-region \
+  --original "$work/swaps.hex" --candidate "$work/swaps.hex" \
+  --entry-pc 0 --exit-pc 17 --out "$work/swaps-accepted"
+python3 - "$work/swaps-accepted/result.json" <<'PY_SWAPS'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    report = json.load(handle)
+assert report["entry_pc"] == 0 and report["exit_pc"] == 17
+assert report["source_instruction_count"] == report["candidate_instruction_count"] == 17
+assert report["source_gas_minimum"] == report["candidate_gas_cost"] == 51
+assert report["required_input_stack_words"] == 17
+assert report["maximum_input_stack_words"] == 1024
+assert report["output_stack_delta"] == -1
+assert report["gas_surplus_increase"] == report["execution_count_offset_increase"] == 0
+PY_SWAPS
+
 echo "Upstream region checks passed. Local evidence: $work"
