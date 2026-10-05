@@ -137,6 +137,7 @@ impl Word {
     }
 }
 
+#[cfg(test)]
 pub(super) fn certificate(before: &[u8], after: &[u8]) -> Result<WindowProof> {
     certificate_in(before, after, None)
 }
@@ -176,7 +177,23 @@ fn prelude() -> Result<String> {
 
 const AND_COMMUTATION: &str = "theorem and_left_comm (a b c : Golf.Word) : a &&& (b &&& c) = b &&& (a &&& c) := by\n rw [← BitVec.and_assoc, BitVec.and_comm a b, BitVec.and_assoc]\n";
 
-fn certificate_in(before: &[u8], after: &[u8], index: Option<usize>) -> Result<WindowProof> {
+struct Checked {
+    old: Vec<Instruction>,
+    new: Vec<Instruction>,
+    a: Profile,
+    b: Profile,
+    old_steps: Vec<Step>,
+    new_steps: Vec<Step>,
+}
+
+/// Check a byte pair without emitting Lean source: equal length and stack
+/// profile, lower static gas, equal fault classes at every height, and equal
+/// normalized symbolic outputs. Returns the required input word count.
+pub(super) fn check(before: &[u8], after: &[u8]) -> Result<usize> {
+    Ok(checked(before, after)?.a.required)
+}
+
+fn checked(before: &[u8], after: &[u8]) -> Result<Checked> {
     ensure!(before.len() == after.len(), "proposal changes byte length");
     let (old, a) = inspect(before)?;
     let (new, b) = inspect(after)?;
@@ -206,11 +223,30 @@ fn certificate_in(before: &[u8], after: &[u8], index: Option<usize>) -> Result<W
         !old_failure && !new_failure,
         "inconsistent required stack derivation"
     );
-    let output = &old_steps.last().unwrap().normalized;
     ensure!(
-        *output == new_steps.last().unwrap().normalized,
+        old_steps.last().unwrap().normalized == new_steps.last().unwrap().normalized,
         "unsupported symbolic output equality"
     );
+    Ok(Checked {
+        old,
+        new,
+        a,
+        b,
+        old_steps,
+        new_steps,
+    })
+}
+
+fn certificate_in(before: &[u8], after: &[u8], index: Option<usize>) -> Result<WindowProof> {
+    let Checked {
+        old,
+        new,
+        a,
+        b,
+        old_steps,
+        new_steps,
+    } = checked(before, after)?;
+    let output = &old_steps.last().unwrap().normalized;
     let namespace = index.map_or_else(
         || "GolfGenerated".to_owned(),
         |index| format!("GolfGenerated.Pair{index}"),

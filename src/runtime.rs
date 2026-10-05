@@ -33,7 +33,6 @@ pub mod region;
 pub mod scenario;
 mod search;
 mod window_proposal;
-pub use layout::LayoutAnalysis;
 pub use search::{SearchReport, SearchStage, SearchStopReason, search_scenarios};
 
 use precompile::EcrecoverTrace;
@@ -92,12 +91,11 @@ pub struct Rewrite {
     pub required_stack: usize,
 }
 
-/// Declarative selection bound to the exact immutable runtime input.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RewritePlan {
-    pub original_keccak256: String,
-    pub selected_pcs: Vec<usize>,
+/// Built-in sites selected by PC, bound to the exact runtime. Search uses an
+/// empty plan to check an unchanged image through the same gate.
+pub(crate) struct RewritePlan {
+    pub(crate) original_keccak256: String,
+    pub(crate) selected_pcs: Vec<usize>,
 }
 
 /// Disjoint byte-pair proposals, all bound to the same immutable runtime.
@@ -118,12 +116,6 @@ pub struct RewriteProposalSite {
 }
 
 #[derive(Debug, Serialize)]
-pub struct RewriteOpportunities {
-    pub original_keccak256: String,
-    pub rewrites: Vec<Rewrite>,
-}
-
-#[derive(Debug, Serialize)]
 pub struct CaseResult {
     pub baseline_gas: u64,
     pub candidate_gas: u64,
@@ -139,21 +131,6 @@ pub struct Report {
     pub cases: Vec<CaseResult>,
     pub lean_version: Option<String>,
     pub verification: &'static str,
-}
-
-/// Analyze reachable instructions without resolving jump values or stack heights.
-pub fn analyze_layout(code: &[u8]) -> Result<LayoutAnalysis> {
-    layout::analyze(code, false)
-}
-
-/// List trusted fixed-layout sites using the scenario-aware opcode guards.
-/// This catalog is not proof or replay evidence for a candidate.
-pub fn rewrite_opportunities(code: &[u8]) -> Result<RewriteOpportunities> {
-    let analysis = layout::analyze(code, true)?;
-    Ok(RewriteOpportunities {
-        original_keccak256: keccak256(code).to_string(),
-        rewrites: layout::opportunities(&analysis)?,
-    })
 }
 
 /// Discover a deterministic, bounded set of unverified exact byte-pair proposals.
@@ -307,13 +284,13 @@ fn optimize_checked(
                 .map(|site| {
                     let before = from_hex(&site.before)?;
                     let after = from_hex(&site.after)?;
-                    let local = window_proposal::certificate(&before, &after)
+                    let required = window_proposal::check(&before, &after)
                         .with_context(|| format!("proposal at PC {}", site.original_pc))?;
                     Ok(Rewrite {
                         original_pc: site.original_pc,
                         before: hex::encode(&before),
                         after: hex::encode(&after),
-                        required_stack: local.required,
+                        required_stack: required,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;

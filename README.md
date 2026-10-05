@@ -56,19 +56,22 @@ Try it on [examples/quickstart](examples/quickstart):
 
 ## Results
 
-Measured before jump threading was added, aggregated over the supplied
-transactions (every stage proved and replayed):
+`optimize` with default settings, aggregated over the supplied transactions
+(every stage proved and replayed, no failed batches):
 
 | Workload | Baseline | Transactions | Gas saved |
 | --- | --- | ---: | ---: |
-| 36 ERC20 and ERC4626 builds | solc output | 1,026 | 6,873 |
-| Balancer vault token info | already optimized runtime | 23 | 195 more |
-| Uniswap V3 pool, tick crossing | already optimized runtime | 37 | 204 more |
-| Uniswap V3 pool, no crossing | already optimized runtime | 40 | 309 more |
+| 36 ERC20 and ERC4626 builds | solc output | 1,026 | 8,981 |
+| Balancer vault token info | already optimized runtime | 23 | 219 more |
+| Uniswap V3 pool, tick crossing | already optimized runtime | 37 | 228 more |
+| Uniswap V3 pool, no crossing | already optimized runtime | 40 | 407 more |
 
 The 36 builds cover OpenZeppelin, Solady and Solmate, legacy and via-IR pipelines,
 and optimizer off, 200 and 10,000 runs. Rows are separate baselines; do not add
-them. Typical accepted rewrites:
+them. Savings are execution gas only: they are about 0.03% of total transaction
+gas here, which is dominated by intrinsic and storage costs. Unoptimized via-IR
+builds gain most (300 to 550 gas each), mostly from jump threading. Typical
+accepted rewrites:
 
 | Before | After | Saved per execution |
 | --- | --- | ---: |

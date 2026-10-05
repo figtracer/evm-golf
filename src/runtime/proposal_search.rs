@@ -210,7 +210,7 @@ fn literal_placements(
             }
             let eligible = *eligibility
                 .entry((before.clone(), after.clone()))
-                .or_insert_with(|| window_proposal::certificate(&before, &after).is_ok());
+                .or_insert_with(|| window_proposal::check(&before, &after).is_ok());
             if eligible {
                 best = Some(Candidate {
                     start: first.pc,
@@ -296,7 +296,7 @@ pub(super) fn discover(original: &[u8]) -> Result<RewriteProposalBatch> {
                     .or_insert_with(|| {
                         // Includes all 1,025 sufficient-gas fault heights. Matching
                         // aliases/profile alone does not equate DUP and SWAP faults.
-                        window_proposal::certificate(before, &after).is_ok()
+                        window_proposal::check(before, &after).is_ok()
                     });
                 if !eligible {
                     continue;
@@ -460,13 +460,13 @@ fn literal_candidate(instructions: &[Instruction]) -> Option<Candidate> {
         .iter()
         .flat_map(|instruction| instruction.bytes.iter().copied())
         .collect();
-    let proof = window_proposal::certificate(&before, &after).ok()?;
+    let required = window_proposal::check(&before, &after).ok()?;
     Some(Candidate {
         start: first.pc,
         end: first.pc + before.len(),
         before,
         after,
-        required: proof.required,
+        required,
         saving,
     })
 }
