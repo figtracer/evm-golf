@@ -45,10 +45,11 @@ Optimize an expression:
 cargo run --locked -- optimize '(+ (* x 2) (- y y))' --out runs/optimization
 ```
 
-Optimize a runtime using your [bytecode and execution cases](docs/runtime.md):
+Search a supported runtime using your [deployed bytecode and account fixtures](docs/runtime.md):
 
 ```sh
-cargo run --locked -- optimize-runtime --bytecode runs/runtime.hex --cases runs/cases.json --out runs/runtime-1
+cargo run --locked -- search-runtime --bytecode runs/runtime.hex \
+  --scenarios runs/scenarios.json --rounds 4 --out runs/runtime-1
 ```
 
 Outputs include bytecode, proofs, logs, and scores. Keep generated results local.
@@ -75,12 +76,13 @@ Expression proofs use a limited Lean bytecode model. Runtime optimization checks
 local Lean certificates and supplied transaction cases; it does not prove full
 runtime execution. Discovery emits unverified proposals that must pass these checks.
 The optional upstream checker proves conditional execution of supported regions,
-including eligible terminating programs from call entry. These checks do not establish whole-contract
-equivalence for every input, state, or gas limit. `check-runtime` provides concrete
+including eligible terminating programs from call entry. These checks do not
+establish whole-contract equivalence for every input, state, or gas limit. `check-runtime` provides concrete
 replay only.
 
-Agents can submit proposals through the CLI; swarm orchestration is external.
-The leaderboard currently covers expression puzzles. See [verification and
+`search-runtime` repeats built-in rewrites and bounded proposal discovery with
+verification at every stage. Agents can also submit proposals through the CLI;
+model swarm orchestration is external. The leaderboard covers expression puzzles. See [verification and
 scoring](docs/verification.md) for proof assumptions and [runtime support](docs/runtime.md)
 for accepted bytecode and execution requirements.
 

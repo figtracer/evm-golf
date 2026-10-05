@@ -17,6 +17,30 @@ For a separate conditional proof of a supported internal compiler prefix, see
 [internal-region certificates](regions.md). This opt-in command uses pinned
 upstream semantics and does not replace the runtime optimizer’s existing gates.
 
+## Bounded contract search
+
+Run built-in rewrites and proposal discovery repeatedly on deployed bytecode:
+
+```sh
+cargo run --locked -- search-runtime --bytecode runs/runtime.hex \
+  --scenarios runs/scenarios.json --rounds 4 --out runs/search-1
+```
+
+Supply a positive round limit and a fresh output directory. Each round runs the
+fixed-layout optimizer, discovers proposals on its accepted bytes, and verifies
+any discovered batch. Every stage retains its local proofs and guarded scenario
+replay. A failed stage stops the search and retains its diagnostics.
+
+The final candidate is replayed directly against the original on the same supplied
+scenarios with the external-call and effect guards. Only a successful search writes
+the root `result.json`; stage results alone do not establish search completion.
+Keep all generated evidence local.
+
+Convergence means the bounded catalogs found no further rewrites; reaching the
+round limit is a separate outcome. Neither establishes a global optimum or
+whole-contract equivalence. This command uses local deterministic search and does
+not launch model agents. The round limit bounds iterations, not wall-clock time.
+
 ## Select rewrite sites
 
 List the fixed-layout opportunities for an exact runtime:

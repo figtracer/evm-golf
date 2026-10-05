@@ -6,7 +6,7 @@ use evm_golf::{
     expr::RULES,
     optimize, proof, runtime,
 };
-use std::{fs, path::PathBuf};
+use std::{fs, num::NonZeroUsize, path::PathBuf};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -99,6 +99,18 @@ enum Action {
         /// JSON disjoint byte pairs against one immutable baseline; accepted as one batch.
         #[arg(long, requires_all = ["preserve_layout", "scenarios"], conflicts_with_all = ["plan", "proposal"])]
         proposals: Option<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Run bounded fixed-layout search with local proofs and guarded scenario replay.
+    SearchRuntime {
+        #[arg(long)]
+        bytecode: PathBuf,
+        #[arg(long)]
+        scenarios: PathBuf,
+        /// Maximum rounds of built-in rewrites followed by proposal discovery.
+        #[arg(long)]
+        rounds: NonZeroUsize,
         #[arg(long)]
         out: PathBuf,
     },
@@ -337,6 +349,29 @@ fn main() -> Result<()> {
                 report.baseline_bytes,
                 report.candidate_bytes,
                 report.rewrites.len(),
+                report.cases.len(),
+                report.verification,
+                out.display()
+            );
+        }
+        Action::SearchRuntime {
+            bytecode,
+            scenarios,
+            rounds,
+            out,
+        } => {
+            let code = runtime::input::read_bytecode(&bytecode)?;
+            let scenarios: Vec<runtime::scenario::Scenario> =
+                serde_json::from_str(&runtime::input::read_json(&scenarios)?)?;
+            prepare_parent(&out)?;
+            let report = runtime::search_scenarios(&code, &scenarios, rounds.get(), &out)?;
+            println!(
+                "Search stopped: {}; {} rounds; {} execution cases passed.\n{}\nEvidence: {}",
+                match report.stop_reason {
+                    runtime::SearchStopReason::Converged => "finite search converged",
+                    runtime::SearchStopReason::RoundsLimit => "round limit reached",
+                },
+                report.rounds_completed,
                 report.cases.len(),
                 report.verification,
                 out.display()

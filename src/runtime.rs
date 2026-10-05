@@ -30,8 +30,10 @@ mod precompile;
 mod proposal_search;
 pub mod region;
 pub mod scenario;
+mod search;
 mod window_proposal;
 pub use layout::LayoutAnalysis;
+pub use search::{SearchReport, SearchStage, SearchStopReason, search_scenarios};
 
 use precompile::EcrecoverTrace;
 
@@ -487,6 +489,7 @@ pub fn optimize_with(
                 .map(|results| results.into_iter().flatten().collect()),
         },
     )
+    .map(|(report, _)| report)
 }
 
 /// Optimize against explicit accounts and constructor-initialized state. The
@@ -498,6 +501,7 @@ pub fn optimize_scenarios(
     mode: RuntimeMode,
 ) -> Result<Report> {
     optimize_scenarios_selected(code, scenarios, out, RewriteSelection::All(mode))
+        .map(|(report, _)| report)
 }
 
 /// Verify a hash-bound selection through the same proof and replay gates.
@@ -509,6 +513,7 @@ pub fn optimize_scenarios_with_plan(
 ) -> Result<Report> {
     input::validate(plan, std::iter::empty())?;
     optimize_scenarios_selected(code, scenarios, out, RewriteSelection::Plan(plan))
+        .map(|(report, _)| report)
 }
 
 /// Prove a supplied byte pair and replay it through the guarded fixture path.
@@ -521,6 +526,7 @@ pub fn optimize_scenarios_with_proposal(
 ) -> Result<Report> {
     input::validate(proposal, std::iter::empty())?;
     optimize_scenarios_selected(code, scenarios, out, RewriteSelection::Proposal(proposal))
+        .map(|(report, _)| report)
 }
 
 /// Prove disjoint original-image proposals together and replay the final candidate.
@@ -531,12 +537,8 @@ pub fn optimize_scenarios_with_proposals(
     out: &Path,
     proposals: &RewriteProposalBatch,
 ) -> Result<Report> {
-    ensure!(
-        !proposals.sites.is_empty() && proposals.sites.len() <= MAX_PROPOSAL_SITES,
-        "proposal batch requires 1..={MAX_PROPOSAL_SITES} sites"
-    );
-    input::validate(proposals, std::iter::empty())?;
     optimize_scenarios_selected(code, scenarios, out, RewriteSelection::Proposals(proposals))
+        .map(|(report, _)| report)
 }
 
 fn optimize_scenarios_selected(
@@ -544,7 +546,14 @@ fn optimize_scenarios_selected(
     scenarios: &[scenario::Scenario],
     out: &Path,
     selection: RewriteSelection<'_>,
-) -> Result<Report> {
+) -> Result<(Report, Vec<u8>)> {
+    if let RewriteSelection::Proposals(proposals) = selection {
+        ensure!(
+            !proposals.sites.is_empty() && proposals.sites.len() <= MAX_PROPOSAL_SITES,
+            "proposal batch requires 1..={MAX_PROPOSAL_SITES} sites"
+        );
+        input::validate(proposals, std::iter::empty())?;
+    }
     input::validate(
         &scenarios,
         scenarios
@@ -597,7 +606,7 @@ fn optimize_checked(
     input_file: (&str, String),
     verification: &'static str,
     replay: impl FnOnce(&[u8]) -> Result<Vec<CaseResult>>,
-) -> Result<Report> {
+) -> Result<(Report, Vec<u8>)> {
     let mode = match selection {
         RewriteSelection::All(mode) => mode,
         RewriteSelection::Plan(_)
@@ -772,7 +781,7 @@ fn optimize_checked(
         out.join("result.json"),
         serde_json::to_string_pretty(&report)? + "\n",
     )?;
-    Ok(report)
+    Ok((report, candidate))
 }
 
 /// Decode hexadecimal bytecode/calldata; whitespace is allowed only around it.

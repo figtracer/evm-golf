@@ -40,7 +40,9 @@ diagnosis. The command reads immediate child directories with submission.json.
 
 ## Runtime bytecode
 
-Read docs/runtime.md before using runtime commands. `optimize-runtime` checks
+Read docs/runtime.md before using runtime commands. `search-runtime` repeats
+fixed-layout optimization and discovery for an explicit round budget, checks every
+stage, and replays the final candidate against the original. `optimize-runtime` checks
 local stack proofs and supplied transaction tests; `--preserve-layout` supports
 dynamic jumps without moving byte offsets and binds local proofs to the complete
 output artifact in Lean. Use `--scenarios` for explicit deployed-account state.
