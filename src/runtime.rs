@@ -158,7 +158,7 @@ pub struct RewriteProposalBatch {
 }
 
 /// One original-image interval in a proposal batch. Metadata is checker-derived.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RewriteProposalSite {
     pub original_pc: usize,

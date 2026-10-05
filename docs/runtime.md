@@ -29,16 +29,19 @@ cargo run --locked -- search-runtime --bytecode runs/runtime.hex \
 Supply a positive round limit and a fresh output directory. Each round runs the
 fixed-layout optimizer, discovers proposals on its accepted bytes, and verifies
 any discovered batch. Every stage retains its local proofs and guarded scenario
-replay. A failed stage stops the search and retains its diagnostics.
+replay. If a discovered batch fails, for example by exceeding the proof time limit,
+the search records it under `failures`, retries with the first half of its sites,
+and excludes a site that fails alone. Any other failed stage stops the search and
+retains its diagnostics. Failed sites are never applied.
 
 The final candidate is replayed directly against the original on the same supplied
 scenarios with the external-call and effect guards. Only a successful search writes
 the root `result.json`; stage results alone do not establish search completion.
 Keep all generated evidence local.
 
-Convergence means the bounded catalogs found no further rewrites; reaching the
-round limit is a separate outcome. Neither establishes a global optimum or
-whole-contract equivalence. This command uses local deterministic search and does
+Convergence means the bounded catalogs found no further rewrites apart from
+excluded sites; reaching the round limit is a separate outcome. Neither establishes
+a global optimum or whole-contract equivalence. This command uses local deterministic search and does
 not launch model agents. The round limit bounds iterations, not wall-clock time.
 
 ## Select rewrite sites
