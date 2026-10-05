@@ -107,8 +107,8 @@ It examines two to six such source instructions followed by a PUSH, and can wide
 that PUSH's immediate to keep byte offsets unchanged. These limits bound search
 work; they do not establish global optimality or completeness for other windows.
 It also proposes zero-addition cleanup, repeated-mask removal, and swaps around
-a pushed constant, including redundant DUP/POP sequences. These patterns use the
-same certificate and layout guards.
+a pushed constant, including redundant DUP/POP sequences and three-swap cleanup.
+These patterns use the same certificate and layout guards.
 Candidates retain the full symbolic stack, stack requirements, peak and fault
 classes, and pass existing layout guards before they are proposed.
 
