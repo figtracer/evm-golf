@@ -298,4 +298,84 @@ if cargo run --locked -- certify-runtime-region \
 fi
 [[ ! -e "$work/halt-conflict" ]]
 
+# Exercise the separate fresh-entry STOP template.
+if ! cargo run --locked -- certify-runtime-region \
+  --original "$work/stop-original.hex" --candidate "$work/stop-candidate.hex" \
+  --entry-pc 0 --exit-pc 5 --through-halt --from-call-entry --out "$work/call-entry-stop-accepted"; then
+  cat "$work/call-entry-stop-accepted"/*.log 2>/dev/null || true
+  echo "Failed call-entry STOP certificate evidence: $work" >&2
+  exit 1
+fi
+python3 - "$work/call-entry-stop-accepted" <<'PY_CALL_STOP'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+report = json.loads((path / "result.json").read_text())
+assert report["entry_pc"] == 0 and report["terminal_pc"] == report["exit_pc"] == 5
+assert report["terminal"] == "STOP" and report["required_input_stack_words"] == 0
+assert report["source_instruction_count"] == report["candidate_instruction_count"] == 4
+assert report["source_base_gas"] == 11 and report["candidate_base_gas"] == 9
+assert report["proof_root"] == "GolfCertificates.CallEntry.call_entry_success"
+assert (path / "CallEntryProof.olean").is_file()
+assert "'GolfCertificates.CallEntry.call_entry_success' depends on axioms:" in (path / "CallEntryProof.log").read_text()
+PY_CALL_STOP
+
+# The same RETURN path is now rooted at fresh canonical call entry, not a supplied stack.
+if ! cargo run --locked -- certify-runtime-region \
+  --original "$work/return-original.hex" --candidate "$work/return-candidate.hex" \
+  --entry-pc 0 --exit-pc 10 --through-halt --from-call-entry --out "$work/call-entry-accepted"; then
+  cat "$work/call-entry-accepted"/*.log 2>/dev/null || true
+  echo "Failed call-entry certificate evidence: $work" >&2
+  exit 1
+fi
+python3 - "$work/call-entry-accepted" <<'PY_CALL_ENTRY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+report = json.loads((path / "result.json").read_text())
+assert report["entry_pc"] == 0 and report["terminal_pc"] == 10 and report["exit_pc"] == 11
+assert report["terminal"] == "RETURN" and report["required_input_stack_words"] == 0
+assert report["source_instruction_count"] == report["candidate_instruction_count"] == 8
+assert report["source_base_gas"] == 21 and report["candidate_base_gas"] == 19
+assert report["proof_root"] == "GolfCertificates.CallEntry.call_entry_success"
+assert (path / "CallEntryProof.olean").is_file() and (path / "XiEntry.olean").is_file()
+assert "'GolfCertificates.CallEntry.call_entry_success' depends on axioms:" in (path / "CallEntryProof.log").read_text()
+PY_CALL_ENTRY
+if cargo run --locked -- certify-runtime-region \
+  --original "$work/stop-original.hex" --candidate "$work/stop-candidate.hex" \
+  --entry-pc 2 --exit-pc 5 --through-halt --from-call-entry --out "$work/call-entry-nonzero"; then
+  echo 'Nonzero fresh call entry was accepted.' >&2
+  exit 1
+fi
+[[ ! -e "$work/call-entry-nonzero" ]]
+printf '%s\n' 5200 > "$work/call-entry-underflow.hex"
+if cargo run --locked -- certify-runtime-region \
+  --original "$work/call-entry-underflow.hex" --candidate "$work/call-entry-underflow.hex" \
+  --entry-pc 0 --exit-pc 1 --through-halt --from-call-entry --out "$work/call-entry-underflow"; then
+  echo 'Call-entry path requiring supplied stack words was accepted.' >&2
+  exit 1
+fi
+[[ ! -e "$work/call-entry-underflow" ]]
+if cargo run --locked -- certify-runtime-region \
+  --original "$work/stop-original.hex" --candidate "$work/stop-candidate.hex" \
+  --entry-pc 0 --exit-pc 5 --from-call-entry --out "$work/call-entry-missing-halt"; then
+  echo 'Call-entry mode without terminal mode was accepted.' >&2
+  exit 1
+fi
+[[ ! -e "$work/call-entry-missing-halt" ]]
+
+# The body accepts an empty stack, but RETURN still needs its second operand.
+printf '%s\n' 5ff3 > "$work/call-entry-return-underflow.hex"
+if cargo run --locked -- certify-runtime-region \
+  --original "$work/call-entry-return-underflow.hex" --candidate "$work/call-entry-return-underflow.hex" \
+  --entry-pc 0 --exit-pc 1 --through-halt --from-call-entry --out "$work/call-entry-return-underflow"; then
+  echo 'Call-entry RETURN with only one output operand was accepted.' >&2
+  exit 1
+fi
+[[ ! -e "$work/call-entry-return-underflow" ]]
+
 echo "Upstream region checks passed. Local evidence: $work"

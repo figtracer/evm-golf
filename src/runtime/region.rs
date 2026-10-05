@@ -10,8 +10,9 @@ mod span;
 pub use span::{
     MemorySpanCertificate, MemorySpanJumpCertificate, SelectedSpanCertificate,
     SelectedSpanJumpCertificate, SpanCertificate, SpanJumpCertificate, TerminalCertificate,
-    certify_selected_span, certify_selected_span_through_halt, certify_selected_span_through_jump,
-    certify_span, certify_span_through_jump,
+    certify_selected_span, certify_selected_span_from_call_entry,
+    certify_selected_span_through_halt, certify_selected_span_through_jump, certify_span,
+    certify_span_through_jump,
 };
 
 use super::MAX_RUNTIME_BYTES;

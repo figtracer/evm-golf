@@ -19,6 +19,7 @@ For contract bytecode, see the [runtime guide](docs/runtime.md). The optional
 including supported rewrites and stack permutations, against pinned EVM semantics.
 It can also check a trailing static jump, or paired success and equal output at
 `STOP` or `RETURN` under explicit stack, gas, and state conditions.
+Eligible terminating programs can also be checked from canonical call initialization.
 
 - **Optimize** — Search expressions with e-graphs and shrink supported runtime bytecode.
 - **Verify** — Check expression equivalence and emitted bytecode against a Lean model.

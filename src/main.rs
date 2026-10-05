@@ -62,6 +62,9 @@ enum Action {
         /// Execute the explicit STOP or RETURN at --exit-pc.
         #[arg(long, requires = "exit_pc", conflicts_with = "through_jump")]
         through_halt: bool,
+        /// Prove fresh canonical call entry through the selected terminal instruction.
+        #[arg(long, requires = "through_halt")]
+        from_call_entry: bool,
         /// Exclusive span end; terminal modes execute the instruction at this PC.
         #[arg(long)]
         exit_pc: Option<usize>,
@@ -205,6 +208,7 @@ fn main() -> Result<()> {
             exit_pc,
             through_jump,
             through_halt,
+            from_call_entry,
             out,
         } => {
             let original = runtime::input::read_bytecode(&original)?;
@@ -214,12 +218,22 @@ fn main() -> Result<()> {
             }
             let (exit_pc, boundary) = if through_halt {
                 let exit = exit_pc.context("--through-halt requires --exit-pc")?;
-                let report = runtime::region::certify_selected_span_through_halt(
-                    &original, &candidate, entry_pc, exit, &out,
-                )?;
+                let report = if from_call_entry {
+                    runtime::region::certify_selected_span_from_call_entry(
+                        &original, &candidate, entry_pc, exit, &out,
+                    )?
+                } else {
+                    runtime::region::certify_selected_span_through_halt(
+                        &original, &candidate, entry_pc, exit, &out,
+                    )?
+                };
                 (
                     report.span.exit_pc,
-                    "Executes STOP or RETURN with paired success and equal canonical output",
+                    if from_call_entry {
+                        "Proves paired canonical call-entry success and equal output; transaction validation is excluded"
+                    } else {
+                        "Executes STOP or RETURN with paired success and equal canonical output"
+                    },
                 )
             } else if let (Some(jump_pc), true) = (exit_pc, through_jump) {
                 let report = runtime::region::certify_selected_span_through_jump(

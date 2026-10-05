@@ -468,6 +468,29 @@ pub fn certify_selected_span_through_halt(
     exit: usize,
     out: &Path,
 ) -> Result<TerminalCertificate> {
+    certify_terminal(original, candidate, entry, exit, out, false)
+}
+
+/// Execute canonical Ξ from its actual fresh state, with no incoming stack.
+pub fn certify_selected_span_from_call_entry(
+    original: &[u8],
+    candidate: &[u8],
+    entry: usize,
+    exit: usize,
+    out: &Path,
+) -> Result<TerminalCertificate> {
+    ensure!(entry == 0, "call-entry certificates require entry PC zero");
+    certify_terminal(original, candidate, entry, exit, out, true)
+}
+
+fn certify_terminal(
+    original: &[u8],
+    candidate: &[u8],
+    entry: usize,
+    exit: usize,
+    out: &Path,
+    from_call_entry: bool,
+) -> Result<TerminalCertificate> {
     let path = MemoryPath::select(original, candidate, entry, exit)?;
     let (kind, name, template, consumed) = match (original.get(exit), candidate.get(exit)) {
         (Some(0x00), Some(0x00)) => (
@@ -491,6 +514,10 @@ pub fn certify_selected_span_through_halt(
     ensure!(
         required <= path.maximum,
         "terminal has no admissible stack height"
+    );
+    ensure!(
+        !from_call_entry || required == 0,
+        "call-entry terminal requires an admissible empty input stack"
     );
     // Include the terminal byte in the routed window, while selecting the body only to exit.
     let rendered = render_images(
@@ -519,6 +546,23 @@ pub fn certify_selected_span_through_halt(
         .replace("$source_steps", &path.source.count.to_string())
         .replace("$required", &required.to_string());
     sources.push(("TerminalProof.lean".to_owned(), terminal));
+    if from_call_entry {
+        let template = match kind {
+            proof::TerminalKind::Stop => {
+                include_str!("../../../../lean/upstream/templates/CallEntryStop.lean.in")
+            }
+            proof::TerminalKind::Return => {
+                include_str!("../../../../lean/upstream/templates/CallEntryReturn.lean.in")
+            }
+        };
+        let source = template
+            .replace("$root_summary", &summary)
+            .replace("$source_steps", &path.source.count.to_string())
+            .replace("$target_steps", &path.candidate.count.to_string())
+            .replace("$surplus", &(2 * path.powers + 9 * path.masks).to_string())
+            .replace("$skipped", &(3 * path.masks).to_string());
+        sources.push(("CallEntryProof.lean".to_owned(), source));
+    }
     proof::check_region_output(out)?;
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
@@ -530,7 +574,12 @@ pub fn certify_selected_span_through_halt(
     for (name, source) in sources {
         fs::write(out.join(name), source)?;
     }
-    let lean_version = proof::verify_region(out, proof::RegionKind::Terminal(&plan, kind))?;
+    let mode = if from_call_entry {
+        proof::RegionKind::CallEntry(&plan, kind)
+    } else {
+        proof::RegionKind::Terminal(&plan, kind)
+    };
+    let lean_version = proof::verify_region(out, mode)?;
     let mut span = path.report(original, candidate, lean_version);
     span.claim = "conditional paired canonical success and equal output after an internal span";
     span.source_instruction_count += 1;
@@ -551,11 +600,27 @@ pub fn certify_selected_span_through_halt(
         "canonical transaction entry",
         "revm correspondence",
     ];
+    if from_call_entry {
+        span.claim = "conditional paired canonical Ξ call-entry success and equal output from empty initial stack and memory";
+        span.proof_root = "GolfCertificates.CallEntry.call_entry_success";
+        span.gas_requirement = "initial gas >= GolfCertificates.Terminal.sourceCost(canonical fresh source state), including actual memory expansion";
+        span.unproved = [
+            "message-call dispatch",
+            "arbitrary contextual equivalence",
+            "whole-contract and all-gas equivalence",
+            "canonical transaction entry",
+            "revm correspondence",
+        ];
+    }
     let report = TerminalCertificate {
         span,
         terminal_pc: exit,
         terminal: name,
-        output_condition: if consumed == 0 {
+        output_condition: if from_call_entry && consumed == 0 {
+            "shared environment; related current/original account maps with owner/code witnesses in both; canonical fresh PC0/empty stack/memory; empty canonical output"
+        } else if from_call_entry {
+            "shared environment; related current/original account maps with owner/code witnesses in both; canonical fresh PC0/empty stack/memory; RETURN operands, physical bound and size<2^64 discharged from certified stackMap[]"
+        } else if consumed == 0 {
             "empty canonical output; physical output stack bound discharged"
         } else {
             "body stackMap equals address :: size :: tail, has at most 1024 words, and size.toNat < 2^64; output is canonical padded memory at the body endpoint"
@@ -571,6 +636,23 @@ pub fn certify_selected_span_through_halt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn call_entry_requires_zero_pc_and_terminal_admissible_empty_stack() {
+        for (code, entry, exit, expected) in [
+            (vec![0x5f, 0x5f, 0], 1, 2, "entry PC zero"),
+            (vec![0x60, 2, 2, 0], 0, 3, "empty input stack"),
+            // The body needs no input, but RETURN still needs a second operand.
+            (vec![0x5f, 0xf3], 0, 1, "empty input stack"),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let out = temp.path().join("new-parent").join("result");
+            let error =
+                certify_selected_span_from_call_entry(&code, &code, entry, exit, &out).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+        }
+    }
 
     #[test]
     fn halt_preflight_rejects_invalid_terminals_without_output() {

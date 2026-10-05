@@ -167,9 +167,17 @@ words, and `size < 2^64`; its gas requirement includes expansion after the body.
 The result distinguishes `terminal_pc` from the resulting `exit_pc`. Entry
 reachability, all-gas equivalence and memory-reader FFI correctness remain unproved.
 
+Add `--from-call-entry` with `--through-halt` and `--entry-pc 0` to check
+canonical call initialization and successful execution of a supported terminating
+program. The program must accept an empty initial stack; RETURN operands and
+size bounds are checked by Lean. The theorem retains deployed-account linkage,
+related account maps and sufficient source gas as premises. It proves paired
+canonical `Ξ` success and equal output, not transaction or all-gas equivalence.
+
 Rust callers can use `region::certify_selected_span_through_jump` for jump spans,
 `region::certify_span_through_jump` for pure spans,
 `region::certify_selected_span_through_halt` for terminal spans,
+`region::certify_selected_span_from_call_entry` for supported call-entry programs,
 `region::certify_selected_span` for pure or memory spans,
 `region::certify_span` for pure spans,
 `region::certify_selected` for automatic pattern selection, or `region::certify`
