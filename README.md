@@ -4,7 +4,7 @@
 
 **Verified gas optimization for deployed EVM contracts.**
 
-[Quick start](#quick-start) | [How it works](docs/whitepaper.md) | [Commands](docs/cli.md) | [Verification](docs/verification.md) | [Agent guide](AGENTS.md)
+[Quick start](#quick-start) | [Commands](docs/cli.md) | [Verification](docs/verification.md) | [Agent guide](AGENTS.md)
 
 </div>
 
@@ -94,8 +94,7 @@ Only a subset of opcodes and control flow is supported. See
 
 ## Documentation
 
-[How it works](docs/whitepaper.md), [commands and formats](docs/cli.md),
-[runtime support](docs/runtime.md),
+[Commands and formats](docs/cli.md), [runtime support](docs/runtime.md),
 [verification](docs/verification.md), [development](docs/dev/README.md) and
 [contributing](CONTRIBUTING.md).
 
