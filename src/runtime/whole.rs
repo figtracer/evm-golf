@@ -355,11 +355,19 @@ fn power_sites(
     Ok(sites)
 }
 
+/// Binary window opcodes in the order of the Lean `BinK` constructors.
+const BINARY: [u8; 20] = [
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0b, 0x10, 0x11, 0x12, 0x13, 0x14, 0x16, 0x17, 0x18,
+    0x1a, 0x1b, 0x1c, 0x1d,
+];
+/// Unary window opcodes in the order of the Lean `UnK` constructors.
+const UNARY: [u8; 2] = [0x15, 0x19];
+
 fn window_op(bytes: &[u8]) -> bool {
-    matches!(
-        bytes[0],
-        0x5f..=0x7f | 0x80..=0x9f | 0x50 | 0x01 | 0x03 | 0x16 | 0x17 | 0x1b
-    ) && bytes.len() == push_width(bytes[0]) + 1
+    (matches!(bytes[0], 0x5f..=0x7f | 0x80..=0x9f | 0x50)
+        || BINARY.contains(&bytes[0])
+        || UNARY.contains(&bytes[0]))
+        && bytes.len() == push_width(bytes[0]) + 1
 }
 
 /// The smallest span from `start`, ending at a common instruction boundary after
@@ -418,42 +426,203 @@ fn window_site(
 enum Sym {
     Input(usize),
     Lit(U256),
+    Un(u8, Box<Sym>),
     Bin(u8, Box<Sym>, Box<Sym>),
 }
 
-/// Interpreter result of a binary window opcode on (top, second).
-fn bin_value(op: u8, a: U256, b: U256) -> U256 {
-    match op {
-        0x01 => a.wrapping_add(b),
-        0x03 => a.wrapping_sub(b),
-        0x16 => a & b,
-        0x17 => a | b,
-        _ => {
-            if a >= U256::from(256) {
-                U256::ZERO
+const ADD: u8 = 0x01;
+const MUL: u8 = 0x02;
+const SUB: u8 = 0x03;
+const DIV: u8 = 0x04;
+const LT: u8 = 0x10;
+const SLT: u8 = 0x12;
+const EQ: u8 = 0x14;
+const ISZERO: u8 = 0x15;
+const AND: u8 = 0x16;
+const OR: u8 = 0x17;
+
+fn index(table: &[u8], op: u8) -> usize {
+    table.iter().position(|&o| o == op).unwrap()
+}
+
+/// Mirror of the Lean `Sym.lt`.
+fn sym_lt(a: &Sym, b: &Sym) -> bool {
+    use Sym::*;
+    match (a, b) {
+        (Lit(x), Lit(y)) => x < y,
+        (Lit(_), _) => true,
+        (Input(_), Lit(_)) => false,
+        (Input(i), Input(j)) => i < j,
+        (Input(_), _) => true,
+        (Un(f, x), Un(g, y)) if f == g => sym_lt(x, y),
+        (Un(f, _), Un(g, _)) => index(&UNARY, *f) < index(&UNARY, *g),
+        (Un(..), Bin(..)) => true,
+        (Un(..), _) => false,
+        (Bin(f, x, y), Bin(g, z, w)) if f == g => {
+            if x == z {
+                sym_lt(y, w)
             } else {
-                b << a.to::<usize>()
+                sym_lt(x, z)
             }
         }
+        (Bin(f, ..), Bin(g, ..)) => index(&BINARY, *f) < index(&BINARY, *g),
+        (Bin(..), _) => false,
     }
 }
 
-/// Mirror of the Lean `norm`: constant folding and a few identities.
-fn norm(s: &Sym) -> Sym {
-    let Sym::Bin(op, a, b) = s else {
-        return s.clone();
+/// Interpreter result of a foldable binary opcode on (top, second).
+fn bin_value(op: u8, a: U256, b: U256) -> U256 {
+    let bit = |c: bool| U256::from(u8::from(c));
+    let shift = |f: fn(U256, usize) -> U256| {
+        if a >= U256::from(256) {
+            U256::ZERO
+        } else {
+            f(b, a.to::<usize>())
+        }
     };
-    let (a, b) = (norm(a), norm(b));
+    match op {
+        ADD => a.wrapping_add(b),
+        MUL => a.wrapping_mul(b),
+        SUB => a.wrapping_sub(b),
+        DIV => a.checked_div(b).unwrap_or_default(),
+        0x06 => a.checked_rem(b).unwrap_or_default(),
+        LT => bit(a < b),
+        0x11 => bit(a > b),
+        EQ => bit(a == b),
+        AND => a & b,
+        OR => a | b,
+        0x18 => a ^ b,
+        0x1b => shift(|v, k| v << k),
+        _ => shift(|v, k| v >> k),
+    }
+}
+
+fn ident(op: u8) -> Option<U256> {
+    match op {
+        ADD | OR | 0x18 => Some(U256::ZERO),
+        MUL => Some(U256::from(1)),
+        AND => Some(U256::MAX),
+        _ => None,
+    }
+}
+
+fn flat(op: u8, s: Sym, out: &mut Vec<Sym>) {
+    match s {
+        Sym::Bin(g, a, b) if g == op => {
+            flat(op, *a, out);
+            flat(op, *b, out);
+        }
+        s => out.push(s),
+    }
+}
+
+/// Mirror of the Lean `acNorm`: fold literals, sort operands, drop duplicates
+/// of idempotent operators and rebuild a right-nested term.
+fn ac_norm(op: u8, e: U256, list: Vec<Sym>) -> Sym {
+    let mut c = e;
+    let mut rest = Vec::new();
+    for s in list {
+        match s {
+            Sym::Lit(v) => c = bin_value(op, c, v),
+            s => rest.push(s),
+        }
+    }
+    let absorb = match op {
+        MUL | AND => Some(U256::ZERO),
+        OR => Some(U256::MAX),
+        _ => None,
+    };
+    if absorb == Some(c) {
+        return Sym::Lit(c);
+    }
+    rest.sort_by(|x, y| {
+        if sym_lt(x, y) {
+            std::cmp::Ordering::Less
+        } else if x == y {
+            std::cmp::Ordering::Equal
+        } else {
+            std::cmp::Ordering::Greater
+        }
+    });
+    if matches!(op, AND | OR) {
+        rest.dedup();
+    }
+    if c != e {
+        rest.insert(0, Sym::Lit(c));
+    }
+    let mut it = rest.into_iter().rev();
+    let Some(mut acc) = it.next() else {
+        return Sym::Lit(e);
+    };
+    for s in it {
+        acc = Sym::Bin(op, Box::new(s), Box::new(acc));
+    }
+    acc
+}
+
+fn pow2(k: U256) -> U256 {
+    U256::from(1) << k.to::<usize>()
+}
+
+/// Mirror of the Lean `normOp`.
+fn norm_op(op: u8, a: Sym, b: Sym) -> Sym {
     let zero = Sym::Lit(U256::ZERO);
-    match (op, &a, &b) {
-        (_, Sym::Lit(x), Sym::Lit(y)) => Sym::Lit(bin_value(*op, *x, *y)),
-        (0x01, _, _) if b == zero => a,
-        (0x01, _, _) if a == zero => b,
-        (0x03, _, _) if b == zero => a,
-        (0x16 | 0x17, _, _) if a == b => a,
-        (0x16, _, Sym::Bin(0x16, inner, _)) if **inner == a => b,
-        (0x1b, _, _) if a == zero => b,
-        _ => Sym::Bin(*op, Box::new(a), Box::new(b)),
+    let big = |k: &U256| *k >= U256::from(256);
+    let bin = |f: u8, x: Sym, y: Sym| Sym::Bin(f, Box::new(x), Box::new(y));
+    match (op, a, b) {
+        (SUB, a, b) if a == b => zero,
+        (SUB, a, Sym::Lit(c)) => {
+            let mut l = Vec::new();
+            flat(ADD, a, &mut l);
+            l.push(Sym::Lit(U256::ZERO.wrapping_sub(c)));
+            ac_norm(ADD, U256::ZERO, l)
+        }
+        (0x1b, Sym::Lit(k), _) if big(&k) => zero,
+        (0x1b, Sym::Lit(k), b) => {
+            let mut l = Vec::new();
+            flat(MUL, b, &mut l);
+            l.push(Sym::Lit(pow2(k)));
+            ac_norm(MUL, U256::from(1), l)
+        }
+        (0x1c, Sym::Lit(k), _) if big(&k) => zero,
+        (0x1c, Sym::Lit(k), b) if k.is_zero() => b,
+        (0x1c, Sym::Lit(k), b) => bin(DIV, b, Sym::Lit(pow2(k))),
+        (0x11, a, b) => bin(LT, b, a),
+        (0x13, a, b) => bin(SLT, b, a),
+        (EQ, a, b) if b == zero => Sym::Un(ISZERO, Box::new(a)),
+        (EQ, a, b) if a == zero => Sym::Un(ISZERO, Box::new(b)),
+        (EQ, a, b) if sym_lt(&b, &a) => bin(EQ, b, a),
+        (op, a, b) => bin(op, a, b),
+    }
+}
+
+/// Mirror of the Lean `norm`: a canonical form modulo commutativity,
+/// associativity, identities and a few strength reductions.
+fn norm(s: &Sym) -> Sym {
+    match s {
+        Sym::Un(op, a) => match norm(a) {
+            Sym::Lit(x) if *op == ISZERO => Sym::Lit(U256::from(u8::from(x.is_zero()))),
+            Sym::Lit(x) => Sym::Lit(!x),
+            a => Sym::Un(*op, Box::new(a)),
+        },
+        Sym::Bin(op, a, b) => {
+            let (a, b) = (norm(a), norm(b));
+            if let Some(e) = ident(*op) {
+                let mut l = Vec::new();
+                flat(*op, a, &mut l);
+                flat(*op, b, &mut l);
+                return ac_norm(*op, e, l);
+            }
+            match (&a, &b) {
+                (Sym::Lit(x), Sym::Lit(y))
+                    if matches!(*op, SUB | DIV | 0x06 | LT | 0x11 | EQ | 0x1b | 0x1c) =>
+                {
+                    Sym::Lit(bin_value(*op, *x, *y))
+                }
+                _ => norm_op(*op, a, b),
+            }
+        }
+        s => s.clone(),
     }
 }
 
@@ -463,7 +632,9 @@ fn window_check(old: &[(usize, Vec<u8>)], new: &[(usize, Vec<u8>)]) -> bool {
         let (mut a, mut m, mut heights, mut cost) = (Vec::<Sym>::new(), 0usize, Vec::new(), 0usize);
         for (_, b) in instrs {
             let (need, c) = match b[0] {
-                0x01 | 0x03 | 0x16 | 0x17 | 0x1b => (2, 3),
+                0x02 | 0x04..=0x07 | 0x0b => (2, 5),
+                op if BINARY.contains(&op) => (2, 3),
+                op if UNARY.contains(&op) => (1, 3),
                 0x5f => (0, 2),
                 0x60..=0x7f => (0, 3),
                 op @ 0x80..=0x8f => (usize::from(op - 0x7f), 3),
@@ -479,10 +650,14 @@ fn window_check(old: &[(usize, Vec<u8>)], new: &[(usize, Vec<u8>)]) -> bool {
                 0x5f..=0x7f => a.insert(0, Sym::Lit(U256::from_be_slice(&b[1..]))),
                 op @ 0x80..=0x8f => a.insert(0, a[usize::from(op - 0x80)].clone()),
                 op @ 0x90..=0x9f => a.swap(0, usize::from(op - 0x8f)),
-                op @ (0x01 | 0x03 | 0x16 | 0x17 | 0x1b) => {
+                op if BINARY.contains(&op) => {
                     let x = a.remove(0);
                     let y = a.remove(0);
                     a.insert(0, Sym::Bin(op, Box::new(x), Box::new(y)));
+                }
+                op if UNARY.contains(&op) => {
+                    let x = a.remove(0);
+                    a.insert(0, Sym::Un(op, Box::new(x)));
                 }
                 _ => {
                     a.remove(0);
@@ -930,12 +1105,34 @@ fn wop(bytes: &[u8]) -> String {
         }
         op @ 0x80..=0x8f => format!("WOp.dup {}", op - 0x7f),
         op @ 0x90..=0x9f => format!("WOp.swap {}", op - 0x8f),
-        0x01 => "WOp.bin .add".to_owned(),
-        0x03 => "WOp.bin .sub".to_owned(),
-        0x16 => "WOp.bin .and".to_owned(),
-        0x17 => "WOp.bin .or".to_owned(),
-        0x1b => "WOp.bin .shl".to_owned(),
-        _ => "WOp.pop".to_owned(),
+        0x50 => "WOp.pop".to_owned(),
+        0x15 => "WOp.un .iszero".to_owned(),
+        0x19 => "WOp.un .not".to_owned(),
+        op => {
+            const NAMES: [&str; 20] = [
+                "add",
+                "mul",
+                "sub",
+                "div",
+                "sdiv",
+                "mod",
+                "smod",
+                "signextend",
+                "lt",
+                "gt",
+                "slt",
+                "sgt",
+                "eq",
+                "and",
+                "or",
+                "xor",
+                "byte",
+                "shl",
+                "shr",
+                "sar",
+            ];
+            format!("WOp.bin .{}", NAMES[index(&BINARY, op)])
+        }
     }
 }
 
@@ -1121,9 +1318,53 @@ mod tests {
             plan(&mask, &fewer).unwrap().points[0].1,
             Obligation::Window(_)
         ));
+        // Operands of commutative operators may be reordered.
+        let mask = hex::decode("8060ff1600").unwrap();
+        let swapped = hex::decode("60ff811600").unwrap();
+        assert!(matches!(
+            plan(&mask, &swapped).unwrap().points[0].1,
+            Obligation::Window(_)
+        ));
         // A window that changes the result is rejected before Lean.
         let bad = hex::decode("8061002100").unwrap();
         assert!(plan_err(&original, &bad).contains("unsupported difference"));
+    }
+
+    #[test]
+    fn normalizes_modulo_algebraic_laws() {
+        let x = || Sym::Input(0);
+        let y = || Sym::Input(1);
+        let lit = |v: U256| Sym::Lit(v);
+        let bin = |op: u8, a: Sym, b: Sym| Sym::Bin(op, Box::new(a), Box::new(b));
+        let same = |a: Sym, b: Sym| norm(&a) == norm(&b);
+        assert!(same(bin(0x11, x(), y()), bin(LT, y(), x())));
+        assert!(same(
+            bin(SUB, x(), lit(U256::from(3))),
+            bin(ADD, lit(U256::ZERO.wrapping_sub(U256::from(3))), x())
+        ));
+        assert!(same(
+            bin(0x1c, lit(U256::from(224)), x()),
+            bin(DIV, x(), lit(U256::from(1) << 224))
+        ));
+        assert!(same(
+            bin(0x1b, lit(U256::from(5)), x()),
+            bin(MUL, lit(U256::from(32)), x())
+        ));
+        let m = || lit(U256::from(0xff));
+        assert!(same(
+            bin(AND, x(), bin(AND, m(), y())),
+            bin(AND, bin(AND, y(), x()), bin(AND, m(), x()))
+        ));
+        assert!(same(
+            bin(EQ, x(), lit(U256::ZERO)),
+            Sym::Un(ISZERO, Box::new(x()))
+        ));
+        assert!(same(
+            bin(ADD, bin(ADD, x(), lit(U256::from(3))), lit(U256::from(4))),
+            bin(ADD, lit(U256::from(7)), x())
+        ));
+        assert!(!same(bin(SUB, x(), y()), bin(SUB, y(), x())));
+        assert!(!same(bin(0x12, x(), y()), bin(0x12, y(), x())));
     }
 
     fn plan_err(a: &[u8], b: &[u8]) -> String {

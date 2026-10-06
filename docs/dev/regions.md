@@ -222,11 +222,16 @@ within the per-module budget ([WholeProgram.lean](../../lean/upstream/WholeProgr
 Images up to the EIP-170 limit are accepted. They may differ only at same-width
 `PUSHn 2^k; MUL` → `PUSHn k; SHL` sites and at one-hop threading sites
 `PUSHn X; JUMPI` → `PUSHn Y; JUMPI` where `X` holds the unchanged trampoline
-`JUMPDEST; PUSHm Y; JUMP`, and in straight-line windows of `PUSH`, `DUP`, `SWAP`,
-`POP`, `ADD`, `SUB`, `AND`, `OR` and `SHL`. Both sides of a window are evaluated
-on a symbolic stack; after constant folding and a few proved identities they must
-compute the same stack for every input, need no deeper stack, cost no more gas and
-execute no more instructions. The images must have the same jump table.
+`JUMPDEST; PUSHm Y; JUMP`, and in straight-line windows of stack, arithmetic,
+comparison and bitwise opcodes (all fixed-cost pure opcodes except `ADDMOD`,
+`MULMOD` and `EXP`). Both sides of a window are evaluated on a symbolic stack and
+normalized by a verified rewriter: operands of `ADD`, `MUL`, `AND`, `OR` and `XOR`
+are flattened, sorted and their literals folded, idempotent duplicates and
+identities are dropped, `SHL`/`SHR` by a literal become `MUL`/`DIV` by a power of
+two, `x - c` becomes `x + (-c)`, `GT`/`SGT` become swapped `LT`/`SLT` and
+`EQ x 0` becomes `ISZERO x`. The results must be equal for every input, and the
+candidate must need no deeper stack, cost no more gas and execute no more
+instructions. The images must have the same jump table.
 Reachable instructions must be in the supported profile: stack, arithmetic,
 comparison and bitwise opcodes; memory, `KECCAK256`, calldata, call-context and
 block reads including `BLOCKHASH`; `MCOPY`; `SLOAD`, `SSTORE`, `TLOAD`, `TSTORE`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`,
