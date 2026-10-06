@@ -4,20 +4,23 @@
 
 **Verified gas optimization for deployed EVM contracts.**
 
-[Quick start](#quick-start) | [Commands](docs/cli.md) | [Verification](docs/verification.md) | [Agent guide](AGENTS.md)
+[Quick start](#quick-start) | [Results](docs/results.md) | [Commands](docs/cli.md) | [Verification](docs/verification.md) | [Agent guide](AGENTS.md)
 
 </div>
 
 ---
 
-EVM Golf rewrites deployed runtime bytecode to use less gas. Every accepted change
-is checked twice: Lean proves the rewritten instructions equivalent in a bounded
-model, and revm replays your transactions against both versions with guarded
-calls and effects. Byte offsets never move, so jump tables and code copies stay
-valid.
+EVM Golf rewrites deployed runtime bytecode to use less gas. It accepts a change
+only if Lean proves it and revm replays your transactions with the same results.
 
-Bring your own agents: they read a contract, propose exact byte patches, and the
-checker accepts only what it can prove and replay.
+## Highlights
+
+- ⛳ Saves 14 gas per `transfer` on a usual ERC20 build, and up to 182 gas per
+  `withdraw` on an unoptimized ERC4626 vault ([results](docs/results.md)).
+- ✅ Every change is proved in Lean and replayed in revm before it is accepted.
+- 📐 Byte offsets never move, so jump tables and code copies stay valid.
+- 🤖 Bring your own agents: they propose byte patches, and the checker keeps
+  only what it can prove and replay.
 
 ## Quick start
 
@@ -26,7 +29,20 @@ git clone https://github.com/figtracer/evm-golf.git
 cd evm-golf
 bash scripts/setup-lean.sh   # pinned Lean 4.34.0 inside the checkout
 cargo build --locked
+cargo run --locked -- optimize examples/quickstart/project.json --out runs/demo
 ```
+
+The last command optimizes [a small example](examples/quickstart) and prints
+what it saved:
+
+```text
+demo: 21030 -> 21024 gas over 1 transactions (1 rewrites)
+  fallback: 6 gas saved per call (1 calls)
+Results: runs/demo/result.json
+Next baseline: runs/demo/baseline/project.json
+```
+
+## Use your own contracts
 
 Describe your contracts in a `project.json`. Paths are relative to the file:
 
@@ -39,8 +55,8 @@ Describe your contracts in a `project.json`. Paths are relative to the file:
 }
 ```
 
-`runtime` is the deployed bytecode in hex. `scenarios` lists accounts and
-transactions to replay ([format](docs/cli.md#scenarios)). Then:
+`runtime` is the deployed bytecode in hex. `scenarios` lists the accounts and
+transactions to replay ([format](docs/cli.md#scenarios)). Then run one of:
 
 ```sh
 evm-golf optimize project.json --out runs/opt-1        # built-in search, verified
@@ -48,55 +64,12 @@ evm-golf inspect project.json > proposals.json         # discovered, unverified 
 evm-golf verify project.json --proposals proposals.json --out runs/check-1
 ```
 
-Each run prints and writes the gas saved per call for each function, for
-example `transfer(address,uint256): 0 to 15 gas saved per call (5 calls)`. A
-function can save different amounts on different paths, so the report gives a
-range.
-`result.json` also has the totals, and `baseline/project.json` is a ready-to-use
-project pointing at the accepted bytecode.
+Each run prints the gas saved per call for each function. A function can save
+different amounts on different paths, so the report gives a range, for example
+`transfer(address,uint256): 0 to 15 gas saved per call (5 calls)`.
+`result.json` has the same data and the totals. `baseline/project.json` points
+at the accepted bytecode, so you can continue from it.
 Use `cargo run --locked --` in place of `evm-golf` if it is not installed.
-Try it on [examples/quickstart](examples/quickstart):
-`cargo run --locked -- optimize examples/quickstart/project.json --out runs/demo`.
-
-## Results
-
-We ran `optimize` with default settings on 36 builds of real token contracts:
-ERC20 and ERC4626 vaults from OpenZeppelin, Solady and Solmate, compiled with
-legacy and via-IR, optimizer off, 200 and 10,000 runs. Every change was proved
-and replayed.
-
-**Gas saved each time a function is called**
-
-| Function | Usual saving | Best saving | Builds tested |
-| --- | ---: | ---: | ---: |
-| `transfer` | 14 gas | 33 gas | 18 |
-| `transferFrom` | 15.5 gas | 44 gas | 18 |
-| `approve` | 9 gas | 23 gas | 18 |
-| `balanceOf` | 3 gas | 15 gas | 36 |
-| `deposit` | 6 gas | 128 gas | 18 |
-| `mint` | 10 gas | 116 gas | 18 |
-| `withdraw` | 10.5 gas | 182 gas | 18 |
-| `redeem` | 10.5 gas | 118 gas | 18 |
-
-How to read a row: on a usual build, each `transfer` call costs 14 gas less
-after optimization. On the best build, it costs 33 gas less. "Usual" is the
-median over the builds whose test transactions call that function.
-
-Builds compiled without the optimizer save the most, mostly from jump
-threading. Code that was already optimized (Balancer vault, Uniswap V3 pool)
-still saves 6 to 10 gas per transaction. These numbers are execution gas only.
-The fixed transaction cost and storage writes stay the same.
-
-**Examples of accepted rewrites**
-
-| Before | After | Gas saved each time it runs |
-| --- | --- | ---: |
-| `PUSH1 0x20 DUP2 SWAP1` | `DUP1 PUSH2 0x0020` | 3 |
-| `PUSH1 a PUSH1 0x20 SWAP1` | `PUSH1 0x20 PUSH2 a` | 3 |
-| `POP PUSH2 c SWAP3 POP POP POP` | `POP POP POP POP PUSH3 c` | 3 |
-| `PUSH2 X JUMPI`, X: `JUMPDEST PUSH2 Y JUMP` | `PUSH2 Y JUMPI` | 12, if the jump is taken |
-
-The wider PUSH keeps every byte offset unchanged.
 
 ## What is and is not proven
 
@@ -117,7 +90,7 @@ proves the whole contract against EVMYulLean, a formal model of the EVM. See
 
 ## Documentation
 
-[Commands and formats](docs/cli.md), [runtime support](docs/runtime.md),
+[Commands and formats](docs/cli.md), [results](docs/results.md), [runtime support](docs/runtime.md),
 [verification](docs/verification.md), [development](docs/dev/README.md) and
 [contributing](CONTRIBUTING.md).
 
