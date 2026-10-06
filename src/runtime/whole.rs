@@ -115,7 +115,8 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
     for (name, source) in &modules {
         fs::write(out.join(format!("{name}.lean")), source)?;
     }
-    let lean_version = proof::verify_region(out, proof::RegionKind::Whole(modules.len() - 2))?;
+    let names: Vec<String> = modules.iter().map(|(name, _)| name.clone()).collect();
+    let lean_version = proof::verify_region(out, proof::RegionKind::Whole(&names))?;
     let report = WholeCertificate {
         claim: "whole-program refinement of the code-execution function Ξ and its interpreter X",
         original_keccak256: keccak256(original).to_string(),
@@ -439,7 +440,9 @@ fn bin_value(op: u8, a: U256, b: U256) -> U256 {
 
 /// Mirror of the Lean `norm`: constant folding and a few identities.
 fn norm(s: &Sym) -> Sym {
-    let Sym::Bin(op, a, b) = s else { return s.clone() };
+    let Sym::Bin(op, a, b) = s else {
+        return s.clone();
+    };
     let (a, b) = (norm(a), norm(b));
     let zero = Sym::Lit(U256::ZERO);
     match (op, &a, &b) {
@@ -679,12 +682,32 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
             .unwrap();
             names.push(name);
         }
+        // Tails let each decode fact drop at most one chunk in the kernel.
+        let n = names.len();
+        for i in (0..n).rev() {
+            let body = if i + 1 == n {
+                format!("{side}Chunk{i}")
+            } else {
+                format!("{side}Chunk{i} ++ {side}Tail{}", i + 1)
+            };
+            writeln!(image, "def {side}Tail{i} : List Nat := {body}").unwrap();
+        }
         writeln!(
             image,
-            "def {side}Bytes : List Nat := {}\ndef {side}Code : ByteArray := ofBytes {side}Bytes",
-            nested(&names)
+            "def {side}Bytes : List Nat := {side}Tail0\ndef {side}Code : ByteArray := ofBytes {side}Bytes\ntheorem {side}Drop0 : {side}Bytes.drop 0 = {side}Tail0 := rfl"
         )
         .unwrap();
+        for i in 1..n {
+            writeln!(
+                image,
+                "theorem {side}Drop{i} : {side}Bytes.drop {} = {side}Tail{i} :=\n  drop_step (k := {}) (n := {BYTES_PER_CHUNK}) {side}Drop{} rfl (by decide +kernel)",
+                i * BYTES_PER_CHUNK,
+                (i - 1) * BYTES_PER_CHUNK,
+                i - 1
+            )
+            .unwrap();
+        }
+        let _ = nested;
     }
     let chunks: Vec<_> = plan.points.chunks(POINTS_PER_MODULE).collect();
     let chunk_of = |pc: usize| {
@@ -719,22 +742,99 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
         )
         .unwrap();
     }
-    image.push_str(
-        "
-theorem targets : ∀ x, jumps.contains x = true → P x :=
-  jumps_points jumpsN pointsN (by decide +kernel)
-theorem old_jumps : D_J oldCode (UInt256.ofNat 0) = jumps := by
-  rw [show oldCode = ofBytes oldBytes from rfl, dj_scan oldBytes (by decide +kernel) (by decide +kernel)]
-  decide +kernel
-theorem new_jumps : D_J newCode (UInt256.ofNat 0) = jumps := by
-  rw [show newCode = ofBytes newBytes from rfl, dj_scan newBytes (by decide +kernel) (by decide +kernel)]
-  decide +kernel
-end GolfWholeCertificate
-",
-    );
+    image.push_str("end GolfWholeCertificate\n");
     modules.push(("WholeImage".to_owned(), image));
+    // Per-block scanner states and byte bounds, checked in separate modules.
+    let mut block_modules = Vec::new();
+    let mut jumps_proof = String::new();
+    for (side, code) in [("old", original), ("new", candidate)] {
+        let chunks: Vec<&[u8]> = code.chunks(BYTES_PER_CHUNK).collect();
+        // Scanner state (pending immediate bytes, pc) and each block's own jumpdests.
+        let mut state = (0usize, 0usize);
+        let mut states = Vec::new();
+        let mut locals: Vec<Vec<usize>> = Vec::new();
+        for chunk in &chunks {
+            states.push(state);
+            let (mut k, mut pc) = state;
+            let mut local = Vec::new();
+            for &b in *chunk {
+                if k == 0 {
+                    if b == 0x5b {
+                        local.push(pc);
+                    }
+                    k = push_width(b);
+                } else {
+                    k -= 1;
+                }
+                pc += 1;
+            }
+            locals.push(local);
+            state = (k, pc);
+        }
+        states.push(state);
+        let prefix = |i: usize| -> Vec<usize> { locals[..i].concat() };
+        for (group, indices) in (0..chunks.len()).collect::<Vec<_>>().chunks(6).enumerate() {
+            let name = format!(
+                "WholeBlocks{}{group}",
+                if side == "old" { "Old" } else { "New" }
+            );
+            let mut m = format!("import WholeImage\n{HEADER}");
+            for &i in indices {
+                let (k, pc) = states[i];
+                let (k2, pc2) = states[i + 1];
+                writeln!(
+                    m,
+                    "theorem {side}Scan{i} : scanS {side}Chunk{i} {k} {pc} #[] = ({k2}, {pc2}, {}) := by decide +kernel\ntheorem {side}Bound{i} : ∀ x ∈ {side}Chunk{i}, x < 256 := by decide +kernel\ntheorem {side}Len{i} : {side}Chunk{i}.length = {} := by decide +kernel",
+                    word_array(&locals[i]),
+                    chunks[i].len()
+                )
+                .unwrap();
+            }
+            m.push_str("end GolfWholeCertificate\n");
+            block_modules.push(name.clone());
+            modules.push((name, m));
+        }
+        let n = chunks.len();
+        let last = n - 1;
+        let (k, pc) = states[last];
+        writeln!(
+            jumps_proof,
+            "theorem {side}ScanT{last} : scanL {side}Tail{last} {k} {pc} {} = jumps := scan_last' {side}Scan{last} (by decide +kernel)\ntheorem {side}BoundT{last} : ∀ x ∈ {side}Tail{last}, x < 256 := {side}Bound{last}\ntheorem {side}LenT{last} : {side}Tail{last}.length = {} := {side}Len{last}",
+            word_array(&prefix(last)),
+            chunks[last].len()
+        )
+        .unwrap();
+        for i in (0..last).rev() {
+            let (k, pc) = states[i];
+            writeln!(
+                jumps_proof,
+                "theorem {side}ScanT{i} : scanL {side}Tail{i} {k} {pc} {} = jumps := scan_block' {side}Scan{i} (by decide +kernel) {side}ScanT{}\ntheorem {side}BoundT{i} : ∀ x ∈ {side}Tail{i}, x < 256 := bound_append {side}Bound{i} {side}BoundT{}\ntheorem {side}LenT{i} : {side}Tail{i}.length = {} := length_block {side}Len{i} {side}LenT{}",
+                word_array(&prefix(i)),
+                i + 1,
+                i + 1,
+                code.len() - i * BYTES_PER_CHUNK,
+                i + 1
+            )
+            .unwrap();
+        }
+        writeln!(
+            jumps_proof,
+            "theorem {side}_jumps : D_J {side}Code (UInt256.ofNat 0) = jumps := by\n  rw [show {side}Code = ofBytes {side}Bytes from rfl, dj_scan {side}Bytes {side}BoundT0 (by rw [show {side}Bytes = {side}Tail0 from rfl, {side}LenT0]; decide)]\n  exact {side}ScanT0"
+        )
+        .unwrap();
+    }
+    let block_imports: String = block_modules
+        .iter()
+        .map(|m| format!("import {m}\n"))
+        .collect();
+    modules.push((
+        "WholeJumps".to_owned(),
+        format!(
+            "{block_imports}{HEADER}{jumps_proof}\ntheorem targets : ∀ x, jumps.contains x = true → P x :=\n  jumps_points jumpsN pointsN (by decide +kernel)\nend GolfWholeCertificate\n"
+        ),
+    ));
     for (k, chunk) in chunks.iter().enumerate() {
-        let mut s = format!("import WholeImage\n{HEADER}");
+        let mut s = format!("import WholeJumps\n{HEADER}");
         for (pc, obligation) in *chunk {
             writeln!(
                 s,
@@ -839,14 +939,42 @@ fn wop(bytes: &[u8]) -> String {
     }
 }
 
+fn word_array(values: &[usize]) -> String {
+    let words: Vec<String> = values
+        .iter()
+        .map(|v| format!("UInt256.ofNat {v}"))
+        .collect();
+    format!("#[{}]", words.join(", "))
+}
+
+fn tail2(side: &str, at: usize) -> String {
+    let i = at / BYTES_PER_CHUNK;
+    format!(
+        "{side}Bytes {side}Tail{i} {} {at} (by decide +kernel) {side}Drop{i} (by decide)",
+        i * BYTES_PER_CHUNK
+    )
+}
+
 fn obligation_term(
     pc: usize,
     obligation: &Obligation,
     chunk_of: &dyn Fn(usize) -> usize,
 ) -> String {
     const K: &str = "(by decide +kernel)";
-    let old = |at: usize| format!("(decode_fact oldBytes {at} (by decide) {K})");
-    let new = |at: usize| format!("(decode_fact newBytes {at} (by decide) {K})");
+    let tail = |side: &str, at: usize| {
+        let i = at / BYTES_PER_CHUNK;
+        format!(
+            "{side}Bytes {side}Tail{i} {} {at} {side}Drop{i} (by decide)",
+            i * BYTES_PER_CHUNK
+        )
+    };
+    let fact = |side: &str, at: usize| format!("(decode_tail {} (by decide) {K})", tail(side, at));
+    let fact2 =
+        |side: &str, at: usize| format!("(decode_tail' {} (by decide) {K})", tail2(side, at));
+    let get =
+        |side: &str, at: usize| format!("(decode_tail_getD {} (by decide) {K})", tail(side, at));
+    let old = |at: usize| fact("old", at);
+    let new = |at: usize| fact("new", at);
     let next = |target: usize| {
         format!(
             "(next_of (target := {target}) {K} (in_chunk{} {K}))",
@@ -868,10 +996,14 @@ fn obligation_term(
             which,
             congruent,
         } => format!(
-            ".halt _ {op} none {congruent} {which} (decode_getD oldBytes {pc} (by decide) {K}) (decode_getD newBytes {pc} (by decide) {K})"
+            ".halt _ {op} none {congruent} {which} {} {}",
+            get("old", pc),
+            get("new", pc)
         ),
         Obligation::FallOff => format!(
-            ".halt _ Operation.STOP none congruent_stop (Or.inl rfl) (decode_getD oldBytes {pc} (by decide) {K}) (decode_getD newBytes {pc} (by decide) {K})"
+            ".halt _ Operation.STOP none congruent_stop (Or.inl rfl) {} {}",
+            get("old", pc),
+            get("new", pc)
         ),
         Obligation::Invalid => format!(".invalid _ {}", old(pc)),
         Obligation::Thread(site) => {
@@ -879,10 +1011,14 @@ fn obligation_term(
             let push2 = site.from + 1;
             let jump = push2 + site.to_width + 1;
             format!(
-                ".segment _ (fun owner nj hj => thread_segment owner oldCode newCode jumps nj P (UInt256.ofNat {pc}) .PUSH{w} .PUSH{m} {w} {m} (UInt256.ofNat {from}) (UInt256.ofNat {to}) (by decide) (by decide) {} {} (decode_fact' oldBytes {jumpi} {K} (by decide) {K}) (decode_fact' newBytes {jumpi} {K} (by decide) {K}) {} (decode_fact' oldBytes {push2} {K} (by decide) {K}) (decode_fact' oldBytes {jump} {K} (by decide) {K}) {} (mem_points (in_chunk{} {K})) hj)",
+                ".segment _ (fun owner nj hj => thread_segment owner oldCode newCode jumps nj P (UInt256.ofNat {pc}) .PUSH{w} .PUSH{m} {w} {m} (UInt256.ofNat {from}) (UInt256.ofNat {to}) (by decide) (by decide) {} {} {} {} {} {} {} {} (mem_points (in_chunk{} {K})) hj)",
                 old(pc),
                 new(pc),
+                fact2("old", jumpi),
+                fact2("new", jumpi),
                 old(site.from),
+                fact2("old", push2),
+                fact2("old", jump),
                 next(jumpi + 1),
                 chunk_of(site.to),
                 w = site.width,
@@ -901,10 +1037,11 @@ fn obligation_term(
                 for (i, (at, bytes)) in instrs.iter().enumerate().rev() {
                     let after = at + bytes.len();
                     term = format!(
-                        "(WCode.cons (UInt256.ofNat {at}) (UInt256.ofNat {after}) (UInt256.ofNat {}) ({}) {} (by decide) (decode_fact {side}Bytes {at} (by decide) {K}) {K} {term})",
+                        "(WCode.cons (UInt256.ofNat {at}) (UInt256.ofNat {after}) (UInt256.ofNat {}) ({}) {} (by decide) {} {K} {term})",
                         site.end,
                         wop(bytes),
                         ops(&instrs[i + 1..]),
+                        fact(side, *at),
                     );
                 }
                 term
@@ -922,9 +1059,11 @@ fn obligation_term(
         Obligation::Power(site) => {
             let mul = site.pc + site.width + 1;
             format!(
-                ".power _ .PUSH{w} {w} {k} (by decide) (by decide) ⟨{}, (decode_fact' oldBytes {mul} {K} (by decide) {K})⟩ ⟨{}, (decode_fact' newBytes {mul} {K} (by decide) {K})⟩ {}",
+                ".power _ .PUSH{w} {w} {k} (by decide) (by decide) ⟨{}, {}⟩ ⟨{}, {}⟩ {}",
                 old(pc),
+                fact2("old", mul),
                 new(pc),
+                fact2("new", mul),
                 next(mul + 1),
                 w = site.width,
                 k = site.exponent
@@ -978,7 +1117,10 @@ mod tests {
         // An idempotent mask: x AND m AND m -> x AND m.
         let mask = hex::decode("60ff1660ff1600").unwrap();
         let fewer = hex::decode("60ff1660ff5000").unwrap();
-        assert!(matches!(plan(&mask, &fewer).unwrap().points[0].1, Obligation::Window(_)));
+        assert!(matches!(
+            plan(&mask, &fewer).unwrap().points[0].1,
+            Obligation::Window(_)
+        ));
         // A window that changes the result is rejected before Lean.
         let bad = hex::decode("8061002100").unwrap();
         assert!(plan_err(&original, &bad).contains("unsupported difference"));

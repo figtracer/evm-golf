@@ -168,6 +168,89 @@ theorem decode_fact' (l : List Nat) (n : Nat) {p : UInt256} {x : Operation .EVM 
     decode (ofBytes l) p = some x := by
   rw [hp]; exact decode_fact l n small h
 
+theorem tail_drop {l t : List Nat} {k pc : Nat} (hk : l.drop k = t) (hle : k ≤ pc) :
+    l.drop pc = t.drop (pc - k) := by
+  rw [← hk, List.drop_drop]; congr 1; omega
+
+theorem decode_tail (l t : List Nat) (k pc : Nat) {x : Operation .EVM × Option (UInt256 × Nat)}
+    (hk : l.drop k = t) (hle : k ≤ pc) (small : pc + 40 < 2^64)
+    (h : decodeL (t.drop (pc - k)) = some x) : decode (ofBytes l) (UInt256.ofNat pc) = some x := by
+  rw [decode_ofBytes l pc small, tail_drop hk hle, h]
+
+theorem decode_tail' (l t : List Nat) (k n : Nat) {p : UInt256}
+    {x : Operation .EVM × Option (UInt256 × Nat)} (hp : p = UInt256.ofNat n)
+    (hk : l.drop k = t) (hle : k ≤ n) (small : n + 40 < 2^64)
+    (h : decodeL (t.drop (n - k)) = some x) : decode (ofBytes l) p = some x := by
+  rw [hp]; exact decode_tail l t k n hk hle small h
+
+theorem decode_tail_getD (l t : List Nat) (k pc : Nat) {x : Operation .EVM × Option (UInt256 × Nat)}
+    (hk : l.drop k = t) (hle : k ≤ pc) (small : pc + 40 < 2^64)
+    (h : (decodeL (t.drop (pc - k))).getD (.STOP, .none) = x) :
+    (decode (ofBytes l) (UInt256.ofNat pc)).getD (.STOP, .none) = x := by
+  rw [decode_ofBytes l pc small, tail_drop hk hle, h]
+
+theorem drop_step {l t c rest : List Nat} {k n : Nat} (hk : l.drop k = t) (ht : t = c ++ rest)
+    (hc : c.length = n) : l.drop (k + n) = rest := by
+  rw [← List.drop_drop, hk, ht, List.drop_left' hc]
+
+/-- The scanner state after a byte block, so a long scan can be checked per block. -/
+def scanS : List Nat → Nat → Nat → Array UInt256 → Nat × Nat × Array UInt256
+  | [], k, pc, acc => (k, pc, acc)
+  | b :: rest, 0, pc, acc =>
+    scanS rest (width b) (pc + 1) (if b = 91 then acc.push (UInt256.ofNat pc) else acc)
+  | _ :: rest, k + 1, pc, acc => scanS rest k (pc + 1) acc
+
+theorem scanL_append : ∀ (a b : List Nat) (k pc : Nat) (acc : Array UInt256),
+    scanL (a ++ b) k pc acc = scanL b (scanS a k pc acc).1 (scanS a k pc acc).2.1 (scanS a k pc acc).2.2
+  | [], _, _, _, _ => rfl
+  | x :: xs, b, 0, pc, acc => by simp only [List.cons_append, scanL, scanS]; exact scanL_append xs b _ _ _
+  | x :: xs, b, k + 1, pc, acc => by simp only [List.cons_append, scanL, scanS]; exact scanL_append xs b _ _ _
+
+theorem scan_block {c rest : List Nat} {k pc k' pc' : Nat} {acc acc' r : Array UInt256}
+    (h : scanS c k pc acc = (k', pc', acc')) (next : scanL rest k' pc' acc' = r) :
+    scanL (c ++ rest) k pc acc = r := by
+  rw [scanL_append, h]; exact next
+
+theorem scan_last {c : List Nat} {k pc k' pc' : Nat} {acc acc' : Array UInt256}
+    (h : scanS c k pc acc = (k', pc', acc')) : scanL c k pc acc = acc' := by
+  have := scanL_append c [] k pc acc
+  rw [List.append_nil] at this
+  rw [this, h]; rfl
+
+theorem scanS_acc : ∀ (c : List Nat) (k pc : Nat) (acc : Array UInt256),
+    scanS c k pc acc = ((scanS c k pc #[]).1, (scanS c k pc #[]).2.1, acc ++ (scanS c k pc #[]).2.2)
+  | [], k, pc, acc => by simp [scanS]
+  | b :: rest, 0, pc, acc => by
+    simp only [scanS]
+    rw [scanS_acc rest _ _ (if b = 91 then acc.push _ else acc),
+      scanS_acc rest _ _ (if b = 91 then (#[] : Array UInt256).push _ else #[])]
+    split <;> simp [Array.append_assoc]
+  | _ :: rest, k + 1, pc, acc => by
+    simp only [scanS]; exact scanS_acc rest k (pc + 1) acc
+
+theorem scan_block' {c rest : List Nat} {k pc k' pc' : Nat} {acc loc acc' r : Array UInt256}
+    (h : scanS c k pc #[] = (k', pc', loc)) (hacc : (acc ++ loc).toList = acc'.toList)
+    (next : scanL rest k' pc' acc' = r) : scanL (c ++ rest) k pc acc = r := by
+  rw [scanL_append, scanS_acc, h]; rw [← Array.toList_inj.mp hacc] at next; exact next
+
+theorem scan_last' {c : List Nat} {k pc k' pc' : Nat} {acc loc acc' : Array UInt256}
+    (h : scanS c k pc #[] = (k', pc', loc)) (hacc : (acc ++ loc).toList = acc'.toList) :
+    scanL c k pc acc = acc' := by
+  have := scanL_append c [] k pc acc
+  rw [List.append_nil] at this
+  rw [this, scanS_acc, h, ← Array.toList_inj.mp hacc]; rfl
+
+theorem bound_append {a b : List Nat} (ha : ∀ x ∈ a, x < 256) (hb : ∀ x ∈ b, x < 256) :
+    ∀ x ∈ a ++ b, x < 256 := by
+  intro x hx
+  rcases List.mem_append.mp hx with h | h
+  · exact ha x h
+  · exact hb x h
+
+theorem length_block {a b : List Nat} {m n : Nat} (ha : a.length = m) (hb : b.length = n) :
+    (a ++ b).length = m + n := by
+  rw [List.length_append, ha, hb]
+
 #print axioms dj_scan
 #print axioms decode_ofBytes
 

@@ -80,8 +80,9 @@ pub(crate) enum RegionKind<'a> {
     CallEntry(&'a MemoryPlan, TerminalKind),
     MemoryJump(&'a MemoryPlan, &'a JumpPlan),
     SpanJump(&'a SpanPlan, &'a JumpPlan),
-    /// Whole-program certificate split into this many point modules.
-    Whole(usize),
+    /// Whole-program certificate modules, in compilation order; the last is the
+    /// certificate whose theorems are audited.
+    Whole(&'a [String]),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1598,15 +1599,19 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             modules
         }
         RegionKind::PowerJump(plan) => plan.generated_modules(),
-        RegionKind::Whole(chunks) => std::iter::once(("WholeImage".to_owned(), Vec::new()))
-            .chain((0..chunks).map(|i| (format!("WholePoints{i}"), Vec::new())))
-            .chain(std::iter::once((
-                "WholeCertificate".to_owned(),
-                vec![
-                    "GolfWholeCertificate.whole_certificate".to_owned(),
-                    "GolfWholeCertificate.xi_certificate".to_owned(),
-                ],
-            )))
+        RegionKind::Whole(names) => names
+            .iter()
+            .map(|name| {
+                let roots = if name == "WholeCertificate" {
+                    vec![
+                        "GolfWholeCertificate.whole_certificate".to_owned(),
+                        "GolfWholeCertificate.xi_certificate".to_owned(),
+                    ]
+                } else {
+                    Vec::new()
+                };
+                (name.clone(), roots)
+            })
             .collect(),
         RegionKind::SpanJump(span, jump) => {
             let mut modules = span.modules();
