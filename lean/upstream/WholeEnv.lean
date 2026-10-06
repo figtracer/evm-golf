@@ -109,6 +109,18 @@ theorem same_balance : Same .BALANCE :=
       cases hp : u.stack.pop with
       | none => rw [hp] at run; cases run
       | some p => obtain ⟨_, _⟩ := p; rw [hp] at run; injection run with run; subst run; rfl)
+    (fun arg u v run => by
+      have e : EvmYul.step (.BALANCE : Operation .EVM) arg u =
+          (match u.stack.pop with
+            | some ⟨s, μ₀⟩ =>
+              Except.ok (({ u with toState := (EvmYul.State.balance u.toState μ₀).1 } : State).replaceStackAndIncrPC
+                (s.push (EvmYul.State.balance u.toState μ₀).2))
+            | _ => Except.error .StackUnderflow : Except EVM.ExecutionException State) := rfl
+      simp only [] at run
+      rw [e] at run
+      cases hp : u.stack.pop with
+      | none => rw [hp] at run; cases run
+      | some p => obtain ⟨_, _⟩ := p; rw [hp] at run; injection run with run; subst run; rfl)
     (fun _ => by simp [H])
 
 theorem selfbalance_value {owner old new surplus skipped u u'}
@@ -138,12 +150,21 @@ theorem same_selfbalance : Same .SELFBALANCE :=
   same_of (fun _ => EVM.stateOp EvmYul.State.selfbalance) (fun _ _ _ _ => rfl)
     (fun _ => selfbalance_preserves) (fun _ _ _ => rfl)
     (fun arg u v run => by unfold EVM.stateOp at run; injection run with run; subst run; rfl)
+    (fun arg u v run => by unfold EVM.stateOp at run; injection run with run; subst run; rfl)
     (fun _ => by simp [H])
 
 /-! Code-size reads, congruent when both images have the same size. -/
 
 theorem codesize_at {old new : ByteArray} (h : old.size = new.size) : CongruentAt old new .CODESIZE := by
-  refine ⟨fun _ _ _ _ _ => rfl, fun _ => rfl, ?_⟩
+  refine ⟨fun _ _ _ _ _ => rfl, fun _ => rfl, ?_, ?_⟩
+  swap
+  · intro f c arg u v enough step
+    change EVM.executionEnvOp (.ofNat ∘ ByteArray.size ∘ ExecutionEnv.code) (bump u c) = .ok v at step
+    unfold EVM.executionEnvOp at step
+    injection step with step
+    subst step
+    show (bump u c).gasAvailable.toNat ≤ u.gasAvailable.toNat
+    rw [bump_gas u c enough]; exact Nat.sub_le _ _
   intro owner surplus skipped u u' v f g c arg rel enough step
   have rb := rel_bump rel c enough
   change EVM.executionEnvOp (.ofNat ∘ ByteArray.size ∘ ExecutionEnv.code) (bump u c) = .ok v at step
@@ -184,7 +205,25 @@ theorem extcodesize_value {owner old new surplus skipped u u'} (size : old.size 
 
 theorem extcodesize_at {old new : ByteArray} (size : old.size = new.size) :
     CongruentAt old new .EXTCODESIZE := by
-  refine ⟨fun _ _ _ _ _ => rfl, fun h => (congrArg (fun x => C' x .EXTCODESIZE) h.frame).symm, ?_⟩
+  refine ⟨fun _ _ _ _ _ => rfl, fun h => (congrArg (fun x => C' x .EXTCODESIZE) h.frame).symm, ?_, ?_⟩
+  swap
+  · intro f c arg u v enough step
+    have e : EVM.step (f + 1) c (some (.EXTCODESIZE, arg)) u =
+        (match (bump u c).stack.pop with
+          | some ⟨s, μ₀⟩ =>
+            Except.ok (({ bump u c with toState := (EvmYul.State.extCodeSize (bump u c).toState μ₀).1 } : State).replaceStackAndIncrPC
+              (s.push (EvmYul.State.extCodeSize (bump u c).toState μ₀).2))
+          | _ => Except.error .StackUnderflow : Except EVM.ExecutionException State) := rfl
+    rw [e] at step
+    cases hp : (bump u c).stack.pop with
+    | none => rw [hp] at step; cases step
+    | some p =>
+      obtain ⟨_, _⟩ := p
+      rw [hp] at step
+      injection step with step
+      subst step
+      show (bump u c).gasAvailable.toNat ≤ u.gasAvailable.toNat
+      rw [bump_gas u c enough]; exact Nat.sub_le _ _
   intro owner surplus skipped u u' v f g c arg rel enough step
   have rb := rel_bump rel c enough
   have st := rel_stack rb

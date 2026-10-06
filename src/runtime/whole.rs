@@ -33,8 +33,10 @@ pub struct WholeCertificate {
     pub power_sites: Vec<usize>,
     pub thread_sites: Vec<usize>,
     pub window_sites: Vec<usize>,
-    pub assumptions: [&'static str; 3],
-    pub unproved: [&'static str; 4],
+    /// CALL and STATICCALL instructions, with the GAS directly before them.
+    pub call_sites: Vec<usize>,
+    pub assumptions: Vec<&'static str>,
+    pub unproved: Vec<&'static str>,
     pub lean_version: String,
 }
 
@@ -63,6 +65,32 @@ struct WindowSite {
     end: usize,
     old: Vec<(usize, Vec<u8>)>,
     new: Vec<(usize, Vec<u8>)>,
+}
+
+/// A CALL or STATICCALL, optionally with the GAS that feeds it directly before.
+#[derive(Clone)]
+struct CallSite {
+    op: u8,
+    /// Stack inputs of the call opcode.
+    inputs: usize,
+    gas_first: bool,
+}
+
+impl CallSite {
+    fn len(&self) -> usize {
+        if self.gas_first { 2 } else { 1 }
+    }
+    /// Slots popped from the stack at the point: GAS pushes the gas argument itself.
+    fn pop(&self) -> usize {
+        self.inputs - usize::from(self.gas_first)
+    }
+    fn lean(&self) -> (&'static str, &'static str) {
+        if self.op == 0xf1 {
+            ("Operation.CALL", "CallOp.call")
+        } else {
+            ("Operation.STATICCALL", "CallOp.staticcall")
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -109,6 +137,7 @@ enum Obligation {
     Power(PowerSite),
     Thread(ThreadSite),
     Window(WindowSite),
+    Call(CallSite),
 }
 
 pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCertificate> {
@@ -149,17 +178,35 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
                 matches!(obligation, Obligation::Window(_)).then_some(*pc)
             })
             .collect(),
-        assumptions: [
-            "Ξ: a fresh call frame whose current and original account maps differ only in the owner's deployed code; X: states at pc 0 equal except deployed code, execution count and extra candidate gas",
-            "valid jump tables are computed by the checked-scanner profile of D_J",
-            "if the original returns success or revert, so does the candidate, with equal output; on success, related account maps, equal substate and no less gas; on revert, no less gas",
-        ],
-        unproved: [
-            "Θ and Υ for calls and transactions that do not target the owner directly",
-            "opcodes outside the supported profile: calls, creation, GAS, CODECOPY, EXTCODECOPY, EXTCODEHASH and SELFDESTRUCT",
-            "exceptional original runs (the claim is conditioned on original success or revert)",
-            "revm correspondence",
-        ],
+        call_sites: plan
+            .points()
+            .filter_map(|(pc, obligation)| matches!(obligation, Obligation::Call(_)).then_some(*pc))
+            .collect(),
+        assumptions: {
+            let mut list = vec![
+                "Ξ: a fresh call frame whose current and original account maps differ only in the owner's deployed code; X: states at pc 0 equal except deployed code, execution count and extra candidate gas",
+                "valid jump tables are computed by the checked-scanner profile of D_J",
+                "if the original returns success or revert, so does the candidate with the same fuel or more, with equal output; on success, related account maps, equal substate and no less gas; on revert, no less gas; the candidate never ends with more gas than it started with",
+            ];
+            if plan.calls() {
+                list.push("CalleeSummary: a callee other than the owner's code, run on related account maps with at least the original's gas, returns the same created set, substate, status and output, related account maps, no less gas than the original and no more than it was given; the original's callee keeps the owner's account");
+                list.push("Reentry: calls back into the owner's code return success or revert in the original run");
+                list.push("the owner is not a precompile address");
+            }
+            list
+        },
+        unproved: {
+            let mut list = vec![
+                "Θ and Υ for calls and transactions that do not target the owner directly",
+                "opcodes outside the supported profile: DELEGATECALL, CALLCODE, creation, CODECOPY, EXTCODECOPY, EXTCODEHASH, SELFDESTRUCT, and GAS that does not directly feed CALL or STATICCALL",
+                "exceptional original runs (the claim is conditioned on original success or revert)",
+                "revm correspondence",
+            ];
+            if plan.calls() {
+                list.push("callee behaviour outside CalleeSummary and Reentry, for example a callee that reads the owner's code or that runs out of gas only in the original");
+            }
+            list
+        },
         lean_version,
     };
     fs::write(
@@ -179,6 +226,11 @@ struct Plan {
 impl Plan {
     fn points(&self) -> impl Iterator<Item = (&usize, &Obligation)> {
         self.analysis.obligations.iter()
+    }
+
+    /// Some reached instruction is a call; the certificate then needs the call assumptions.
+    fn calls(&self) -> bool {
+        self.points().any(|(_, o)| matches!(o, Obligation::Call(_)))
     }
 }
 
@@ -260,7 +312,7 @@ fn obligation_at(
     let index = instructions
         .binary_search_by_key(&pc, |i| i.pc)
         .expect("boundary has an instruction");
-    classify(&instructions[index])
+    classify(&instructions[index], instructions.get(index + 1))
 }
 
 fn push_width(op: u8) -> usize {
@@ -749,8 +801,15 @@ fn window_check(old: &[(usize, Vec<u8>)], new: &[(usize, Vec<u8>)], env: &[usize
         && hn.iter().all(|h| ho.iter().any(|g| h <= g))
 }
 
-fn classify(instruction: &Instruction) -> Result<Obligation> {
+fn classify(instruction: &Instruction, next: Option<&Instruction>) -> Result<Obligation> {
     let op = instruction.bytes[0];
+    let call = |op: u8, gas_first: bool| {
+        Obligation::Call(CallSite {
+            op,
+            inputs: if op == 0xf1 { 7 } else { 6 },
+            gas_first,
+        })
+    };
     let simple = |name: &str| Obligation::Same {
         op: format!("Operation.{name}"),
         arg: "none".to_owned(),
@@ -800,6 +859,14 @@ fn classify(instruction: &Instruction) -> Result<Obligation> {
         },
         0x56 => Obligation::Jump,
         0x57 => Obligation::Jumpi,
+        0xf1 | 0xfa => call(op, false),
+        0x5a => match next {
+            Some(n) if matches!(n.bytes[0], 0xf1 | 0xfa) => call(n.bytes[0], true),
+            _ => bail!(
+                "GAS at pc {} is supported only directly before CALL or STATICCALL",
+                instruction.pc
+            ),
+        },
         0x00 => Obligation::Halt {
             op: "Operation.STOP",
             which: "(Or.inl rfl)",
@@ -1033,8 +1100,9 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
     let mut index = format!("{table_imports}{HEADER}");
     writeln!(
         index,
-        "def table : List (Nat × List Abs) := {}\nabbrev Q : UInt256 → List UInt256 → Prop := Inv table",
+        "def table : List (Nat × List Abs) := {}\nabbrev Q : UInt256 → List UInt256 → Prop := Inv table\n/-- Call obligations need the call assumptions; a call-free runtime has none. -/\ndef HC : Prop := {}",
         nested(&point_names),
+        if plan.calls() { "True" } else { "False" }
     )
     .unwrap();
     for k in 0..chunks.len() {
@@ -1159,14 +1227,14 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
             let fs = &plan.analysis.entries[&pc][i];
             writeln!(
                 s,
-                "theorem point_{pc}_{i} : Point oldCode newCode jumps Q (Holds F{pc}_{i}) (UInt256.ofNat {pc}) :=\n  {}",
+                "theorem point_{pc}_{i} : Point HC oldCode newCode jumps Q (Holds F{pc}_{i}) (UInt256.ofNat {pc}) :=\n  {}",
                 obligation_term(pc, obligation, fs, original, &plan.jumpdests, &mem)
             )
             .unwrap();
         }
         writeln!(
             s,
-            "\ntheorem cover{k} : ∀ p ∈ pointsChunk{k}, Point oldCode newCode jumps Q (Holds p.2) (UInt256.ofNat p.1) :="
+            "\ntheorem cover{k} : ∀ p ∈ pointsChunk{k}, Point HC oldCode newCode jumps Q (Holds p.2) (UInt256.ofNat p.1) :="
         )
         .unwrap();
         for (pc, i) in *chunk {
@@ -1186,30 +1254,46 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
     let mut s = format!("{imports}{HEADER}");
     writeln!(
         s,
-        "theorem cover : ∀ p ∈ table, Point oldCode newCode jumps Q (Holds p.2) (UInt256.ofNat p.1) :=\n  {cover}"
+        "theorem cover : ∀ p ∈ table, Point HC oldCode newCode jumps Q (Holds p.2) (UInt256.ofNat p.1) :=\n  {cover}"
     )
     .unwrap();
+    // With calls, the final theorems take the environment assumptions.
+    let (hyps, pass, env) = if plan.calls() {
+        (
+            "\n    (callees : CalleeSummary owner oldCode newCode) (reentry : Reentry owner oldCode)\n    (notPrecompile : owner ∉ π)",
+            " callees reentry notPrecompile",
+            "(fun _ => callees) (fun _ => reentry) (fun _ => notPrecompile)",
+        )
+    } else {
+        ("", "", "False.elim False.elim False.elim")
+    };
     writeln!(
         s,
         "
 /-- From any pair of states at pc 0 that differ only in deployed code, execution
 count and extra candidate gas, every successful or reverting original run of `X`
-is matched by a candidate run with equal output and related final state. -/
-theorem whole_certificate (owner : AccountAddress) (fuel surplus skipped : ℕ) (s t : State)
+is matched by a candidate run with the same fuel or more, with equal output and
+related final state. -/
+theorem whole_certificate (owner : AccountAddress){hyps} (fuel surplus skipped : ℕ) (s t : State)
     (r : ExecutionResult State)
     (rel : DeployedOffset owner oldCode newCode surplus skipped s t)
     (start : s.pc = UInt256.ofNat 0)
     (ok : X fuel (D_J oldCode (UInt256.ofNat 0)) s = .ok r) :
-    ∃ f r', X f (D_J newCode (UInt256.ofNat 0)) t = .ok r' ∧
-      OutcomeRelated owner oldCode newCode r r' := by
+    ∀ fuel', fuel ≤ fuel' → ∃ r', X fuel' (D_J newCode (UInt256.ofNat 0)) t = .ok r' ∧
+      OutcomeRelated owner oldCode newCode t.gasAvailable.toNat r r' := by
   rw [old_jumps] at ok
   rw [new_jumps]
-  exact whole_refines owner oldCode newCode jumps jumps Q (cover_of cover) (fun _ h => h)
+  exact whole_refines owner oldCode newCode jumps jumps Q HC (cover_of cover) (fun _ h => h)
+    old_jumps.symm new_jumps.symm ⟨(0, F0_0), {start}, rfl, trivial⟩ {env}
     fuel s t surplus skipped r rel (by rw [start]; exact ⟨(0, F0_0), {start}, rfl, trivial⟩) ok
+
+theorem cert (owner : AccountAddress){hyps} (N : ℕ) : Cert owner oldCode newCode N :=
+  fun fuel _ s t surplus skipped r rel start _ ok =>
+    whole_certificate owner{pass} fuel surplus skipped s t r rel start ok
 
 /-- The same claim for the code-execution function Ξ, from a fresh call frame
 whose account maps differ only in the owner's deployed code. -/
-theorem xi_certificate (owner : AccountAddress) (fuel : ℕ)
+theorem xi_certificate (owner : AccountAddress){hyps} (fuel : ℕ)
     (created : Batteries.RBSet AccountAddress compare) (genesis : BlockHeader)
     (blocks : ProcessedBlocks) (σ σ₀ τ τ₀ : AccountMap .EVM) (g : UInt256)
     (A : Substate) (I : ExecutionEnv .EVM)
@@ -1221,17 +1305,15 @@ theorem xi_certificate (owner : AccountAddress) (fuel : ℕ)
     (newOriginal : ∃ a, τ₀.find? owner = some a ∧ a.code = newCode)
     (R : ExecutionResult (Batteries.RBSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate))
     (run : Ξ fuel created genesis blocks σ σ₀ g A {{I with codeOwner := owner, code := oldCode}} = .ok R) :
-    ∃ f R', Ξ f created genesis blocks τ τ₀ g A {{I with codeOwner := owner, code := newCode}} = .ok R' ∧
-      XiRelated owner oldCode newCode R R' :=
-  xi_refines owner oldCode newCode
-    (fun fuel s t surplus skipped r rel start ok =>
-      whole_certificate owner fuel surplus skipped s t r rel start ok)
-    fuel created genesis blocks σ σ₀ τ τ₀ g A I current original oldCurrent oldOriginal
-    newCurrent newOriginal R run
+    ∀ fuel', fuel ≤ fuel' →
+      ∃ R', Ξ fuel' created genesis blocks τ τ₀ g A {{I with codeOwner := owner, code := newCode}} = .ok R' ∧
+        XiRelated owner oldCode newCode g R R' :=
+  xi_refines owner oldCode newCode fuel (cert owner{pass} fuel) fuel (le_refl _) created genesis blocks
+    σ σ₀ τ τ₀ g g 0 rfl A I current original oldCurrent oldOriginal newCurrent newOriginal R run
 
 /-- The same claim for the message-call function Θ on a call to the owner, when the
 original's inner Ξ returns success or revert. -/
-theorem theta_certificate (owner : AccountAddress) (fuel : ℕ) (bvh : List ByteArray)
+theorem theta_certificate (owner : AccountAddress){hyps} (fuel : ℕ) (bvh : List ByteArray)
     (created : Batteries.RBSet AccountAddress compare) (genesis : BlockHeader)
     (blocks : ProcessedBlocks) (σ σ₀ τ τ₀ : AccountMap .EVM) (A : Substate)
     (s o : AccountAddress) (g p v v' : UInt256) (d : ByteArray) (e : ℕ) (H : BlockHeader) (w : Bool)
@@ -1244,20 +1326,19 @@ theorem theta_certificate (owner : AccountAddress) (fuel : ℕ) (bvh : List Byte
     (R : ExecutionResult (Batteries.RBSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate))
     (inner : Ξ fuel created genesis blocks (transfer σ s owner v) σ₀ g A
       (thetaEnv bvh s o owner oldCode p v' d e H w) = .ok R) :
-    ∃ f Q Q', Θ (fuel + 1) bvh created genesis blocks σ σ₀ A s o owner (.Code oldCode) g p v v' d e H w = .ok Q ∧
-      Θ f bvh created genesis blocks τ τ₀ A s o owner (.Code newCode) g p v v' d e H w = .ok Q' ∧
-      ThetaRelated owner oldCode newCode Q Q' :=
-  theta_refines owner oldCode newCode
-    (fun fuel s t surplus skipped r rel start ok =>
-      whole_certificate owner fuel surplus skipped s t r rel start ok)
-    fuel bvh created genesis blocks σ σ₀ τ τ₀ A s o g p v v' d e H w current original
-    oldCurrent oldOriginal newCurrent newOriginal R inner
+    ∃ Q, Θ (fuel + 1) bvh created genesis blocks σ σ₀ A s o owner (.Code oldCode) g p v v' d e H w = .ok Q ∧
+      ∀ fuel', fuel ≤ fuel' →
+        ∃ Q', Θ (fuel' + 1) bvh created genesis blocks τ τ₀ A s o owner (.Code newCode) g p v v' d e H w = .ok Q' ∧
+          ThetaRelated owner oldCode newCode g Q Q' :=
+  theta_refines owner oldCode newCode fuel (cert owner{pass} fuel) fuel (le_refl _) bvh created genesis
+    blocks σ σ₀ τ τ₀ A s o g g 0 rfl p v v' d e H w current original oldCurrent oldOriginal newCurrent
+    newOriginal R inner
 
 /-- The same claim for the transaction function Υ on a message call to the owner:
 both runs finalize related provisional states with the same substate and status, and
 the candidate has at least as much remaining gas (so, by `charged_mono`, is charged
 no more gas when its remaining gas is within the limit). -/
-theorem upsilon_certificate (owner : AccountAddress) (fuel : ℕ) (σ τ : AccountMap .EVM) (H_f : ℕ)
+theorem upsilon_certificate (owner : AccountAddress){hyps} (fuel : ℕ) (σ τ : AccountMap .EVM) (H_f : ℕ)
     (H genesis : BlockHeader) (blocks : ProcessedBlocks) (T : Transaction) (S_T : AccountAddress)
     (rel : MapsRelated owner oldCode newCode σ τ)
     (oldσ : ∃ a, σ.find? owner = some a ∧ a.code = oldCode)
@@ -1269,15 +1350,13 @@ theorem upsilon_certificate (owner : AccountAddress) (fuel : ℕ) (σ τ : Accou
       (txGas T) (txSubstate H T S_T owner)
       (thetaEnv T.blobVersionedHashes S_T S_T owner oldCode (txPrice H_f T) T.base.value T.base.data 0 H true) =
         .ok R) :
-    ∃ f σP σP' g g' A z, MapsRelated owner oldCode newCode σP σP' ∧ g.toNat ≤ g'.toNat ∧
-      Υ (fuel + 1) σ H_f H genesis blocks T S_T =
+    ∃ σP g A z, Υ (fuel + 1) σ H_f H genesis blocks T S_T =
         .ok ((finalize σP g A H_f H T S_T).1, A, z, (finalize σP g A H_f H T S_T).2) ∧
-      Υ f τ H_f H genesis blocks T S_T =
-        .ok ((finalize σP' g' A H_f H T S_T).1, A, z, (finalize σP' g' A H_f H T S_T).2) :=
-  upsilon_refines owner oldCode newCode
-    (fun fuel s t surplus skipped r rel start ok =>
-      whole_certificate owner fuel surplus skipped s t r rel start ok)
-    fuel σ τ H_f H genesis blocks T S_T rel oldσ newτ hr notPre R inner
+      ∀ fuel', fuel ≤ fuel' → ∃ σP' g', MapsRelated owner oldCode newCode σP σP' ∧ g.toNat ≤ g'.toNat ∧
+        Υ (fuel' + 1) τ H_f H genesis blocks T S_T =
+          .ok ((finalize σP' g' A H_f H T S_T).1, A, z, (finalize σP' g' A H_f H T S_T).2) :=
+  upsilon_refines owner oldCode newCode fuel (cert owner{pass} fuel) fuel (le_refl _) σ τ H_f H genesis
+    blocks T S_T rel oldσ newτ hr notPre R inner
 
 #print axioms whole_certificate
 #print axioms xi_certificate
@@ -1509,6 +1588,29 @@ fn obligation_term(
                 mem(site.end, &facts::xfer_window(&site.old, fs)),
             )
         }
+        Obligation::Call(site) => {
+            let (op, hop) = site.lean();
+            let mut next = vec![facts::top()];
+            next.extend(facts::drop(fs, site.pop()));
+            let target = mem(pc + site.len(), &next);
+            if site.gas_first {
+                format!(
+                    ".gascall _ {op} {} trivial {hop} {} {} {} {} (call_next {K} {target} {K})",
+                    site.inputs,
+                    old(pc),
+                    new(pc),
+                    old(pc + 1),
+                    new(pc + 1)
+                )
+            } else {
+                format!(
+                    ".call _ {op} {} trivial {hop} {} {} (call_next {K} {target} {K})",
+                    site.inputs,
+                    old(pc),
+                    new(pc)
+                )
+            }
+        }
         Obligation::Power(site) => {
             let mul = site.pc + site.width + 1;
             let mut next = vec![facts::top()];
@@ -1545,8 +1647,42 @@ mod tests {
         assert!(matches!(first(&planned, 6), Obligation::Power(_)));
         let wrong = hex::decode("34600a57600760031b005b600080fd").unwrap();
         assert!(plan_err(&original, &wrong).contains("unsupported difference"));
-        let call = hex::decode("f100").unwrap();
-        assert!(plan_err(&call, &call).contains("unsupported opcode 0xf1"));
+        let destruct = hex::decode("ff00").unwrap();
+        assert!(plan_err(&destruct, &destruct).contains("unsupported opcode 0xff"));
+    }
+
+    #[test]
+    fn plans_calls_with_their_gas() {
+        // PUSH0 x6; GAS; STATICCALL; POP; PUSH0 x7; CALL; STOP.
+        let code = hex::decode("5f5f5f5f5f5f5afa505f5f5f5f5f5f5ff100").unwrap();
+        let planned = plan(&code, &code).unwrap();
+        assert!(planned.calls());
+        assert!(matches!(
+            first(&planned, 6),
+            Obligation::Call(CallSite {
+                gas_first: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            first(&planned, 16),
+            Obligation::Call(CallSite {
+                gas_first: false,
+                ..
+            })
+        ));
+        // The call opcode after GAS is covered by the GAS point.
+        assert!(!planned.analysis.obligations.contains_key(&7));
+        let pcs: Vec<usize> = planned.points().map(|(pc, _)| *pc).collect();
+        assert_eq!(
+            pcs,
+            vec![0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+        );
+        // GAS anywhere else is not supported.
+        let gas = hex::decode("5a00").unwrap();
+        assert!(plan_err(&gas, &gas).contains("GAS at pc 0"));
+        let plain = hex::decode("34600a576007600402005b600080fd").unwrap();
+        assert!(!plan(&plain, &plain).unwrap().calls());
     }
 
     #[test]

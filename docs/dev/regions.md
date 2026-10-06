@@ -208,11 +208,13 @@ cargo run --locked -- certify-runtime-whole \
 
 Theorem `xi_certificate`: run the code-execution function Ξ from a fresh call
 frame whose current and original account maps differ only in the owner's
-deployed code. If the original returns success or revert, the candidate returns
-the same kind of result with the same output. On success the account maps stay
-related, created accounts and substate are equal and the candidate keeps at
-least as much gas; on revert it keeps at least as much gas. `whole_certificate`
-states the same for the interpreter `X` from any related states at pc 0.
+deployed code. If the original returns success or revert, the candidate, run
+with the same fuel or more, returns the same kind of result with the same
+output. On success the account maps stay related, created accounts and substate
+are equal and the candidate keeps at least as much gas; on revert it keeps at
+least as much gas. The candidate never ends with more gas than it started with.
+`whole_certificate` states the same for the interpreter `X` from any related
+states at pc 0.
 `theta_certificate` lifts this to the message-call function Θ for a call to the
 owner, and `upsilon_certificate` to the transaction function Υ for a message-call
 transaction to the owner (not a precompile address): both runs finalize related
@@ -247,15 +249,36 @@ comparison and bitwise opcodes; memory, `KECCAK256`, calldata, call-context and
 block reads including `BLOCKHASH` and `BLOBHASH`; `BALANCE`, `SELFBALANCE`, `CODESIZE`
 and `EXTCODESIZE` (the images have equal size); `RETURNDATACOPY`, `MCOPY`; `SLOAD`,
 `SSTORE`, `TLOAD`, `TSTORE`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`, `JUMPDEST`, `STOP`,
-`RETURN`, `REVERT` and undefined opcodes. Calls, creation, `GAS`, `CODECOPY`,
-`EXTCODECOPY`, `EXTCODEHASH` and `SELFDESTRUCT` are rejected. Calls are
-excluded because the candidate keeps more gas: a callee given all remaining
-gas, or a nested call back into the cheaper code, can succeed where the
-original ran out of gas, so a claim with calls needs extra premises and
-induction over nested calls.
+`RETURN`, `REVERT` and undefined opcodes; `CALL` and `STATICCALL`, with `GAS`
+only directly before them. Creation, `DELEGATECALL`, `CALLCODE`, `CODECOPY`,
+`EXTCODECOPY`, `EXTCODEHASH`, `SELFDESTRUCT` and any other `GAS` are rejected.
 
-Not proved: exceptional original runs, calls, contract creation, rewrite
-families other than the three above and formal correspondence with revm.
+Not proved: exceptional original runs, callee behaviour outside the call
+assumptions below, contract creation, rewrite families other than the three
+above and formal correspondence with revm.
+
+### Calls
+
+The candidate has more gas than the original when it reaches a call, so a
+callee can receive more gas (at most the surplus) and could behave differently.
+No unconditional theorem exists, so a certificate with calls states its
+assumptions as hypotheses of the final theorems:
+
+- `CalleeSummary`: a callee at any address other than the owner, run on related
+  account maps with at least the original's gas, returns the same created set,
+  substate, status and output, related account maps, no less gas than the
+  original and no more than it was given. The original's callee keeps the
+  owner's account.
+- `Reentry`: a call back into the owner's code returns success or revert in the
+  original run. The certificate then covers the nested run itself, by
+  induction on the original fuel.
+- The owner is not a precompile address.
+
+The proof pairs each call: the candidate's call costs at most the surplus more,
+hands the callee exactly that much more gas, and the caller's remaining gas
+stays related afterwards. A call-free runtime gets a certificate without these
+hypotheses. `result.json` lists the hypotheses under `assumptions` and the call
+positions under `call_sites`.
 
 ### Stack facts
 

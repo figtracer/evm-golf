@@ -74,22 +74,6 @@ theorem upsilon_unfold (fuel : ℕ) (σ : AccountMap .EVM) (H_f : ℕ) (H genesi
      rw [h2]) <;> rfl
 
 /-- Charged gas `L - (g + min ((L - g) / 5) R)` does not increase with the remaining gas. -/
-theorem sub_toNat (a b : UInt256) (h : b.toNat ≤ a.toNat) : (a - b).toNat = a.toNat - b.toNat :=
-  Fin.coe_sub_iff_le.mpr h
-
-theorem add_toNat (a b : UInt256) (h : a.toNat + b.toNat < UInt256.size) :
-    (a + b).toNat = a.toNat + b.toNat := by
-  show (a.val + b.val).val = _
-  rw [Fin.val_add]; exact Nat.mod_eq_of_lt h
-
-theorem div_toNat (a b : UInt256) : (a / b).toNat = a.toNat / b.toNat := rfl
-
-theorem min_toNat (a b : UInt256) : (min a b).toNat = min a.toNat b.toNat := by
-  show (if a ≤ b then a else b).toNat = _
-  by_cases h : a ≤ b
-  · rw [if_pos h]; exact (Nat.min_eq_left h).symm
-  · rw [if_neg h]; exact (Nat.min_eq_right (Nat.le_of_lt (Nat.lt_of_not_le h))).symm
-
 theorem refund_toNat (L R g : UInt256) (h : g.toNat ≤ L.toNat) :
     (g + min ((L - g) / ⟨5⟩) R).toNat = g.toNat + min ((L.toNat - g.toNat) / 5) R.toNat ∧
       g.toNat + min ((L.toNat - g.toNat) / 5) R.toNat ≤ L.toNat := by
@@ -148,24 +132,13 @@ theorem linked_checkpoint (owner : AccountAddress) (code : ByteArray) (σ : Acco
     | some a => exact ⟨rfl, rfl, rfl, rfl, by split <;> simp_all⟩
   exact (checkpoint_related owner code code σ σ H_f H T S_T rel h).2
 
-theorem toExecute_owner (σ : AccountMap .EVM) (owner : AccountAddress) (code : ByteArray)
-    (notPre : owner ∉ π) (h : ∃ a, σ.find? owner = some a ∧ a.code = code) :
-    toExecute .EVM σ owner = .Code code := by
-  obtain ⟨a, ha, hc⟩ := h
-  unfold toExecute
-  rw [if_neg notPre]
-  simp [ha, hc, Id.run]
-
 /-- Υ for a message-call transaction to the owner, when the original's inner Ξ returns
 success or revert: both runs finalize related provisional states with the same substate
-and status, and the candidate has at least as much remaining gas. -/
-theorem upsilon_refines (owner : AccountAddress) (old new : ByteArray)
-    (cert : ∀ (fuel : ℕ) (s t : State) (surplus skipped : ℕ) (r : ExecutionResult State),
-      DeployedOffset owner old new surplus skipped s t → s.pc = UInt256.ofNat 0 →
-      X fuel (D_J old (UInt256.ofNat 0)) s = .ok r →
-      ∃ f r', X f (D_J new (UInt256.ofNat 0)) t = .ok r' ∧ OutcomeRelated owner old new r r')
-    (fuel : ℕ) (σ τ : AccountMap .EVM) (H_f : ℕ) (H genesis : BlockHeader)
-    (blocks : ProcessedBlocks) (T : Transaction) (S_T : AccountAddress)
+and status, and the candidate, with the same fuel or more, has at least as much remaining
+gas. -/
+theorem upsilon_refines (owner : AccountAddress) (old new : ByteArray) (N : ℕ)
+    (cert : Cert owner old new N) (fuel : ℕ) (hN : fuel ≤ N) (σ τ : AccountMap .EVM) (H_f : ℕ)
+    (H genesis : BlockHeader) (blocks : ProcessedBlocks) (T : Transaction) (S_T : AccountAddress)
     (rel : MapsRelated owner old new σ τ)
     (oldσ : ∃ a, σ.find? owner = some a ∧ a.code = old)
     (newτ : ∃ a, τ.find? owner = some a ∧ a.code = new)
@@ -176,19 +149,22 @@ theorem upsilon_refines (owner : AccountAddress) (old new : ByteArray)
       (txGas T) (txSubstate H T S_T owner)
       (thetaEnv T.blobVersionedHashes S_T S_T owner old (txPrice H_f T) T.base.value T.base.data 0 H true) =
         .ok R) :
-    ∃ f σP σP' g g' A z, MapsRelated owner old new σP σP' ∧ g.toNat ≤ g'.toNat ∧
-      Υ (fuel + 1) σ H_f H genesis blocks T S_T =
+    ∃ σP g A z, Υ (fuel + 1) σ H_f H genesis blocks T S_T =
         .ok ((finalize σP g A H_f H T S_T).1, A, z, (finalize σP g A H_f H T S_T).2) ∧
-      Υ f τ H_f H genesis blocks T S_T =
-        .ok ((finalize σP' g' A H_f H T S_T).1, A, z, (finalize σP' g' A H_f H T S_T).2) := by
+      ∀ fuel', fuel ≤ fuel' → ∃ σP' g', MapsRelated owner old new σP σP' ∧ g.toNat ≤ g'.toNat ∧
+        Υ (fuel' + 1) τ H_f H genesis blocks T S_T =
+          .ok ((finalize σP' g' A H_f H T S_T).1, A, z, (finalize σP' g' A H_f H T S_T).2) := by
   obtain ⟨crel, cown⟩ := checkpoint_related owner old new σ τ H_f H T S_T rel oldσ
   have cown' := linked_checkpoint owner new τ H_f H T S_T newτ
-  obtain ⟨f, Q, Q', runO, runN, ec, hm, hg, eA, ez⟩ := theta_refines owner old new cert fuel
+  obtain ⟨Q, runO, cand⟩ := theta_refines owner old new N cert fuel hN
     T.blobVersionedHashes .empty genesis blocks _ _ _ _ (txSubstate H T S_T owner) S_T S_T (txGas T)
-    (txPrice H_f T) T.base.value T.base.value T.base.data 0 H true crel crel cown cown cown' cown' R inner
-  refine ⟨f, Q.2.1, Q'.2.1, Q.2.2.1, Q'.2.2.1, Q.2.2.2.1, Q.2.2.2.2.1, hm, hg, ?_, ?_⟩
+    (txGas T) 0 rfl (txPrice H_f T) T.base.value T.base.value T.base.data 0 H true crel crel cown cown
+    cown' cown' R inner
+  refine ⟨Q.2.1, Q.2.2.1, Q.2.2.2.1, Q.2.2.2.2.1, ?_, fun fuel' hf => ?_⟩
   · rw [upsilon_unfold _ _ _ _ _ _ _ _ _ hr, toExecute_owner _ _ _ notPre cown, runO]
-  · rw [upsilon_unfold _ _ _ _ _ _ _ _ _ hr, toExecute_owner _ _ _ notPre cown', runN, eA,
+  · obtain ⟨Q', runN, ec, hm, -, -, hg, -, eA, ez⟩ := cand fuel' hf
+    refine ⟨Q'.2.1, Q'.2.2.1, hm, hg, ?_⟩
+    rw [upsilon_unfold _ _ _ _ _ _ _ _ _ hr, toExecute_owner _ _ _ notPre cown', runN, eA,
       show Q.2.2.2.2.1 = Q'.2.2.2.2.1 from congrArg Prod.fst ez]
 
 #print axioms upsilon_refines

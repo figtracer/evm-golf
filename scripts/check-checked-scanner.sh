@@ -210,6 +210,21 @@ import sys
 report = json.load(open(sys.argv[1]))
 assert report["window_sites"] == [6] and report["checked_entries"] == 10
 PY_FACTS
+# Calls: GAS feeding STATICCALL, a bare CALL, and one PUSH 2^k; MUL site.
+printf '%s\n' 6004600202505f5f5f5f5f5afa505f5f5f5f5f5f5ff15000 > "$work/call-original.hex"
+printf '%s\n' 600460011b505f5f5f5f5f5afa505f5f5f5f5f5f5ff15000 > "$work/call-candidate.hex"
+cargo run --locked -- certify-runtime-whole \
+  --original "$work/call-original.hex" --candidate "$work/call-candidate.hex" \
+  --out "$work/call-accepted" 2>&1 | tee "$work/call.log"
+python3 - "$work/call-accepted/result.json" <<'PY_CALL'
+import json
+import sys
+
+report = json.load(open(sys.argv[1]))
+assert report["power_sites"] == [2] and report["call_sites"] == [11, 21]
+assert any("CalleeSummary" in item for item in report["assumptions"])
+assert any("Reentry" in item for item in report["assumptions"])
+PY_CALL
 printf '%s\n' 335f3556005b73ffffffffffffffffffffffffffffffffffffffff165f5260205ff3 > "$work/nofacts-original.hex"
 printf '%s\n' 335f3556005b730000000000000000000000000000000000000000505f5260205ff3 > "$work/nofacts-candidate.hex"
 if cargo run --locked -- certify-runtime-whole \

@@ -282,6 +282,12 @@ theorem window_next {T : List (Nat × List Abs)} {x : UInt256} {n : Nat} {fs fs'
       Inv T x ((srun opsO ([], 0)).1.map (Sym.val st) ++ st.drop (srun opsO ([], 0)).2) :=
   fun _ h => inv_of sum mem chk (holds_xferS h _ _)
 
+/-- Successor of a call: the inputs are popped and the status word is pushed. -/
+theorem call_next {T : List (Nat × List Abs)} {x : UInt256} {n pop : Nat} {fs fs' : List Abs}
+    (sum : x = UInt256.ofNat n) (mem : (n, fs') ∈ T) (chk : implies (top :: fs.drop pop) fs' = true) :
+    ∀ st y, Holds fs st → (y = ⟨0⟩ ∨ y = ⟨1⟩) → Inv T x (y :: st.drop pop) :=
+  fun st _ h _ => inv_of sum mem chk ⟨top_holds _, holds_drop fs st pop h⟩
+
 theorem window_fits {fs : List Abs} : ∀ st, Holds fs st → Fits (fs.map Abs.bits) st :=
   fun _ h => holds_fits h
 
@@ -307,9 +313,9 @@ theorem entries_app {R : Nat × List Abs → Prop} {l₁ l₂ : List (Nat × Lis
   · exact h₁ p hp
   · exact h₂ p hp
 
-theorem cover_of {old new : ByteArray} {oj : Array UInt256} {T : List (Nat × List Abs)}
-    (h : ∀ p ∈ T, Point old new oj (Inv T) (Holds p.2) (UInt256.ofNat p.1)) :
-    ∀ pc st, Inv T pc st → ∃ A : List UInt256 → Prop, A st ∧ Point old new oj (Inv T) A pc := by
+theorem cover_of {HC : Prop} {old new : ByteArray} {oj : Array UInt256} {T : List (Nat × List Abs)}
+    (h : ∀ p ∈ T, Point HC old new oj (Inv T) (Holds p.2) (UInt256.ofNat p.1)) :
+    ∀ pc st, Inv T pc st → ∃ A : List UInt256 → Prop, A st ∧ Point HC old new oj (Inv T) A pc := by
   rintro pc st ⟨p, mem, rfl, hh⟩
   exact ⟨Holds p.2, hh, h p mem⟩
 
@@ -349,6 +355,7 @@ theorem top_targets (T : List (Nat × List Abs)) (jumpsN : List Nat)
 #print axioms same_next
 #print axioms jump_set
 #print axioms window_next
+#print axioms call_next
 #print axioms cover_of
 #print axioms top_targets
 

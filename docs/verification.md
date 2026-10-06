@@ -30,12 +30,12 @@ Only Lean's foundational axioms (`propext`, `Classical.choice`, `Quot.sound`)
 may appear in the axiom report, and every expected theorem must be reported.
 
 A separate developer command proves whole-program refinement of X, Ξ, Θ and Υ
-against pinned EVMYulLean for call-free runtimes with the power, JUMPI-threading and
-stack-window rewrites
-([regions](dev/regions.md#whole-programs)). A window may use facts about the
-stack that the proof carries across jumps
-([stack facts](dev/regions.md#stack-facts)). It does not affect `optimize` or
-`verify`.
+against pinned EVMYulLean for runtimes with the power, JUMPI-threading and
+stack-window rewrites ([regions](dev/regions.md#whole-programs)). A window may
+use facts about the stack that the proof carries across jumps
+([stack facts](dev/regions.md#stack-facts)). Runtimes with `CALL` and
+`STATICCALL` are covered under stated assumptions about the callees
+([calls](dev/regions.md#calls)). It does not affect `optimize` or `verify`.
 The pinned toolchain is Lean 4.34.0. Each certificate must check within 60
 seconds; any failure or timeout rejects the candidate.
 

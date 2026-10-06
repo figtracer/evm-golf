@@ -239,6 +239,11 @@ pub(super) fn edges(pc: usize, obligation: &Obligation, fs: &[Abs], code: &[u8])
             Edge::To(site.to, drop(fs, 1)),
         ],
         Obligation::Window(site) => vec![Edge::To(site.end, xfer_window(&site.old, fs))],
+        Obligation::Call(site) => {
+            let mut out = vec![top()];
+            out.extend(drop(fs, site.pop()));
+            vec![Edge::To(pc + site.len(), out)]
+        }
     }
 }
 

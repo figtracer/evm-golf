@@ -277,6 +277,17 @@ theorem popn_pc {β : Type} (T : State → Except EVM.ExecutionException State)
   | none => rw [hp] at run; cases run
   | some p => rw [hp] at run; injection run with run; subst run; exact hpc p u
 
+theorem popn_gas {β : Type} (T : State → Except EVM.ExecutionException State)
+    (pop : Stack UInt256 → Option β) (G : β → State → State)
+    (hT : ∀ y, T y = match pop y.stack with
+      | some p => .ok (G p y)
+      | none => .error .StackUnderflow)
+    (hG : ∀ p, Frameless (G p)) (u v : State) (run : T u = .ok v) : v.gasAvailable = u.gasAvailable := by
+  rw [hT] at run
+  cases hp : pop u.stack with
+  | none => rw [hp] at run; cases run
+  | some p => rw [hp] at run; injection run with run; subst run; exact (hG p).gas u
+
 /-- A popping instruction whose post-state map ignores code, gas, maps and counts. -/
 theorem same_popn {op : Operation .EVM} {β : Type} (T : State → Except EVM.ExecutionException State)
     (pop : Stack UInt256 → Option β) (G : β → State → State)
@@ -288,6 +299,7 @@ theorem same_popn {op : Operation .EVM} {β : Type} (T : State → Except EVM.Ex
     (hcost : ∀ s t : State, s.stack = t.stack → C' t op = C' s op)
     (adv : ∀ arg, advance op arg = 1) (run : Running op) : Same op :=
   same_of (fun _ => T) hstep (fun _ => popn_preserves T pop G hT hG) hcost
+    (fun _ u v h => popn_gas T pop G hT hG u v h)
     (fun arg u v h => by rw [adv]; exact popn_pc T pop G hT hpc u v h) run
 
 macro "frameless_rfl" : term =>
@@ -375,13 +387,18 @@ theorem same_rel {op : Operation .EVM}
     (hT : ∀ arg, Preserves (T arg))
     (hcost : ∀ {owner old new surplus skipped s t},
       DeployedOffset owner old new surplus skipped s t → C' t op = C' s op)
+    (hgas : ∀ arg u v, T arg u = .ok v → v.gasAvailable = u.gasAvailable)
     (hpc : ∀ arg u v, T arg u = .ok v → v.pc = u.pc + UInt256.ofNat (advance op arg))
     (run : Running op) : Same op := by
-  refine ⟨⟨fun f g c arg u => by rw [hstep, hstep], hcost, ?_⟩, advances_of T hstep hpc, run⟩
-  intro owner old new surplus skipped u u' v f g c arg h enough step
-  rw [hstep] at step
-  obtain ⟨v', step', rel⟩ := hT arg (rel_bump h c enough) step
-  exact ⟨v', by rw [hstep]; exact step', rel⟩
+  refine ⟨⟨fun f g c arg u => by rw [hstep, hstep], hcost, ?_, ?_⟩, advances_of T hstep hpc, run⟩
+  · intro owner old new surplus skipped u u' v f g c arg h enough step
+    rw [hstep] at step
+    obtain ⟨v', step', rel⟩ := hT arg (rel_bump h c enough) step
+    exact ⟨v', by rw [hstep]; exact step', rel⟩
+  · intro f c arg u v enough run
+    rw [hstep] at run
+    rw [hgas arg _ v run, bump_gas u c enough]
+    exact Nat.sub_le _ _
 
 theorem csstore_rel {owner old new surplus skipped s t}
     (h : DeployedOffset owner old new surplus skipped s t) : C' t .SSTORE = C' s .SSTORE := by
@@ -413,6 +430,18 @@ theorem same_sload : Same .SLOAD :=
       cases hp : u.stack.pop with
       | none => rw [hp] at run; cases run
       | some p => obtain ⟨_, _⟩ := p; rw [hp] at run; injection run with run; subst run; rfl)
+    (fun arg u v run => by
+      have e : EvmYul.step (.SLOAD : Operation .EVM) arg u =
+          (match u.stack.pop with
+            | some ⟨s, μ₀⟩ =>
+              Except.ok (({ u with toState := (EvmYul.State.sload u.toState μ₀).1 } : State).replaceStackAndIncrPC
+                (s.push (EvmYul.State.sload u.toState μ₀).2))
+            | _ => Except.error .StackUnderflow : Except EVM.ExecutionException State) := rfl
+      simp only [] at run
+      rw [e] at run
+      cases hp : u.stack.pop with
+      | none => rw [hp] at run; cases run
+      | some p => obtain ⟨_, _⟩ := p; rw [hp] at run; injection run with run; subst run; rfl)
     (fun _ => by simp [H])
 
 theorem same_tload : Same .TLOAD :=
@@ -430,11 +459,34 @@ theorem same_tload : Same .TLOAD :=
       cases hp : u.stack.pop with
       | none => rw [hp] at run; cases run
       | some p => obtain ⟨_, _⟩ := p; rw [hp] at run; injection run with run; subst run; rfl)
+    (fun arg u v run => by
+      have e : EvmYul.step (.TLOAD : Operation .EVM) arg u =
+          (match u.stack.pop with
+            | some ⟨s, μ₀⟩ =>
+              Except.ok (({ u with toState := (EvmYul.State.tload u.toState μ₀).1 } : State).replaceStackAndIncrPC
+                (s.push (EvmYul.State.tload u.toState μ₀).2))
+            | _ => Except.error .StackUnderflow : Except EVM.ExecutionException State) := rfl
+      simp only [] at run
+      rw [e] at run
+      cases hp : u.stack.pop with
+      | none => rw [hp] at run; cases run
+      | some p => obtain ⟨_, _⟩ := p; rw [hp] at run; injection run with run; subst run; rfl)
     (fun _ => by simp [H])
 
 theorem same_sstore : Same .SSTORE :=
   same_rel (fun arg => EvmYul.step (.SSTORE : Operation .EVM) arg) (fun _ _ _ _ => rfl) sstore_preserves
     csstore_rel
+    (fun arg u v run => by
+      have e : EvmYul.step (.SSTORE : Operation .EVM) arg u =
+          (match u.stack.pop2 with
+            | some ⟨s, μ₀, μ₁⟩ =>
+              Except.ok (({ u with toState := EvmYul.State.sstore u.toState μ₀ μ₁ } : State).replaceStackAndIncrPC s)
+            | _ => Except.error .StackUnderflow : Except EVM.ExecutionException State) := rfl
+      simp only [] at run
+      rw [e] at run
+      cases hp : u.stack.pop2 with
+      | none => rw [hp] at run; cases run
+      | some p => obtain ⟨_, _, _⟩ := p; rw [hp] at run; injection run with run; subst run; rfl)
     (fun arg u v run => by
       have e : EvmYul.step (.SSTORE : Operation .EVM) arg u =
           (match u.stack.pop2 with
@@ -566,6 +618,17 @@ theorem tstore_preserves (arg : Option (UInt256 × Nat)) :
 theorem same_tstore : Same .TSTORE :=
   same_rel (fun arg => EvmYul.step (.TSTORE : Operation .EVM) arg) (fun _ _ _ _ => rfl) tstore_preserves
     (fun _ => rfl)
+    (fun arg u v run => by
+      have e : EvmYul.step (.TSTORE : Operation .EVM) arg u =
+          (match u.stack.pop2 with
+            | some ⟨s, μ₀, μ₁⟩ =>
+              Except.ok (({ u with toState := EvmYul.State.tstore u.toState μ₀ μ₁ } : State).replaceStackAndIncrPC s)
+            | _ => Except.error .StackUnderflow : Except EVM.ExecutionException State) := rfl
+      simp only [] at run
+      rw [e] at run
+      cases hp : u.stack.pop2 with
+      | none => rw [hp] at run; cases run
+      | some p => obtain ⟨_, _, _⟩ := p; rw [hp] at run; injection run with run; subst run; rfl)
     (fun arg u v run => by
       have e : EvmYul.step (.TSTORE : Operation .EVM) arg u =
           (match u.stack.pop2 with

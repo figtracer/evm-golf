@@ -729,6 +729,7 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfWhole.Z_of",
             "GolfWhole.X_ok_inv",
             "GolfWhole.X_stop_inv",
+            "GolfWhole.outcome_cap",
             "GolfWhole.power_case",
         ],
     ),
@@ -742,6 +743,39 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfWhole.congruent_of",
             "GolfWhole.advances_of",
             "GolfWhole.machine_frameless",
+        ],
+    ),
+    (
+        "XiEntry",
+        include_str!("../../lean/upstream/XiEntry.lean"),
+        &[
+            "GolfXiEntry.xi_of_success",
+            "GolfXiEntry.fresh_related",
+            "GolfXiEntry.fresh_offset",
+        ],
+    ),
+    (
+        "WholeXi",
+        include_str!("../../lean/upstream/WholeXi.lean"),
+        &["GolfWhole.xi_refines"],
+    ),
+    (
+        "WholeTheta",
+        include_str!("../../lean/upstream/WholeTheta.lean"),
+        &["GolfWhole.theta_refines"],
+    ),
+    (
+        "WholeCall",
+        include_str!("../../lean/upstream/WholeCall.lean"),
+        &[
+            "GolfWhole.theta_call",
+            "GolfWhole.ccall_rel",
+            "GolfWhole.step_call_inv",
+            "GolfWhole.call_inv",
+            "GolfWhole.call_of",
+            "GolfWhole.call_rel",
+            "GolfWhole.call_core",
+            "GolfWhole.decode_size",
         ],
     ),
     (
@@ -798,21 +832,6 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
         ],
     ),
     (
-        "XiEntry",
-        include_str!("../../lean/upstream/XiEntry.lean"),
-        &["GolfXiEntry.xi_of_success", "GolfXiEntry.fresh_related"],
-    ),
-    (
-        "WholeXi",
-        include_str!("../../lean/upstream/WholeXi.lean"),
-        &["GolfWhole.xi_refines"],
-    ),
-    (
-        "WholeTheta",
-        include_str!("../../lean/upstream/WholeTheta.lean"),
-        &["GolfWhole.theta_refines"],
-    ),
-    (
         "WholeUpsilon",
         include_str!("../../lean/upstream/WholeUpsilon.lean"),
         &["GolfWhole.upsilon_refines", "GolfWhole.charged_mono"],
@@ -856,6 +875,7 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfWhole.same_next",
             "GolfWhole.jump_set",
             "GolfWhole.window_next",
+            "GolfWhole.call_next",
             "GolfWhole.cover_of",
             "GolfWhole.top_targets",
         ],
@@ -1206,7 +1226,11 @@ const CALL_REVERT_MODULES: &[(&str, &str, &[&str])] = &[(
 const CALL_ENTRY_MODULES: &[(&str, &str, &[&str])] = &[(
     "XiEntry",
     include_str!("../../lean/upstream/XiEntry.lean"),
-    &["GolfXiEntry.xi_of_success", "GolfXiEntry.fresh_related"],
+    &[
+        "GolfXiEntry.xi_of_success",
+        "GolfXiEntry.fresh_related",
+        "GolfXiEntry.fresh_offset",
+    ],
 )];
 
 #[derive(Deserialize)]

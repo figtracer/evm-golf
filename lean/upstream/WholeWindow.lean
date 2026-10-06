@@ -202,7 +202,8 @@ theorem window_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : A
       omega)
     (by omega)
   refine ⟨f, _, _, surplus + (scost opsO - scost opsN), skipped + (opsO.length - opsN.length),
-    opsN.length, by omega, finO, next _ hA, ?_, fun g => cand g⟩
+    opsN.length, by omega, by omega, finO, next _ hA, ?_, by show gN.toNat ≤ t.gasAvailable.toNat; omega,
+    fun g => cand g⟩
   have hstk : (srun opsO ([], 0)).1.map (Sym.val s.stack) ++ s.stack.drop (srun opsO ([], 0)).2 =
       (srun opsN ([], 0)).1.map (Sym.val s.stack) ++ s.stack.drop (srun opsN ([], 0)).2 := by
     have hd : s.stack.drop (srun opsO ([], 0)).2 = s.stack.drop ((srun opsN ([], 0)).2 +

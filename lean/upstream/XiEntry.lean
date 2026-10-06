@@ -59,6 +59,24 @@ theorem fresh_related (owner : AccountAddress) (old new : ByteArray)
   · exact ⟨current, original, ⟨rfl, rfl, oldCurrent, oldOriginal⟩,
       ⟨rfl, rfl, newCurrent, newOriginal⟩⟩
 
+/-- Fresh frames whose gas differs by `e`. -/
+theorem fresh_offset (owner : AccountAddress) (old new : ByteArray)
+    (created : Batteries.RBSet AccountAddress compare) (genesis : BlockHeader)
+    (blocks : ProcessedBlocks) (σ σ₀ τ τ₀ : AccountMap .EVM) (g gC : UInt256) (e : ℕ)
+    (hg : gC.toNat = g.toNat + e) (A : Substate) (I : ExecutionEnv .EVM)
+    (current : MapsRelated owner old new σ τ)
+    (original : MapsRelated owner old new σ₀ τ₀)
+    (oldCurrent : ∃ a, σ.find? owner = some a ∧ a.code = old)
+    (oldOriginal : ∃ a, σ₀.find? owner = some a ∧ a.code = old)
+    (newCurrent : ∃ a, τ.find? owner = some a ∧ a.code = new)
+    (newOriginal : ∃ a, τ₀.find? owner = some a ∧ a.code = new) :
+    DeployedOffset owner old new e 0
+      (fresh created genesis blocks σ σ₀ g A {I with codeOwner := owner, code := old})
+      (fresh created genesis blocks τ τ₀ gC A {I with codeOwner := owner, code := new}) :=
+  ⟨rfl, rfl, hg, ⟨current, original, ⟨rfl, rfl, oldCurrent, oldOriginal⟩,
+    ⟨rfl, rfl, newCurrent, newOriginal⟩⟩⟩
+
 #print axioms xi_of_success
 #print axioms fresh_related
+#print axioms fresh_offset
 end GolfXiEntry

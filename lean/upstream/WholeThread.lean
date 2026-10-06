@@ -189,8 +189,11 @@ theorem thread_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : A
       candidate_run dtB (fun _ => by simp [H]) (mem_jumpi _) (ztB (fun h => absurd rfl h))
         (fun g => by rw [show C' (pushS t y w) .JUMPI = 10 from rfl,
           step_jumpi' g _ y ⟨0⟩ tail (by simp [pushS, tStack])])
+    have t3' : 3 ≤ t.gasAvailable.toNat := by omega
+    have k1 : (t.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 10).toNat = t.gasAvailable.toNat - 13 := by
+      rw [sub _ 10 (by decide) (by rw [sub _ 3 (by decide) t3']; omega), sub _ 3 (by decide) t3']; omega
     refine ⟨fB + 1, jumpiS (pushS s x w) x ⟨0⟩ tail, jumpiS (pushS t y w) y ⟨0⟩ tail, surplus, skipped,
-      2, by omega, restB, ?_, ?_, fun g => by rw [show g + 1 + 2 = (g + 1) + 2 by omega, candA, candB]⟩
+      2, by omega, by omega, restB, ?_, ?_, ?_, fun g => by rw [show g + 1 + 2 = (g + 1) + 2 by omega, candA, candB]⟩
     · simp only [jumpiS, bne_zero, Bool.false_eq_true, if_false, pushS]
       rw [hs] at hA
       exact fall tail hA
@@ -201,10 +204,11 @@ theorem thread_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : A
         simpa [eraseCount, deployedFrame, eraseMaps, eraseCodeGas, jumpiS, pushS, bump, bne_zero] using h
       · simp only [jumpiS, pushS, bump]; have := rel.count; omega
       · simp only [jumpiS, pushS, bump]
-        have t3' : 3 ≤ t.gasAvailable.toNat := by omega
         rw [sub _ 10 (by decide) (by rw [sub _ 3 (by decide) t3']; omega), sub _ 3 (by decide) t3',
           sub _ 10 (by decide) (by rw [sub _ 3 (by decide) gA]; omega), sub _ 3 (by decide) gA]
         omega
+    · show (t.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 10).toNat ≤ t.gasAvailable.toNat
+      rw [k1]; omega
   · -- taken: the source runs the trampoline, the candidate jumps straight to y
     have validX : oj.contains x = true := by
       have zj := zB.jumpi
@@ -248,8 +252,13 @@ theorem thread_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : A
       candidate_run dtB (fun _ => by simp [H]) (mem_jumpi _) (ztB (fun _ => jumps y validY))
         (fun g => by rw [show C' (pushS t y w) .JUMPI = 10 from rfl,
           step_jumpi' g _ y c tail (by simp [pushS, tStack])])
-    refine ⟨fE + 1, _, jumpiS (pushS t y w) y c tail, surplus + 12, skipped + 3, 2, by omega, restE,
+    have t3' : 3 ≤ t.gasAvailable.toNat := by omega
+    have k1 : (t.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 10).toNat = t.gasAvailable.toNat - 13 := by
+      rw [sub _ 10 (by decide) (by rw [sub _ 3 (by decide) t3']; omega), sub _ 3 (by decide) t3']; omega
+    refine ⟨fE + 1, _, jumpiS (pushS t y w) y c tail, surplus + 12, skipped + 3, 2, by omega, by omega, restE,
       by rw [hs] at hA; simpa only [jumpS] using target c tail hA hc, ?_,
+      by show (t.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 10).toNat ≤ t.gasAvailable.toNat
+         rw [k1]; omega,
       fun g => by rw [show g + 1 + 2 = (g + 1) + 2 by omega, candA, candB]⟩
     -- gas spent: source 3+10+1+3+8 = 25, candidate 3+10 = 13
     have h1 : (s.gasAvailable - UInt256.ofNat 3).toNat = s.gasAvailable.toNat - 3 :=
@@ -278,9 +287,6 @@ theorem thread_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : A
     have h5 : (s.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 10 - UInt256.ofNat 1 -
         UInt256.ofNat 3 - UInt256.ofNat 8).toNat = s.gasAvailable.toNat - 25 := by
       rw [sub _ 8 (by decide) (by omega), h4]; omega
-    have t3' : 3 ≤ t.gasAvailable.toNat := by omega
-    have k1 : (t.gasAvailable - UInt256.ofNat 3 - UInt256.ofNat 10).toNat = t.gasAvailable.toNat - 13 := by
-      rw [sub _ 10 (by decide) (by rw [sub _ 3 (by decide) t3']; omega), sub _ 3 (by decide) t3']; omega
     refine ⟨?_, ?_, ?_, rel.maps⟩
     · have h := congrArg (fun z : State => ({ z with
         stack := tail

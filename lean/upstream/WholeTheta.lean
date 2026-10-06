@@ -24,13 +24,32 @@ def thetaEnv (bvh : List ByteArray) (s o r : AccountAddress) (code : ByteArray)
     weiValue := v', depth := e, perm := w, code := code, header := H,
     blobVersionedHashes := bvh }
 
-/-- Θ results: same created set, substate, status and output, related account maps and
-no less gas. -/
-def ThetaRelated (owner : AccountAddress) (old new : ByteArray)
+/-- Θ results, the candidate given gas `gC`: same created set, substate, status and output,
+related account maps that keep the owner's code; the candidate keeps no less gas than the
+original and no more than `gC`. -/
+def ThetaRelated (owner : AccountAddress) (old new : ByteArray) (gC : UInt256)
     (q q' : Batteries.RBSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate × Bool × ByteArray) :
     Prop :=
-  q.1 = q'.1 ∧ MapsRelated owner old new q.2.1 q'.2.1 ∧ q.2.2.1.toNat ≤ q'.2.2.1.toNat ∧
+  q.1 = q'.1 ∧ MapsRelated owner old new q.2.1 q'.2.1 ∧
+    (∃ a, q.2.1.find? owner = some a ∧ a.code = old) ∧ (∃ a, q'.2.1.find? owner = some a ∧ a.code = new) ∧
+    q.2.2.1.toNat ≤ q'.2.2.1.toNat ∧ q'.2.2.1.toNat ≤ gC.toNat ∧
     q.2.2.2.1 = q'.2.2.2.1 ∧ q.2.2.2.2 = q'.2.2.2.2
+
+theorem sub_toNat (a b : UInt256) (h : b.toNat ≤ a.toNat) : (a - b).toNat = a.toNat - b.toNat :=
+  Fin.coe_sub_iff_le.mpr h
+
+theorem add_toNat (a b : UInt256) (h : a.toNat + b.toNat < UInt256.size) :
+    (a + b).toNat = a.toNat + b.toNat := by
+  show (a.val + b.val).val = _
+  rw [Fin.val_add]; exact Nat.mod_eq_of_lt h
+
+theorem div_toNat (a b : UInt256) : (a / b).toNat = a.toNat / b.toNat := rfl
+
+theorem min_toNat (a b : UInt256) : (min a b).toNat = min a.toNat b.toNat := by
+  show (if a ≤ b then a else b).toNat = _
+  by_cases h : a ≤ b
+  · rw [if_pos h]; exact (Nat.min_eq_left h).symm
+  · rw [if_neg h]; exact (Nat.min_eq_right (Nat.le_of_lt (Nat.lt_of_not_le h))).symm
 
 theorem maps_insert_at (owner k : AccountAddress) (old new : ByteArray) (m m' : AccountMap .EVM)
     (a a' : Account .EVM) (rel : MapsRelated owner old new m m')
@@ -176,6 +195,14 @@ theorem related_empty {owner : AccountAddress} {old new : ByteArray} {m m' : Acc
       · rw [h k] at e; cases e
   cases h1 : (m == ∅) <;> cases h2 : (m' == ∅) <;> simp_all
 
+theorem toExecute_owner (σ : AccountMap .EVM) (owner : AccountAddress) (code : ByteArray)
+    (notPre : owner ∉ π) (h : ∃ a, σ.find? owner = some a ∧ a.code = code) :
+    toExecute .EVM σ owner = .Code code := by
+  obtain ⟨a, ha, hc⟩ := h
+  unfold toExecute
+  rw [if_neg notPre]
+  simp [ha, hc, Id.run]
+
 /-- Θ on code: the value transfer, then Ξ, then the pinned result selection. -/
 def thetaResult (created : Batteries.RBSet AccountAddress compare) (σ : AccountMap .EVM) (A : Substate)
     (x : Except EVM.ExecutionException
@@ -209,16 +236,14 @@ theorem theta_unfold (fuel : Nat) (bvh : List ByteArray)
   · rfl
   · rfl
 
-/-- Θ for a message call to the owner, with inner Ξ success or revert in the original. -/
-theorem theta_refines (owner : AccountAddress) (old new : ByteArray)
-    (cert : ∀ (fuel : ℕ) (s t : State) (surplus skipped : ℕ) (r : ExecutionResult State),
-      DeployedOffset owner old new surplus skipped s t → s.pc = UInt256.ofNat 0 →
-      X fuel (D_J old (UInt256.ofNat 0)) s = .ok r →
-      ∃ f r', X f (D_J new (UInt256.ofNat 0)) t = .ok r' ∧ OutcomeRelated owner old new r r')
-    (fuel : Nat) (bvh : List ByteArray) (created : Batteries.RBSet AccountAddress compare)
+/-- Θ for a message call to the owner, with inner Ξ success or revert in the original:
+the original's result, and the candidate's for every fuel at least the original's. -/
+theorem theta_refines (owner : AccountAddress) (old new : ByteArray) (N : ℕ)
+    (cert : Cert owner old new N) (fuel : Nat) (hN : fuel ≤ N) (bvh : List ByteArray)
+    (created : Batteries.RBSet AccountAddress compare)
     (genesis : BlockHeader) (blocks : ProcessedBlocks) (σ σ₀ τ τ₀ : AccountMap .EVM)
-    (A : Substate) (s o : AccountAddress) (g p v v' : UInt256) (d : ByteArray) (e : Nat)
-    (H : BlockHeader) (w : Bool)
+    (A : Substate) (s o : AccountAddress) (g gC : UInt256) (e : ℕ) (hg : gC.toNat = g.toNat + e)
+    (p v v' : UInt256) (d : ByteArray) (depth : Nat) (H : BlockHeader) (w : Bool)
     (current : MapsRelated owner old new σ τ)
     (original : MapsRelated owner old new σ₀ τ₀)
     (oldCurrent : ∃ a, σ.find? owner = some a ∧ a.code = old)
@@ -227,52 +252,76 @@ theorem theta_refines (owner : AccountAddress) (old new : ByteArray)
     (newOriginal : ∃ a, τ₀.find? owner = some a ∧ a.code = new)
     (R : ExecutionResult (Batteries.RBSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate))
     (inner : Ξ fuel created genesis blocks (transfer σ s owner v) σ₀ g A
-      (thetaEnv bvh s o owner old p v' d e H w) = .ok R) :
-    ∃ f Q Q', Θ (fuel + 1) bvh created genesis blocks σ σ₀ A s o owner (.Code old) g p v v' d e H w = .ok Q ∧
-      Θ f bvh created genesis blocks τ τ₀ A s o owner (.Code new) g p v v' d e H w = .ok Q' ∧
-      ThetaRelated owner old new Q Q' := by
+      (thetaEnv bvh s o owner old p v' d depth H w) = .ok R) :
+    ∃ Q, Θ (fuel + 1) bvh created genesis blocks σ σ₀ A s o owner (.Code old) g p v v' d depth H w = .ok Q ∧
+      ∀ fuel', fuel ≤ fuel' →
+        ∃ Q', Θ (fuel' + 1) bvh created genesis blocks τ τ₀ A s o owner (.Code new) gC p v v' d depth H w = .ok Q' ∧
+          ThetaRelated owner old new gC Q Q' := by
   obtain ⟨rel1, own1⟩ := transfer_related owner old new σ τ s owner v current oldCurrent
   have own1' := transfer_linked owner new τ s owner v newCurrent
-  have envO : thetaEnv bvh s o owner old p v' d e H w =
-      { thetaEnv bvh s o owner old p v' d e H w with codeOwner := owner, code := old } := rfl
-  have envN : thetaEnv bvh s o owner new p v' d e H w =
-      { thetaEnv bvh s o owner old p v' d e H w with codeOwner := owner, code := new } := rfl
+  have envO : thetaEnv bvh s o owner old p v' d depth H w =
+      { thetaEnv bvh s o owner old p v' d depth H w with codeOwner := owner, code := old } := rfl
+  have envN : thetaEnv bvh s o owner new p v' d depth H w =
+      { thetaEnv bvh s o owner old p v' d depth H w with codeOwner := owner, code := new } := rfl
   rw [envO] at inner
-  obtain ⟨f, R', run', related⟩ := xi_refines owner old new cert fuel created genesis blocks
-    (transfer σ s owner v) σ₀ (transfer τ s owner v) τ₀ g A (thetaEnv bvh s o owner old p v' d e H w)
+  have cand := xi_refines owner old new N cert fuel hN created genesis blocks
+    (transfer σ s owner v) σ₀ (transfer τ s owner v) τ₀ g gC e hg A
+    (thetaEnv bvh s o owner old p v' d depth H w)
     rel1 original own1 oldOriginal own1' newOriginal R inner
   rw [← envO] at inner
-  rw [← envN] at run'
-  have eO := theta_unfold fuel bvh created genesis blocks σ σ₀ A s o owner old g p v v' d e H w
-  have eN := theta_unfold f bvh created genesis blocks τ τ₀ A s o owner new g p v v' d e H w
+  have eO := theta_unfold fuel bvh created genesis blocks σ σ₀ A s o owner old g p v v' d depth H w
   rw [inner] at eO
-  rw [run'] at eN
+  have eN : ∀ fuel', fuel ≤ fuel' → ∃ R',
+      Θ (fuel' + 1) bvh created genesis blocks τ τ₀ A s o owner (.Code new) gC p v v' d depth H w =
+        thetaResult created τ A (.ok R') ∧ XiRelated owner old new gC R R' := by
+    intro fuel' hf
+    obtain ⟨R', run', related⟩ := cand fuel' hf
+    rw [← envN] at run'
+    have e := theta_unfold fuel' bvh created genesis blocks τ τ₀ A s o owner new gC p v v' d depth H w
+    rw [run'] at e
+    exact ⟨R', e, related⟩
   cases R with
   | success q out =>
     obtain ⟨a, b, c, dd⟩ := q
+    refine ⟨_, eO, fun fuel' hf => ?_⟩
+    obtain ⟨R', e, related⟩ := eN fuel' hf
     cases R' with
     | success q' out' =>
       obtain ⟨a', b', c', dd'⟩ := q'
-      obtain ⟨eo, ea, eA, hg, hb⟩ := related
+      obtain ⟨eo, ea, eA, hg, cap, hb, lo, ln⟩ := related
       subst eo ea eA
-      refine ⟨f + 1, _, _, eO, eN, rfl, ?_, hg, ?_, rfl⟩
+      refine ⟨_, e, rfl, ?_, ?_, ?_, hg, cap, ?_, rfl⟩
       · show MapsRelated owner old new (if b == ∅ then σ else b) (if b' == ∅ then τ else b')
         rw [related_empty hb]
         split
         · exact current
         · exact hb
+      · show ∃ x, (if b == ∅ then σ else b).find? owner = some x ∧ x.code = old
+        split
+        · exact oldCurrent
+        · exact lo
+      · show ∃ x, (if b' == ∅ then τ else b').find? owner = some x ∧ x.code = new
+        split
+        · exact newCurrent
+        · exact ln
       · show (if b == ∅ then A else dd) = (if b' == ∅ then A else dd)
         rw [related_empty hb]
     | revert _ _ => exact related.elim
   | revert gr out =>
+    refine ⟨_, eO, fun fuel' hf => ?_⟩
+    obtain ⟨R', e, related⟩ := eN fuel' hf
     cases R' with
     | success _ _ => exact related.elim
     | revert gr' out' =>
-      obtain ⟨eo, hg⟩ := related
+      obtain ⟨eo, hg, cap⟩ := related
       subst eo
-      refine ⟨f + 1, _, _, eO, eN, rfl, ?_, hg, ?_, rfl⟩
+      refine ⟨_, e, rfl, ?_, ?_, ?_, hg, cap, ?_, rfl⟩
       · show MapsRelated owner old new (if σ == ∅ then σ else σ) (if τ == ∅ then τ else τ)
         simp only [ite_self]; exact current
+      · show ∃ x, (if σ == ∅ then σ else σ).find? owner = some x ∧ x.code = old
+        simp only [ite_self]; exact oldCurrent
+      · show ∃ x, (if τ == ∅ then τ else τ).find? owner = some x ∧ x.code = new
+        simp only [ite_self]; exact newCurrent
       · show (if σ == ∅ then A else A) = (if τ == ∅ then A else A)
         simp only [ite_self]
 

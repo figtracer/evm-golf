@@ -157,11 +157,17 @@ fn main() -> Result<()> {
             prepare_parent(&out)?;
             let report = runtime::whole::certify(&original, &candidate, &out)?;
             println!(
-                "Whole-program refinement proved for {} instructions ({} power, {} threading, {} window sites); X, Ξ, Θ and Υ level, supported opcode profile, conditioned on original success or revert.\nEvidence: {}",
+                "Whole-program refinement proved for {} instructions ({} power, {} threading, {} window sites, {} calls); X, Ξ, Θ and Υ level, supported opcode profile, conditioned on original success or revert{}.\nEvidence: {}",
                 report.covered_instructions,
                 report.power_sites.len(),
                 report.thread_sites.len(),
                 report.window_sites.len(),
+                report.call_sites.len(),
+                if report.call_sites.is_empty() {
+                    ""
+                } else {
+                    " and on the call assumptions listed in result.json"
+                },
                 out.display()
             );
         }

@@ -99,10 +99,11 @@ not whole-contract equivalence: inputs, states and gas limits outside your
 scenarios are not covered, and contracts are optimized independently.
 Only a subset of opcodes and control flow is supported. A developer command
 proves whole-program refinement against EVMYulLean (interpreter, code execution,
-message call and transaction level), but only for call-free runtimes with the
-power, JUMPI-threading and stack-window rewrites. That proof carries facts
-about the stack across jumps, so a window can drop, for example, a mask on a
-`CALLER` value. See
+message call and transaction level) for runtimes with the power,
+JUMPI-threading and stack-window rewrites. That proof carries facts about the
+stack across jumps, so a window can drop, for example, a mask on a `CALLER`
+value, and it covers `CALL` and `STATICCALL` under stated assumptions about the
+callees. See
 [verification](docs/verification.md) for the exact boundary and
 [runtime support](docs/runtime.md) for what can be optimized.
 

@@ -52,13 +52,6 @@ theorem pop5_eq {st stk : List UInt256} {a b c d e : UInt256}
     simp only [Stack.pop5, Option.some.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩ := h; rfl
 
-theorem pop6_eq {st stk : List UInt256} {a b c d e g : UInt256}
-    (h : Stack.pop6 st = some (stk, a, b, c, d, e, g)) : st = [a, b, c, d, e, g] ++ stk := by
-  match st, h with
-  | _ :: _ :: _ :: _ :: _ :: _ :: _, h =>
-    simp only [Stack.pop6, Option.some.injEq, Prod.mk.injEq] at h
-    obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩ := h; rfl
-
 theorem bump_stack (u : State) (c : ℕ) : (bump u c).stack = u.stack := rfl
 
 theorem addr_lt (a : AccountAddress) : (UInt256.ofNat a.val).val.val < 2 ^ 160 := by

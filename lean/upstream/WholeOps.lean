@@ -152,6 +152,8 @@ structure Congruent (op : Operation .EVM) : Prop where
     EVM.step (f + 1) c (some (op, arg)) u = .ok v →
     ∃ v', EVM.step (g + 1) c (some (op, arg)) u' = .ok v' ∧
       DeployedOffset owner old new surplus skipped v v'
+  gas : ∀ (f c : ℕ) (arg : Option (UInt256 × Nat)) (u v : State), c ≤ u.gasAvailable.toNat →
+    EVM.step (f + 1) c (some (op, arg)) u = .ok v → v.gasAvailable.toNat ≤ u.gasAvailable.toNat
 
 /-- `Congruent` restricted to one pair of images, for opcodes that read the code size. -/
 structure CongruentAt (old new : ByteArray) (op : Operation .EVM) : Prop where
@@ -164,9 +166,11 @@ structure CongruentAt (old new : ByteArray) (op : Operation .EVM) : Prop where
     EVM.step (f + 1) c (some (op, arg)) u = .ok v →
     ∃ v', EVM.step (g + 1) c (some (op, arg)) u' = .ok v' ∧
       DeployedOffset owner old new surplus skipped v v'
+  gas : ∀ (f c : ℕ) (arg : Option (UInt256 × Nat)) (u v : State), c ≤ u.gasAvailable.toNat →
+    EVM.step (f + 1) c (some (op, arg)) u = .ok v → v.gasAvailable.toNat ≤ u.gasAvailable.toNat
 
 theorem Congruent.at {op : Operation .EVM} (c : Congruent op) {old new : ByteArray} :
-    CongruentAt old new op := ⟨c.fuel, c.cost, c.step⟩
+    CongruentAt old new op := ⟨c.fuel, c.cost, c.step, c.gas⟩
 
 def Advances (op : Operation .EVM) : Prop :=
   ∀ (f c : ℕ) (arg : Option (UInt256 × Nat)) (u v : State),
@@ -179,47 +183,65 @@ def Halting (op : Operation .EVM) : Prop := op = .STOP ∨ op = .RETURN ∨ op =
 /-- A proved multi-instruction rewrite: from related states at `pc` whose original
 stack satisfies `A`, a successful source run reaches a state satisfying the
 invariant `Q` after fewer steps, while the candidate reaches a related state after
-a fixed number of interpreter iterations. -/
+no more interpreter iterations and spends no gas it did not have. -/
 def Segment (owner : AccountAddress) (old new : ByteArray) (oj nj : Array UInt256)
     (Q : UInt256 → List UInt256 → Prop) (A : List UInt256 → Prop) (pc : UInt256) : Prop :=
   ∀ (fuel : ℕ) (s t : State) (surplus skipped : ℕ) (r : ExecutionResult State),
     DeployedOffset owner old new surplus skipped s t → s.pc = pc → A s.stack → X fuel oj s = .ok r →
-    ∃ (f : ℕ) (s' t' : State) (surplus' skipped' k : ℕ), f < fuel ∧ X f oj s' = .ok r ∧
+    ∃ (f : ℕ) (s' t' : State) (surplus' skipped' k : ℕ), f < fuel ∧ f + k ≤ fuel ∧ X f oj s' = .ok r ∧
       Q s'.pc s'.stack ∧ DeployedOffset owner old new surplus' skipped' s' t' ∧
+      t'.gasAvailable.toNat ≤ t.gasAvailable.toNat ∧
       ∀ g, X (g + 1 + k) nj t = X (g + 1) nj t'
 
+/-- Call opcodes the certificate supports, with their input count. -/
+inductive CallOp : Operation .EVM → ℕ → Prop where
+  | call : CallOp .CALL 7
+  | staticcall : CallOp .STATICCALL 6
+
 /-- Obligations at one synchronization point. `A` holds of the original stack on
-entry; every successor must satisfy the invariant `Q` on (pc, original stack). -/
-inductive Point (old new : ByteArray) (oj : Array UInt256) (Q : UInt256 → List UInt256 → Prop)
+entry; every successor must satisfy the invariant `Q` on (pc, original stack).
+Call obligations need the environment assumptions `HC`. -/
+inductive Point (HC : Prop) (old new : ByteArray) (oj : Array UInt256) (Q : UInt256 → List UInt256 → Prop)
     (A : List UInt256 → Prop) : UInt256 → Prop where
   | same (pc : UInt256) (op : Operation .EVM) (arg : Option (UInt256 × Nat))
       (c : CongruentAt old new op) (a : Advances op) (run : Running op)
       (o : decode old pc = some (op, arg)) (n : decode new pc = some (op, arg))
       (next : ∀ (f : ℕ) (u v : State), (δ op).getD 0 ≤ u.stack.length →
         EVM.step (f + 1) (C' u op) (some (op, arg)) u = .ok v → A u.stack →
-        Q (pc + UInt256.ofNat (advance op arg)) v.stack) : Point old new oj Q A pc
+        Q (pc + UInt256.ofNat (advance op arg)) v.stack) : Point HC old new oj Q A pc
   | halt (pc : UInt256) (op : Operation .EVM) (arg : Option (UInt256 × Nat))
       (c : CongruentAt old new op) (h : Halting op)
       (o : (decode old pc).getD (.STOP, .none) = (op, arg))
       (n : (decode new pc).getD (.STOP, .none) = (op, arg)) :
-      Point old new oj Q A pc
-  | invalid (pc : UInt256) (o : decode old pc = some (.INVALID, none)) : Point old new oj Q A pc
+      Point HC old new oj Q A pc
+  | invalid (pc : UInt256) (o : decode old pc = some (.INVALID, none)) : Point HC old new oj Q A pc
   | segment (pc : UInt256)
       (h : ∀ owner nj, (∀ x, oj.contains x = true → nj.contains x = true) →
-        Segment owner old new oj nj Q A pc) : Point old new oj Q A pc
+        Segment owner old new oj nj Q A pc) : Point HC old new oj Q A pc
   | jump (pc : UInt256)
       (o : decode old pc = some (.JUMP, none)) (n : decode new pc = some (.JUMP, none))
-      (targets : ∀ x tail, A (x :: tail) → oj.contains x = true → Q x tail) : Point old new oj Q A pc
+      (targets : ∀ x tail, A (x :: tail) → oj.contains x = true → Q x tail) : Point HC old new oj Q A pc
   | jumpi (pc : UInt256)
       (o : decode old pc = some (.JUMPI, none)) (n : decode new pc = some (.JUMPI, none))
       (next : ∀ x tail, A (x :: ⟨0⟩ :: tail) → Q (pc + UInt256.ofNat 1) tail)
       (targets : ∀ x b tail, A (x :: b :: tail) → b ≠ ⟨0⟩ → oj.contains x = true → Q x tail) :
-      Point old new oj Q A pc
+      Point HC old new oj Q A pc
   | power (pc : UInt256) (p : Operation.POp) (w k : Nat) (nz : p ≠ .PUSH0) (range : k < 256)
       (o : MulPowerAt old pc p w k) (n : ShiftPowerAt new pc p w k)
       (next : ∀ a tail, A (a :: tail) →
         Q (pc + UInt256.ofNat (w + 1) + UInt256.ofNat 1) (UInt256.mul (UInt256.ofNat (2 ^ k)) a :: tail)) :
-      Point old new oj Q A pc
+      Point HC old new oj Q A pc
+  | call (pc : UInt256) (op : Operation .EVM) (k : ℕ) (hc : HC) (hop : CallOp op k)
+      (o : decode old pc = some (op, none)) (n : decode new pc = some (op, none))
+      (next : ∀ st x, A st → (x = ⟨0⟩ ∨ x = ⟨1⟩) → Q (pc + UInt256.ofNat 1) (x :: st.drop k)) :
+      Point HC old new oj Q A pc
+  | gascall (pc : UInt256) (op : Operation .EVM) (k : ℕ) (hc : HC) (hop : CallOp op k)
+      (o : decode old pc = some (.GAS, none)) (n : decode new pc = some (.GAS, none))
+      (o' : decode old (pc + UInt256.ofNat 1) = some (op, none))
+      (n' : decode new (pc + UInt256.ofNat 1) = some (op, none))
+      (next : ∀ st x, A st → (x = ⟨0⟩ ∨ x = ⟨1⟩) →
+        Q (pc + UInt256.ofNat 1 + UInt256.ofNat 1) (x :: st.drop (k - 1))) :
+      Point HC old new oj Q A pc
 
 def bump (u : State) (c : ℕ) : State :=
   { u with execLength := u.execLength + 1, gasAvailable := u.gasAvailable - UInt256.ofNat c }
@@ -577,16 +599,25 @@ theorem calldataload_preserves (arg : Option (UInt256 × Nat)) :
 
 
 
+theorem bump_gas (u : State) (c : ℕ) (enough : c ≤ u.gasAvailable.toNat) :
+    (bump u c).gasAvailable.toNat = u.gasAvailable.toNat - c :=
+  word_sub_toNat u.gasAvailable c (lt_of_le_of_lt enough u.gasAvailable.val.isLt) enough
+
 theorem congruent_of {op : Operation .EVM}
     (T : Option (UInt256 × Nat) → State → Except EVM.ExecutionException State)
     (hstep : ∀ f c arg u, EVM.step (f + 1) c (some (op, arg)) u = T arg (bump u c))
     (hT : ∀ arg, Preserves (T arg))
-    (hcost : ∀ s t : State, s.stack = t.stack → C' t op = C' s op) : Congruent op := by
-  refine ⟨fun f g c arg u => by rw [hstep, hstep], fun h => hcost _ _ (rel_stack h), ?_⟩
-  intro owner old new surplus skipped u u' v f g c arg h enough run
-  rw [hstep] at run
-  obtain ⟨v', run', rel⟩ := hT arg (rel_bump h c enough) run
-  exact ⟨v', by rw [hstep]; exact run', rel⟩
+    (hcost : ∀ s t : State, s.stack = t.stack → C' t op = C' s op)
+    (hgas : ∀ arg u v, T arg u = .ok v → v.gasAvailable = u.gasAvailable) : Congruent op := by
+  refine ⟨fun f g c arg u => by rw [hstep, hstep], fun h => hcost _ _ (rel_stack h), ?_, ?_⟩
+  · intro owner old new surplus skipped u u' v f g c arg h enough run
+    rw [hstep] at run
+    obtain ⟨v', run', rel⟩ := hT arg (rel_bump h c enough) run
+    exact ⟨v', by rw [hstep]; exact run', rel⟩
+  · intro f c arg u v enough run
+    rw [hstep] at run
+    rw [hgas arg _ v run, bump_gas u c enough]
+    exact Nat.sub_le _ _
 
 
 

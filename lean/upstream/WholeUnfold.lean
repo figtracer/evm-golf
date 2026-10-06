@@ -266,11 +266,22 @@ theorem offset_stopped {owner old new surplus skipped s t}
     have := h.count
     omega
 
-def OutcomeRelated (owner : AccountAddress) (old new : ByteArray) :
+/-- Results of the original and the candidate, for candidate entry gas `cap`: equal output;
+on success related states; the candidate ends with no less gas than the original and with no
+more than it started with. -/
+def OutcomeRelated (owner : AccountAddress) (old new : ByteArray) (cap : ℕ) :
     ExecutionResult EVM.State → ExecutionResult EVM.State → Prop
-  | .success s o, .success t o' => o = o' ∧ ∃ surplus skipped, DeployedOffset owner old new surplus skipped s t
-  | .revert g o, .revert g' o' => o = o' ∧ g.toNat ≤ g'.toNat
+  | .success s o, .success t o' =>
+    o = o' ∧ t.gasAvailable.toNat ≤ cap ∧ ∃ surplus skipped, DeployedOffset owner old new surplus skipped s t
+  | .revert g o, .revert g' o' => o = o' ∧ g.toNat ≤ g'.toNat ∧ g'.toNat ≤ cap
   | _, _ => False
+
+theorem outcome_cap {owner : AccountAddress} {old new : ByteArray} {cap cap' : ℕ}
+    {r r' : ExecutionResult EVM.State} (h : cap ≤ cap') (rel : OutcomeRelated owner old new cap r r') :
+    OutcomeRelated owner old new cap' r r' := by
+  cases r <;> cases r' <;> simp only [OutcomeRelated] at rel ⊢
+  · exact ⟨rel.1, le_trans rel.2.1 h, rel.2.2⟩
+  · exact ⟨rel.1, rel.2.1, le_trans rel.2.2 h⟩
 
 theorem X_zero (j : Array UInt256) (s : EVM.State) : X 0 j s = .error .OutOfFuel := by
   unfold X; rfl
@@ -290,6 +301,7 @@ theorem power_case (owner : AccountAddress) (old new : ByteArray)
     ∃ f a tail, fuel = f + 2 ∧ s.stack = a :: tail ∧ X (f + 1) oj (mulPowerPost s old w k a tail) = .ok r ∧
       DeployedOffset owner old new (surplus + 2) skipped
         (mulPowerPost s old w k a tail) (shiftPowerPost t new w k a tail) ∧
+      (shiftPowerPost t new w k a tail).gasAvailable.toNat ≤ t.gasAvailable.toNat ∧
       ∀ g nj, X (g + 3) nj t = X (g + 1) nj (shiftPowerPost t new w k a tail) := by
   have sc : s.executionEnv.code = old := rel.maps.2.2.1.2.1
   have samePC := offset_pc rel
@@ -319,7 +331,15 @@ theorem power_case (owner : AccountAddress) (old new : ByteArray)
   have nt : ShiftPowerAt new t.pc p w k := by rw [←samePC]; exact n
   have bd := offset_power_boundary owner old new s t p w k surplus skipped a tail f2 0 oj oj
     rel nz range o nt stack gas height
-  refine ⟨f2, a, tail, rfl, stack, by rw [←bd.1]; exact ok, bd.2.2, ?_⟩
+  refine ⟨f2, a, tail, rfl, stack, by rw [←bd.1]; exact ok, bd.2.2, ?_, ?_⟩
+  · have hm : (mulPowerPost s old w k a tail).gasAvailable.toNat = s.gasAvailable.toNat - 8 := by
+      show ((s.gasAvailable - UInt256.ofNat 3) - UInt256.ofNat 5).toNat = _
+      rw [word_sub_toNat _ 5 (by decide) (by rw [word_sub_toNat _ 3 (by decide) g1]; omega),
+        word_sub_toNat _ 3 (by decide) g1]
+      omega
+    have := bd.2.2.gas
+    have := rel.gas
+    omega
   intro g nj
   exact (offset_power_boundary owner old new s t p w k surplus skipped a tail f2 g oj nj
     rel nz range o nt stack gas height).2.1
@@ -329,6 +349,7 @@ theorem power_case (owner : AccountAddress) (old new : ByteArray)
 #print axioms Z_of
 #print axioms X_ok_inv
 #print axioms X_stop_inv
+#print axioms outcome_cap
 #print axioms power_case
 
 end GolfWhole
