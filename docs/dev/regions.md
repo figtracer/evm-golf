@@ -222,9 +222,10 @@ differ only through that refund and fee arithmetic. Θ and Υ need the original'
 inner Ξ to return success or revert. There is no trace, path or gas premise. Jump tables come from the checked-scanner
 profile, computed by a byte-list scanner proved equal to it.
 
-The generator lists every instruction reachable from pc 0 or a JUMPDEST and
-emits one obligation per instruction, split across modules that each stay
-within the per-module budget ([WholeProgram.lean](../../lean/upstream/WholeProgram.lean)).
+The generator walks the program from pc 0 and emits one obligation per
+reached instruction, split across modules that each stay within the
+per-module budget ([WholeProgram.lean](../../lean/upstream/WholeProgram.lean)).
+Code that no execution reaches needs no obligation.
 Images up to the EIP-170 limit are accepted. They may differ only at same-width
 `PUSHn 2^k; MUL` → `PUSHn k; SHL` sites and at one-hop threading sites
 `PUSHn X; JUMPI` → `PUSHn Y; JUMPI` where `X` holds the unchanged trampoline
@@ -255,3 +256,29 @@ induction over nested calls.
 
 Not proved: exceptional original runs, calls, contract creation, rewrite
 families other than the three above and formal correspondence with revm.
+
+### Stack facts
+
+A window may need knowledge from before it, for example that a value came
+from `CALLER` and so fits in 160 bits, which makes a later mask a no-op. The
+certificate then carries facts across instructions and jumps. A fact is about
+one stack slot of the original run: "the value is below 2^n" or "the value is
+one of c1, ..., cn". Stack equality carries the facts to the candidate.
+
+- The generated table lists (pc, facts) entries. The invariant says that the
+  current state matches some entry. Every obligation must lead to entries of
+  its successors.
+- A jump whose target slot has a value set goes only to those JUMPDESTs.
+  Return addresses that callers push become such sets, so function returns
+  resolve. A jump with no set may go to every JUMPDEST, and each JUMPDEST then
+  has an entry without facts.
+- A pc may have several entries, one per calling context. Contexts that agree
+  on their return addresses are joined. Past 256 contexts, fewer return
+  addresses are kept apart.
+- Instructions outside windows keep the slots below their inputs
+  ([WholeShape.lean](../../lean/upstream/WholeShape.lean)).
+- A window may assume the bit bounds of its entry facts.
+
+Rust computes the facts and Lean checks every transfer by kernel evaluation
+([WholeFacts.lean](../../lean/upstream/WholeFacts.lean)). Facts multiply the
+obligations, so the generator uses them only when some window needs them.

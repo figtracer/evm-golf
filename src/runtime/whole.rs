@@ -11,6 +11,8 @@ use serde::Serialize;
 use std::{collections::BTreeSet, fmt::Write as _, fs, path::Path};
 
 use super::{Instruction, decode};
+
+mod facts;
 use crate::proof;
 
 /// Obligations decode through a byte-list lemma, so per-instruction cost is
@@ -24,6 +26,10 @@ pub struct WholeCertificate {
     pub candidate_keccak256: String,
     pub runtime_bytes: usize,
     pub covered_instructions: usize,
+    /// (pc, stack facts) pairs; a pc reached in several contexts counts once per context.
+    pub checked_entries: usize,
+    /// Whether entries carry stack facts (only when a window needs them).
+    pub stack_facts: bool,
     pub power_sites: Vec<usize>,
     pub thread_sites: Vec<usize>,
     pub window_sites: Vec<usize>,
@@ -118,28 +124,27 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
     let names: Vec<String> = modules.iter().map(|(name, _)| name.clone()).collect();
     let lean_version = proof::verify_region(out, proof::RegionKind::Whole(&names))?;
     let report = WholeCertificate {
-        claim: "whole-program refinement of the code-execution function Ξ and its interpreter X",
+        claim: "whole-program refinement of the interpreter X, code execution Ξ, message call Θ and transaction Υ",
         original_keccak256: keccak256(original).to_string(),
         candidate_keccak256: keccak256(candidate).to_string(),
         runtime_bytes: original.len(),
-        covered_instructions: plan.points.len(),
+        covered_instructions: plan.analysis.obligations.len(),
+        checked_entries: plan.analysis.entries.values().map(Vec::len).sum(),
+        stack_facts: plan.precise,
         power_sites: plan
-            .points
-            .iter()
+            .points()
             .filter_map(|(pc, obligation)| {
                 matches!(obligation, Obligation::Power(_)).then_some(*pc)
             })
             .collect(),
         thread_sites: plan
-            .points
-            .iter()
+            .points()
             .filter_map(|(pc, obligation)| {
                 matches!(obligation, Obligation::Thread(_)).then_some(*pc)
             })
             .collect(),
         window_sites: plan
-            .points
-            .iter()
+            .points()
             .filter_map(|(pc, obligation)| {
                 matches!(obligation, Obligation::Window(_)).then_some(*pc)
             })
@@ -150,8 +155,8 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
             "if the original returns success or revert, so does the candidate, with equal output; on success, related account maps, equal substate and no less gas; on revert, no less gas",
         ],
         unproved: [
-            "transaction-level (Υ) and message-call (Θ) equivalence",
-            "opcodes outside the supported profile: calls, creation, GAS, code reads, balances and SELFDESTRUCT",
+            "Θ and Υ for calls and transactions that do not target the owner directly",
+            "opcodes outside the supported profile: calls, creation, GAS, CODECOPY, EXTCODECOPY, EXTCODEHASH and SELFDESTRUCT",
             "exceptional original runs (the claim is conditioned on original success or revert)",
             "revm correspondence",
         ],
@@ -165,8 +170,16 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
 }
 
 struct Plan {
-    points: Vec<(usize, Obligation)>,
+    analysis: facts::Analysis,
     jumpdests: Vec<usize>,
+    /// Entries carry stack facts because some window needs them.
+    precise: bool,
+}
+
+impl Plan {
+    fn points(&self) -> impl Iterator<Item = (&usize, &Obligation)> {
+        self.analysis.obligations.iter()
+    }
 }
 
 fn plan(original: &[u8], candidate: &[u8]) -> Result<Plan> {
@@ -185,55 +198,69 @@ fn plan(original: &[u8], candidate: &[u8]) -> Result<Plan> {
         jumpdests == jump_table(candidate),
         "rewrite changes the valid jump table"
     );
-    let sites = power_sites(original, candidate, &instructions, &starts)?;
-    // Cover pc 0, every JUMPDEST and their fall-through successors; bytes such as
-    // trailing metadata that no execution can reach need no obligation.
-    let mut pending: Vec<usize> = std::iter::once(0)
-        .chain(jumpdests.iter().copied())
-        .collect();
-    let mut seen = BTreeSet::new();
-    let mut points = Vec::new();
-    while let Some(pc) = pending.pop() {
-        if !seen.insert(pc) {
-            continue;
-        }
-        if pc >= original.len() {
-            points.push((pc, Obligation::FallOff));
-            continue;
-        }
-        ensure!(
-            starts.contains(&pc),
-            "execution reaches pc {pc}, which is not an instruction boundary"
-        );
-        let (obligation, next) = if let Some(site) = sites.iter().find(|s| s.pc() == pc) {
-            if let Site::Thread(thread) = site {
-                pending.push(thread.to);
+    // Facts of the unchanged original choose window boundaries; the final
+    // analysis then treats each rewrite site as one step.
+    let first = facts::analyze(original, &jumpdests, true, &mut |pc| {
+        obligation_at(original, &instructions, &starts, &[], pc)
+    })?;
+    let env_at = |pc: usize| facts::env(&facts::joined(&first, pc));
+    let sites = power_sites(original, candidate, &instructions, &starts, &env_at)?;
+    // Facts multiply the entries; use them only when some window needs them.
+    let precise = sites.iter().any(|site| match site {
+        Site::Window(w) => !window_check(&w.old, &w.new, &[]),
+        _ => false,
+    });
+    let analysis = facts::analyze(original, &jumpdests, precise, &mut |pc| {
+        obligation_at(original, &instructions, &starts, &sites, pc)
+    })?;
+    for (pc, list) in &analysis.entries {
+        if let Some(Obligation::Window(site)) = analysis.obligations.get(pc) {
+            for fs in list {
+                ensure!(
+                    window_check(&site.old, &site.new, &facts::env(fs)),
+                    "the window at pc {pc} needs stack facts that do not hold on every path"
+                );
             }
-            let obligation = match site.clone() {
-                Site::Power(power) => Obligation::Power(power),
-                Site::Thread(thread) => Obligation::Thread(thread),
-                Site::Window(window) => Obligation::Window(window),
-            };
-            (obligation, Some(site.end()))
-        } else {
-            ensure!(
-                !sites.iter().any(|s| s.pc() < pc && pc < s.end()),
-                "execution reaches pc {pc} inside a rewrite site"
-            );
-            let instruction = instructions
-                .iter()
-                .find(|i| i.pc == pc)
-                .expect("boundary has an instruction");
-            let obligation = classify(instruction)?;
-            let next = matches!(obligation, Obligation::Same { .. } | Obligation::Jumpi)
-                .then_some(pc + instruction.bytes.len());
-            (obligation, next)
-        };
-        points.push((pc, obligation));
-        pending.extend(next);
+        }
     }
-    points.sort_by_key(|(pc, _)| *pc);
-    Ok(Plan { points, jumpdests })
+    Ok(Plan {
+        analysis,
+        jumpdests,
+        precise,
+    })
+}
+
+/// The obligation at a pc that execution reaches. Bytes such as trailing
+/// metadata that no execution reaches need none.
+fn obligation_at(
+    original: &[u8],
+    instructions: &[Instruction],
+    starts: &BTreeSet<usize>,
+    sites: &[Site],
+    pc: usize,
+) -> Result<Obligation> {
+    if pc >= original.len() {
+        return Ok(Obligation::FallOff);
+    }
+    ensure!(
+        starts.contains(&pc),
+        "execution reaches pc {pc}, which is not an instruction boundary"
+    );
+    if let Some(site) = sites.iter().find(|s| s.pc() == pc) {
+        return Ok(match site.clone() {
+            Site::Power(power) => Obligation::Power(power),
+            Site::Thread(thread) => Obligation::Thread(thread),
+            Site::Window(window) => Obligation::Window(window),
+        });
+    }
+    ensure!(
+        !sites.iter().any(|s| s.pc() < pc && pc < s.end()),
+        "execution reaches pc {pc} inside a rewrite site"
+    );
+    let index = instructions
+        .binary_search_by_key(&pc, |i| i.pc)
+        .expect("boundary has an instruction");
+    classify(&instructions[index])
 }
 
 fn push_width(op: u8) -> usize {
@@ -259,6 +286,7 @@ fn power_sites(
     candidate: &[u8],
     instructions: &[Instruction],
     starts: &BTreeSet<usize>,
+    env_at: &dyn Fn(usize) -> Vec<usize>,
 ) -> Result<Vec<Site>> {
     let instruction_at = |pc: usize| instructions.iter().find(|i| i.pc == pc);
     let mut sites: Vec<Site> = Vec::new();
@@ -329,20 +357,24 @@ fn power_sites(
                 let floor = sites.last().map_or(0, Site::end);
                 let mut error = None;
                 let mut found = None;
-                for back in 0..8 {
-                    let Some(at) = index.checked_sub(back) else {
-                        break;
-                    };
-                    let begin = &instructions[at];
-                    if begin.pc < floor || (back > 0 && !window_op(&begin.bytes)) {
-                        break;
-                    }
-                    match window_site(original, candidate, begin.pc, pc) {
-                        Ok(site) => {
-                            found = Some(site);
+                // Prefer a window that needs no stack facts.
+                'search: for facts in [false, true] {
+                    for back in 0..8 {
+                        let Some(at) = index.checked_sub(back) else {
+                            break;
+                        };
+                        let begin = &instructions[at];
+                        if begin.pc < floor || (back > 0 && !window_op(&begin.bytes)) {
                             break;
                         }
-                        Err(e) => error = error.or(Some(e)),
+                        let env = if facts { env_at(begin.pc) } else { Vec::new() };
+                        match window_site(original, candidate, begin.pc, pc, &env) {
+                            Ok(site) => {
+                                found = Some(site);
+                                break 'search;
+                            }
+                            Err(e) => error = error.or(Some(e)),
+                        }
                     }
                 }
                 match found {
@@ -378,6 +410,7 @@ fn window_site(
     candidate: &[u8],
     start: usize,
     first: usize,
+    env: &[usize],
 ) -> Result<WindowSite> {
     const MAX_WINDOW: usize = 48;
     let step = |code: &[u8], pc: usize| (pc + push_width(code[pc]) + 1).min(code.len());
@@ -389,7 +422,7 @@ fn window_site(
         if o == c && o > last {
             let same = o >= original.len()
                 || original[o..step(original, o)] == candidate[o..step(candidate, o)];
-            if same && window_check(&old, &new) {
+            if same && window_check(&old, &new, env) {
                 return Ok(WindowSite {
                     pc: start,
                     end: o,
@@ -516,18 +549,20 @@ fn flat(op: u8, s: Sym, out: &mut Vec<Sym>) {
     }
 }
 
-/// Mirror of the Lean `Sym.bits`: an upper bound on the bit length of a value.
-fn bits(s: &Sym) -> usize {
+/// Mirror of the Lean `Sym.bits`: an upper bound on the bit length of a value,
+/// given bounds `env` on the inputs.
+fn bits(s: &Sym, env: &[usize]) -> usize {
     match s {
-        Sym::Input(_) | Sym::Un(0x19, _) => 256,
-        Sym::Lit(v) => (256 - v.leading_zeros()).max(1),
+        Sym::Input(i) => env.get(*i).copied().unwrap_or(256),
+        Sym::Un(0x19, _) => 256,
+        Sym::Lit(v) => 256 - v.leading_zeros(),
         Sym::Un(..) => 1,
         Sym::Bin(op, a, b) => match *op {
-            AND => bits(a).min(bits(b)),
-            OR | 0x18 => bits(a).max(bits(b)),
+            AND => bits(a, env).min(bits(b, env)),
+            OR | 0x18 => bits(a, env).max(bits(b, env)),
             LT | 0x11 | SLT | 0x13 | EQ => 1,
-            DIV | 0x06 => bits(a),
-            0x1c => bits(b),
+            DIV | 0x06 => bits(a, env),
+            0x1c => bits(b, env),
             _ => 256,
         },
     }
@@ -536,7 +571,7 @@ fn bits(s: &Sym) -> usize {
 /// Mirror of the Lean `acNorm`: fold literals, drop a literal mask that keeps
 /// every bit the other operands can have, sort operands, drop duplicates of
 /// idempotent operators and rebuild a right-nested term.
-fn ac_norm(op: u8, e: U256, list: Vec<Sym>) -> Sym {
+fn ac_norm(op: u8, e: U256, list: Vec<Sym>, env: &[usize]) -> Sym {
     let mut c = e;
     let mut rest = Vec::new();
     for s in list {
@@ -550,7 +585,7 @@ fn ac_norm(op: u8, e: U256, list: Vec<Sym>) -> Sym {
         OR => Some(U256::MAX),
         _ => None,
     };
-    let low = rest.iter().map(bits).fold(256, usize::min);
+    let low = rest.iter().map(|s| bits(s, env)).fold(256, usize::min);
     let ones = if low >= 256 {
         U256::MAX
     } else {
@@ -592,7 +627,7 @@ fn pow2(k: U256) -> U256 {
 }
 
 /// Mirror of the Lean `normOp`.
-fn norm_op(op: u8, a: Sym, b: Sym) -> Sym {
+fn norm_op(op: u8, a: Sym, b: Sym, env: &[usize]) -> Sym {
     let zero = Sym::Lit(U256::ZERO);
     let big = |k: &U256| *k >= U256::from(256);
     let bin = |f: u8, x: Sym, y: Sym| Sym::Bin(f, Box::new(x), Box::new(y));
@@ -602,14 +637,14 @@ fn norm_op(op: u8, a: Sym, b: Sym) -> Sym {
             let mut l = Vec::new();
             flat(ADD, a, &mut l);
             l.push(Sym::Lit(U256::ZERO.wrapping_sub(c)));
-            ac_norm(ADD, U256::ZERO, l)
+            ac_norm(ADD, U256::ZERO, l, env)
         }
         (0x1b, Sym::Lit(k), _) if big(&k) => zero,
         (0x1b, Sym::Lit(k), b) => {
             let mut l = Vec::new();
             flat(MUL, b, &mut l);
             l.push(Sym::Lit(pow2(k)));
-            ac_norm(MUL, U256::from(1), l)
+            ac_norm(MUL, U256::from(1), l, env)
         }
         (0x1c, Sym::Lit(k), _) if big(&k) => zero,
         (0x1c, Sym::Lit(k), b) if k.is_zero() => b,
@@ -625,21 +660,21 @@ fn norm_op(op: u8, a: Sym, b: Sym) -> Sym {
 
 /// Mirror of the Lean `norm`: a canonical form modulo commutativity,
 /// associativity, identities and a few strength reductions.
-fn norm(s: &Sym) -> Sym {
+fn norm(s: &Sym, env: &[usize]) -> Sym {
     match s {
-        Sym::Un(op, a) => match norm(a) {
+        Sym::Un(op, a) => match norm(a, env) {
             Sym::Lit(x) if *op == ISZERO => Sym::Lit(U256::from(u8::from(x.is_zero()))),
             Sym::Lit(x) => Sym::Lit(!x),
-            Sym::Un(ISZERO, y) if *op == ISZERO && bits(&y) <= 1 => *y,
+            Sym::Un(ISZERO, y) if *op == ISZERO && bits(&y, env) <= 1 => *y,
             a => Sym::Un(*op, Box::new(a)),
         },
         Sym::Bin(op, a, b) => {
-            let (a, b) = (norm(a), norm(b));
+            let (a, b) = (norm(a, env), norm(b, env));
             if let Some(e) = ident(*op) {
                 let mut l = Vec::new();
                 flat(*op, a, &mut l);
                 flat(*op, b, &mut l);
-                return ac_norm(*op, e, l);
+                return ac_norm(*op, e, l, env);
             }
             match (&a, &b) {
                 (Sym::Lit(x), Sym::Lit(y))
@@ -647,62 +682,67 @@ fn norm(s: &Sym) -> Sym {
                 {
                     Sym::Lit(bin_value(*op, *x, *y))
                 }
-                _ => norm_op(*op, a, b),
+                _ => norm_op(*op, a, b, env),
             }
         }
         s => s.clone(),
     }
 }
 
-/// Mirror of the Lean `windowCheck`; Lean decides it again in the certificate.
-fn window_check(old: &[(usize, Vec<u8>)], new: &[(usize, Vec<u8>)]) -> bool {
-    fn run(instrs: &[(usize, Vec<u8>)]) -> (Vec<Sym>, usize, Vec<i64>, usize) {
-        let (mut a, mut m, mut heights, mut cost) = (Vec::<Sym>::new(), 0usize, Vec::new(), 0usize);
-        for (_, b) in instrs {
-            let (need, c) = match b[0] {
-                0x02 | 0x04..=0x07 | 0x0b => (2, 5),
-                op if BINARY.contains(&op) => (2, 3),
-                op if UNARY.contains(&op) => (1, 3),
-                0x5f => (0, 2),
-                0x60..=0x7f => (0, 3),
-                op @ 0x80..=0x8f => (usize::from(op - 0x7f), 3),
-                op @ 0x90..=0x9f => (usize::from(op - 0x8f) + 1, 3),
-                _ => (1, 2),
-            };
-            // `a` is top first; pull missing inputs from below.
-            while a.len() < need {
-                a.push(Sym::Input(m));
-                m += 1;
-            }
-            match b[0] {
-                0x5f..=0x7f => a.insert(0, Sym::Lit(U256::from_be_slice(&b[1..]))),
-                op @ 0x80..=0x8f => a.insert(0, a[usize::from(op - 0x80)].clone()),
-                op @ 0x90..=0x9f => a.swap(0, usize::from(op - 0x8f)),
-                op if BINARY.contains(&op) => {
-                    let x = a.remove(0);
-                    let y = a.remove(0);
-                    a.insert(0, Sym::Bin(op, Box::new(x), Box::new(y)));
-                }
-                op if UNARY.contains(&op) => {
-                    let x = a.remove(0);
-                    a.insert(0, Sym::Un(op, Box::new(x)));
-                }
-                _ => {
-                    a.remove(0);
-                }
-            }
-            cost += c;
-            heights.push(a.len() as i64 - m as i64);
+/// Mirror of the Lean `srun`: the symbolic stack (top first), the number of
+/// inputs pulled, the height after each instruction and the gas cost.
+fn sym_run(instrs: &[(usize, Vec<u8>)]) -> (Vec<Sym>, usize, Vec<i64>, usize) {
+    let (mut a, mut m, mut heights, mut cost) = (Vec::<Sym>::new(), 0usize, Vec::new(), 0usize);
+    for (_, b) in instrs {
+        let (need, c) = match b[0] {
+            0x02 | 0x04..=0x07 | 0x0b => (2, 5),
+            op if BINARY.contains(&op) => (2, 3),
+            op if UNARY.contains(&op) => (1, 3),
+            0x5f => (0, 2),
+            0x60..=0x7f => (0, 3),
+            op @ 0x80..=0x8f => (usize::from(op - 0x7f), 3),
+            op @ 0x90..=0x9f => (usize::from(op - 0x8f) + 1, 3),
+            _ => (1, 2),
+        };
+        // `a` is top first; pull missing inputs from below.
+        while a.len() < need {
+            a.push(Sym::Input(m));
+            m += 1;
         }
-        (a, m, heights, cost)
+        match b[0] {
+            0x5f..=0x7f => a.insert(0, Sym::Lit(U256::from_be_slice(&b[1..]))),
+            op @ 0x80..=0x8f => a.insert(0, a[usize::from(op - 0x80)].clone()),
+            op @ 0x90..=0x9f => a.swap(0, usize::from(op - 0x8f)),
+            op if BINARY.contains(&op) => {
+                let x = a.remove(0);
+                let y = a.remove(0);
+                a.insert(0, Sym::Bin(op, Box::new(x), Box::new(y)));
+            }
+            op if UNARY.contains(&op) => {
+                let x = a.remove(0);
+                a.insert(0, Sym::Un(op, Box::new(x)));
+            }
+            _ => {
+                a.remove(0);
+            }
+        }
+        cost += c;
+        heights.push(a.len() as i64 - m as i64);
     }
-    let (mut an, mn, hn, cn) = run(new);
-    let (ao, mo, ho, co) = run(old);
+    (a, m, heights, cost)
+}
+
+/// Mirror of the Lean `windowCheck`; Lean decides it again in the certificate.
+fn window_check(old: &[(usize, Vec<u8>)], new: &[(usize, Vec<u8>)], env: &[usize]) -> bool {
+    let (mut an, mn, hn, cn) = sym_run(new);
+    let (ao, mo, ho, co) = sym_run(old);
     if mn > mo {
         return false;
     }
     an.extend((mn..mo).map(Sym::Input));
-    an.iter().map(norm).eq(ao.iter().map(norm))
+    an.iter()
+        .map(|s| norm(s, env))
+        .eq(ao.iter().map(|s| norm(s, env)))
         && cn <= co
         && new.len() <= old.len()
         && !old.is_empty()
@@ -866,6 +906,8 @@ fn simple_name(op: u8) -> Option<&'static str> {
 /// Obligations per point module; each module must compile within the
 /// per-module proof budget.
 const POINTS_PER_MODULE: usize = 48;
+/// Point chunks whose fact lists share one table module.
+const CHUNKS_PER_TABLE: usize = 8;
 const BYTES_PER_CHUNK: usize = 1024;
 
 const HEADER: &str = "set_option Elab.async false\nset_option maxRecDepth 131072\nset_option maxHeartbeats 4000000\nopen EvmYul EvmYul.EVM GolfUpstream GolfCountOffset GolfComposition GolfWhole\nnamespace GolfWholeCertificate\n\n";
@@ -899,7 +941,7 @@ fn in_chunk_term(k: usize, n: usize) -> String {
 
 fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String)> {
     let mut modules = Vec::new();
-    let mut image = format!("import WholeUpsilon\nimport WholeEnv\nimport WholeWindow\n{HEADER}");
+    let mut image = format!("import WholeUpsilon\nimport WholeShape\n{HEADER}");
     for (side, code) in [("old", original), ("new", candidate)] {
         let mut names = Vec::new();
         for (i, chunk) in code.chunks(BYTES_PER_CHUNK).enumerate() {
@@ -939,41 +981,72 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
         }
         let _ = nested;
     }
-    let chunks: Vec<_> = plan.points.chunks(POINTS_PER_MODULE).collect();
-    let chunk_of = |pc: usize| {
-        chunks
-            .iter()
-            .position(|chunk| chunk.iter().any(|(p, _)| *p == pc))
-            .expect("successor is a covered point")
-    };
-    let mut point_names = Vec::new();
-    for (k, chunk) in chunks.iter().enumerate() {
-        let name = format!("pointsChunk{k}");
-        writeln!(
-            image,
-            "def {name} : List Nat := {}",
-            nat_list(chunk.iter().map(|(pc, _)| *pc))
-        )
-        .unwrap();
-        point_names.push(name);
-    }
     writeln!(
         image,
-        "def pointsN : List Nat := {}\nabbrev P (pc : UInt256) : Prop := (pointsN.map UInt256.ofNat).contains pc = true\ndef jumpsN : List Nat := {}\ndef jumps : Array UInt256 := (jumpsN.map UInt256.ofNat).toArray\n",
-        nested(&point_names),
+        "def jumpsN : List Nat := {}\ndef jumps : Array UInt256 := (jumpsN.map UInt256.ofNat).toArray\nend GolfWholeCertificate",
         nat_list(plan.jumpdests.iter().copied())
+    )
+    .unwrap();
+    modules.push(("WholeImage".to_owned(), image));
+    // One obligation per (pc, facts) entry, in pc order. Fact lists and the
+    // entry table are split across modules to stay within the module budget.
+    let entries: Vec<(usize, usize)> = plan
+        .analysis
+        .entries
+        .iter()
+        .flat_map(|(pc, list)| (0..list.len()).map(move |i| (*pc, i)))
+        .collect();
+    let chunks: Vec<&[(usize, usize)]> = entries.chunks(POINTS_PER_MODULE).collect();
+    let mut place = std::collections::BTreeMap::new();
+    for (k, chunk) in chunks.iter().enumerate() {
+        for (i, entry) in chunk.iter().enumerate() {
+            place.insert(*entry, (k, i));
+        }
+    }
+    let mut point_names = Vec::new();
+    let mut table_imports = String::new();
+    for (g, group) in chunks.chunks(CHUNKS_PER_TABLE).enumerate() {
+        let mut m = format!("import WholeImage\n{HEADER}");
+        for (j, chunk) in group.iter().enumerate() {
+            let k = g * CHUNKS_PER_TABLE + j;
+            for &(pc, i) in *chunk {
+                let fs = &plan.analysis.entries[&pc][i];
+                writeln!(m, "def F{pc}_{i} : List Abs := {}", facts_term(fs)).unwrap();
+            }
+            let name = format!("pointsChunk{k}");
+            let items: Vec<String> = chunk
+                .iter()
+                .map(|(pc, i)| format!("({pc}, F{pc}_{i})"))
+                .collect();
+            writeln!(
+                m,
+                "def {name} : List (Nat × List Abs) := [{}]",
+                items.join(", ")
+            )
+            .unwrap();
+            point_names.push(name);
+        }
+        m.push_str("end GolfWholeCertificate\n");
+        writeln!(table_imports, "import WholeTable{g}").unwrap();
+        modules.push((format!("WholeTable{g}"), m));
+    }
+    let mut index = format!("{table_imports}{HEADER}");
+    writeln!(
+        index,
+        "def table : List (Nat × List Abs) := {}\nabbrev Q : UInt256 → List UInt256 → Prop := Inv table",
+        nested(&point_names),
     )
     .unwrap();
     for k in 0..chunks.len() {
         writeln!(
-            image,
-            "theorem in_chunk{k} {{x : Nat}} (h : x ∈ pointsChunk{k}) : x ∈ pointsN := {}",
+            index,
+            "theorem in_chunk{k} {{x : Nat × List Abs}} (h : x ∈ pointsChunk{k}) : x ∈ table := {}",
             in_chunk_term(k, chunks.len())
         )
         .unwrap();
     }
-    image.push_str("end GolfWholeCertificate\n");
-    modules.push(("WholeImage".to_owned(), image));
+    index.push_str("end GolfWholeCertificate\n");
+    modules.push(("WholeIndex".to_owned(), index));
     // Per-block scanner states and byte bounds, checked in separate modules.
     let mut block_modules = Vec::new();
     let mut jumps_proof = String::new();
@@ -1056,32 +1129,50 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
     let block_imports: String = block_modules
         .iter()
         .map(|m| format!("import {m}\n"))
+        .chain(std::iter::once("import WholeIndex\n".to_owned()))
         .collect();
+    // Jumps whose destination is unknown may reach every JUMPDEST, which then
+    // has an entry without facts.
+    let any_targets = if plan.analysis.any {
+        "theorem anyTargets : ∀ x, jumps.contains x = true → ∀ st, Q x st :=\n  top_targets table jumpsN (by decide +kernel)\n"
+    } else {
+        ""
+    };
     modules.push((
         "WholeJumps".to_owned(),
         format!(
-            "{block_imports}{HEADER}{jumps_proof}\ntheorem targets : ∀ x, jumps.contains x = true → P x :=\n  jumps_points jumpsN pointsN (by decide +kernel)\ntheorem size_eq : oldCode.size = newCode.size := by\n  show (ofBytes oldBytes).size = (ofBytes newBytes).size\n  simp only [ofBytes, ByteArray.size, List.size_toArray, List.length_map]\n  rw [show oldBytes = oldTail0 from rfl, show newBytes = newTail0 from rfl, oldLenT0, newLenT0]\nend GolfWholeCertificate\n"
+            "{block_imports}{HEADER}{jumps_proof}\n{any_targets}theorem size_eq : oldCode.size = newCode.size := by\n  show (ofBytes oldBytes).size = (ofBytes newBytes).size\n  simp only [ofBytes, ByteArray.size, List.size_toArray, List.length_map]\n  rw [show oldBytes = oldTail0 from rfl, show newBytes = newTail0 from rfl, oldLenT0, newLenT0]\nend GolfWholeCertificate\n"
         ),
     ));
+    let mem = |pc: usize, fs: &[facts::Abs]| -> String {
+        let (i, _) = plan
+            .analysis
+            .target(pc, fs)
+            .expect("every successor has an entry");
+        let (k, at) = place[&(pc, i)];
+        format!("(in_chunk{k} (mem_at (l := pointsChunk{k}) {at} (x := ({pc}, F{pc}_{i})) rfl))")
+    };
     for (k, chunk) in chunks.iter().enumerate() {
         let mut s = format!("import WholeJumps\n{HEADER}");
-        for (pc, obligation) in *chunk {
+        for &(pc, i) in *chunk {
+            let obligation = &plan.analysis.obligations[&pc];
+            let fs = &plan.analysis.entries[&pc][i];
             writeln!(
                 s,
-                "theorem point_{pc} : Point oldCode newCode jumps P (UInt256.ofNat {pc}) :=\n  {}",
-                obligation_term(*pc, obligation, &chunk_of)
+                "theorem point_{pc}_{i} : Point oldCode newCode jumps Q (Holds F{pc}_{i}) (UInt256.ofNat {pc}) :=\n  {}",
+                obligation_term(pc, obligation, fs, original, &plan.jumpdests, &mem)
             )
             .unwrap();
         }
         writeln!(
             s,
-            "\ntheorem cover{k} : ∀ x, (pointsChunk{k}.map UInt256.ofNat).contains x = true →\n    Point oldCode newCode jumps P x :="
+            "\ntheorem cover{k} : ∀ p ∈ pointsChunk{k}, Point oldCode newCode jumps Q (Holds p.2) (UInt256.ofNat p.1) :="
         )
         .unwrap();
-        for (pc, _) in *chunk {
-            writeln!(s, "  cover_cons point_{pc} <|").unwrap();
+        for (pc, i) in *chunk {
+            writeln!(s, "  entries_cons point_{pc}_{i} <|").unwrap();
         }
-        s.push_str("  cover_nil\nend GolfWholeCertificate\n");
+        s.push_str("  entries_nil\nend GolfWholeCertificate\n");
         modules.push((format!("WholePoints{k}"), s));
     }
     let imports: String = (0..chunks.len())
@@ -1090,12 +1181,12 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
     let covers: Vec<String> = (0..chunks.len()).map(|k| format!("cover{k}")).collect();
     let mut cover = covers.last().expect("at least one point").clone();
     for name in covers.iter().rev().skip(1) {
-        cover = format!("cover_app {name} ({cover})");
+        cover = format!("entries_app {name} ({cover})");
     }
     let mut s = format!("{imports}{HEADER}");
     writeln!(
         s,
-        "theorem cover : ∀ pc, P pc → Point oldCode newCode jumps P pc :=\n  {cover}"
+        "theorem cover : ∀ p ∈ table, Point oldCode newCode jumps Q (Holds p.2) (UInt256.ofNat p.1) :=\n  {cover}"
     )
     .unwrap();
     writeln!(
@@ -1113,8 +1204,8 @@ theorem whole_certificate (owner : AccountAddress) (fuel surplus skipped : ℕ) 
       OutcomeRelated owner oldCode newCode r r' := by
   rw [old_jumps] at ok
   rw [new_jumps]
-  exact whole_refines owner oldCode newCode jumps jumps P cover (fun _ h => h)
-    fuel s t surplus skipped r rel (by rw [start]; exact start_of (in_chunk{} (by decide +kernel))) ok
+  exact whole_refines owner oldCode newCode jumps jumps Q (cover_of cover) (fun _ h => h)
+    fuel s t surplus skipped r rel (by rw [start]; exact ⟨(0, F0_0), {start}, rfl, trivial⟩) ok
 
 /-- The same claim for the code-execution function Ξ, from a fresh call frame
 whose account maps differ only in the owner's deployed code. -/
@@ -1193,7 +1284,7 @@ theorem upsilon_certificate (owner : AccountAddress) (fuel : ℕ) (σ τ : Accou
 #print axioms theta_certificate
 #print axioms upsilon_certificate
 end GolfWholeCertificate",
-        chunk_of(0)
+        start = mem(0, &[])
     )
     .unwrap();
     modules.push(("WholeCertificate".to_owned(), s));
@@ -1259,10 +1350,28 @@ fn tail2(side: &str, at: usize) -> String {
     )
 }
 
+/// Lean literal for a fact list.
+fn facts_term(fs: &[facts::Abs]) -> String {
+    let items: Vec<String> = fs
+        .iter()
+        .map(|a| match &a.set {
+            None => format!("⟨{}, none⟩", a.bits),
+            Some(set) => {
+                let values: Vec<String> = set.iter().map(U256::to_string).collect();
+                format!("⟨{}, some [{}]⟩", a.bits, values.join(", "))
+            }
+        })
+        .collect();
+    format!("[{}]", items.join(", "))
+}
+
 fn obligation_term(
     pc: usize,
     obligation: &Obligation,
-    chunk_of: &dyn Fn(usize) -> usize,
+    fs: &[facts::Abs],
+    code: &[u8],
+    jumpdests: &[usize],
+    mem: &dyn Fn(usize, &[facts::Abs]) -> String,
 ) -> String {
     const K: &str = "(by decide +kernel)";
     let tail = |side: &str, at: usize| {
@@ -1279,28 +1388,60 @@ fn obligation_term(
         |side: &str, at: usize| format!("(decode_tail_getD {} (by decide) {K})", tail(side, at));
     let old = |at: usize| fact("old", at);
     let new = |at: usize| fact("new", at);
-    let next = |target: usize| {
-        format!(
-            "(next_of (target := {target}) {K} (in_chunk{} {K}))",
-            chunk_of(target)
-        )
+    let dests: BTreeSet<usize> = jumpdests.iter().copied().collect();
+    // Destinations of a jump: each listed value is covered or not a JUMPDEST.
+    let targets = |set: &[U256], tail: &[facts::Abs]| {
+        let mut term = "targets_nil".to_owned();
+        for c in set.iter().rev() {
+            term = match facts::dest(&dests, *c) {
+                Some(c) => format!("(targets_mem {} {K} {term})", mem(c, tail)),
+                None => format!("(targets_bad {K} {term})"),
+            };
+        }
+        term
     };
-    let width = |instruction_len: usize| pc + instruction_len;
+    let jump = |kind: &str, tail: &[facts::Abs]| match fs.first().and_then(|a| a.set.as_ref()) {
+        Some(set) => format!("({kind}_set (by rfl) {})", targets(set, tail)),
+        None => format!("({kind}_any anyTargets)"),
+    };
     match obligation {
-        Obligation::Same { op, arg, same, len } => format!(
-            ".same _ {op} {arg} {} {same}.2.1 {same}.2.2 {} {} {}",
-            // Size-dependent facts are already specialized to the two images.
-            if same.contains("size_eq") {
-                format!("{same}.1")
+        Obligation::Same { op, arg, same, len } => {
+            let bytes = &code[pc..pc + len];
+            let (eff, xf) = if window_op(bytes) {
+                (
+                    format!("(eff_wop ({}) (by decide))", wop(bytes)),
+                    format!("(xf_wop (by decide) {K})"),
+                )
             } else {
-                format!("{same}.1.at")
-            },
+                let (_, _, name) = facts::shape(bytes[0]).expect("every opcode has a stack shape");
+                (format!("({name} _)"), format!("(xf_shape {K})"))
+            };
+            format!(
+                ".same _ {op} {arg} {} {same}.2.1 {same}.2.2 {} {} (same_next {eff} {xf} {K} {})",
+                // Size-dependent facts are already specialized to the two images.
+                if same.contains("size_eq") {
+                    format!("{same}.1")
+                } else {
+                    format!("{same}.1.at")
+                },
+                old(pc),
+                new(pc),
+                mem(pc + len, &facts::xfer_same(bytes, fs))
+            )
+        }
+        Obligation::Jump => format!(
+            ".jump _ {} {} {}",
             old(pc),
             new(pc),
-            next(width(*len))
+            jump("jump", &facts::drop(fs, 1))
         ),
-        Obligation::Jump => format!(".jump _ {} {} targets", old(pc), new(pc)),
-        Obligation::Jumpi => format!(".jumpi _ {} {} {} targets", old(pc), new(pc), next(pc + 1)),
+        Obligation::Jumpi => format!(
+            ".jumpi _ {} {} (jumpi_next {K} {} {K}) {}",
+            old(pc),
+            new(pc),
+            mem(pc + 1, &facts::drop(fs, 2)),
+            jump("jumpi", &facts::drop(fs, 2))
+        ),
         Obligation::Halt {
             op,
             which,
@@ -1320,8 +1461,9 @@ fn obligation_term(
             let jumpi = site.pc + site.width + 1;
             let push2 = site.from + 1;
             let jump = push2 + site.to_width + 1;
+            let rest = facts::drop(fs, 1);
             format!(
-                ".segment _ (fun owner nj hj => thread_segment owner oldCode newCode jumps nj P (UInt256.ofNat {pc}) .PUSH{w} .PUSH{m} {w} {m} (UInt256.ofNat {from}) (UInt256.ofNat {to}) (by decide) (by decide) {} {} {} {} {} {} {} {} (mem_points (in_chunk{} {K})) hj)",
+                ".segment _ (fun owner nj hj => thread_segment owner oldCode newCode jumps nj _ _ (UInt256.ofNat {pc}) .PUSH{w} .PUSH{m} {w} {m} (UInt256.ofNat {from}) (UInt256.ofNat {to}) (by decide) (by decide) {} {} {} {} {} {} {} (thread_fall {K} {} {K}) (thread_target {K} {} {K}) hj)",
                 old(pc),
                 new(pc),
                 fact2("old", jumpi),
@@ -1329,8 +1471,8 @@ fn obligation_term(
                 old(site.from),
                 fact2("old", push2),
                 fact2("old", jump),
-                next(jumpi + 1),
-                chunk_of(site.to),
+                mem(jumpi + 1, &rest),
+                mem(site.to, &rest),
                 w = site.width,
                 m = site.to_width,
                 from = site.from,
@@ -1357,24 +1499,27 @@ fn obligation_term(
                 term
             };
             format!(
-                ".segment _ (fun owner nj _ => window_segment owner oldCode newCode jumps nj P (UInt256.ofNat {pc}) (UInt256.ofNat {}) {} {} {} {} {K} (mem_points (in_chunk{} {K})))",
+                ".segment _ (fun owner nj _ => window_segment owner oldCode newCode jumps nj _ _ (UInt256.ofNat {pc}) (UInt256.ofNat {}) {} {} _ {} {} {K} window_fits (window_next {} {K} {} {K}))",
                 site.end,
                 ops(&site.old),
                 ops(&site.new),
                 wcode("old", &site.old),
                 wcode("new", &site.new),
-                chunk_of(site.end),
+                ops(&site.old),
+                mem(site.end, &facts::xfer_window(&site.old, fs)),
             )
         }
         Obligation::Power(site) => {
             let mul = site.pc + site.width + 1;
+            let mut next = vec![facts::top()];
+            next.extend(facts::drop(fs, 1));
             format!(
-                ".power _ .PUSH{w} {w} {k} (by decide) (by decide) ⟨{}, {}⟩ ⟨{}, {}⟩ {}",
+                ".power _ .PUSH{w} {w} {k} (by decide) (by decide) ⟨{}, {}⟩ ⟨{}, {}⟩ (power_next {K} {} {K})",
                 old(pc),
                 fact2("old", mul),
                 new(pc),
                 fact2("new", mul),
-                next(mul + 1),
+                mem(mul + 1, &next),
                 w = site.width,
                 k = site.exponent
             )
@@ -1392,12 +1537,12 @@ mod tests {
         let candidate = hex::decode("34600a57600760021b005b600080fd").unwrap();
         let planned = plan(&original, &candidate).unwrap();
         assert_eq!(planned.jumpdests, vec![10]);
-        let pcs: Vec<usize> = planned.points.iter().map(|(pc, _)| *pc).collect();
+        let pcs: Vec<usize> = planned.points().map(|(pc, _)| *pc).collect();
         assert_eq!(pcs, vec![0, 1, 3, 4, 6, 9, 10, 11, 13, 14]);
         // Unreachable trailing bytes need no obligation.
         let tail = hex::decode("34600a576007600402005b600080fdf1").unwrap();
-        assert_eq!(plan(&tail, &tail).unwrap().points.len(), 11);
-        assert!(matches!(planned.points[4].1, Obligation::Power(_)));
+        assert_eq!(plan(&tail, &tail).unwrap().points().count(), 11);
+        assert!(matches!(first(&planned, 6), Obligation::Power(_)));
         let wrong = hex::decode("34600a57600760031b005b600080fd").unwrap();
         assert!(plan_err(&original, &wrong).contains("unsupported difference"));
         let call = hex::decode("f100").unwrap();
@@ -1409,9 +1554,10 @@ mod tests {
         let original = hex::decode("346007570000005b600b565b600080fd").unwrap();
         let candidate = hex::decode("34600b570000005b600b565b600080fd").unwrap();
         let planned = plan(&original, &candidate).unwrap();
-        assert!(matches!(planned.points[1].1, Obligation::Thread(_)));
-        let pcs: Vec<usize> = planned.points.iter().map(|(pc, _)| *pc).collect();
-        assert_eq!(pcs, vec![0, 1, 4, 7, 8, 10, 11, 12, 14, 15]);
+        assert!(matches!(first(&planned, 1), Obligation::Thread(_)));
+        let pcs: Vec<usize> = planned.points().map(|(pc, _)| *pc).collect();
+        // The trampoline at 7 is no longer reached.
+        assert_eq!(pcs, vec![0, 1, 4, 11, 12, 14, 15]);
         // A destination without the matching trampoline is rejected.
         let wrong = hex::decode("34600c570000005b600b565b600080fd").unwrap();
         assert!(plan_err(&original, &wrong).contains("unsupported difference"));
@@ -1423,21 +1569,15 @@ mod tests {
         let original = hex::decode("6020819000").unwrap();
         let candidate = hex::decode("806100200000").unwrap()[..5].to_vec();
         let planned = plan(&original, &candidate).unwrap();
-        assert!(matches!(planned.points[0].1, Obligation::Window(_)));
+        assert!(matches!(first(&planned, 0), Obligation::Window(_)));
         // An idempotent mask: x AND m AND m -> x AND m.
         let mask = hex::decode("60ff1660ff1600").unwrap();
         let fewer = hex::decode("60ff1660ff5000").unwrap();
-        assert!(matches!(
-            plan(&mask, &fewer).unwrap().points[0].1,
-            Obligation::Window(_)
-        ));
+        assert!(has_window(&plan(&mask, &fewer).unwrap()));
         // Operands of commutative operators may be reordered.
         let mask = hex::decode("8060ff1600").unwrap();
         let swapped = hex::decode("60ff811600").unwrap();
-        assert!(matches!(
-            plan(&mask, &swapped).unwrap().points[0].1,
-            Obligation::Window(_)
-        ));
+        assert!(has_window(&plan(&mask, &swapped).unwrap()));
         // A window that changes the result is rejected before Lean.
         let bad = hex::decode("8061002100").unwrap();
         assert!(plan_err(&original, &bad).contains("unsupported difference"));
@@ -1449,7 +1589,7 @@ mod tests {
         let y = || Sym::Input(1);
         let lit = |v: U256| Sym::Lit(v);
         let bin = |op: u8, a: Sym, b: Sym| Sym::Bin(op, Box::new(a), Box::new(b));
-        let same = |a: Sym, b: Sym| norm(&a) == norm(&b);
+        let same = |a: Sym, b: Sym| norm(&a, &[]) == norm(&b, &[]);
         assert!(same(bin(0x11, x(), y()), bin(LT, y(), x())));
         assert!(same(
             bin(SUB, x(), lit(U256::from(3))),
@@ -1488,6 +1628,48 @@ mod tests {
         ));
         assert!(!same(bin(AND, x(), one()), x()));
         assert!(!same(bin(0x12, x(), y()), bin(0x12, y(), x())));
+    }
+
+    #[test]
+    fn carries_facts_across_jumps() {
+        // CALLER; PUSH1 5; JUMP; STOP; JUMPDEST; PUSH20 2^160-1; AND; ... RETURN.
+        // The mask is a no-op because CALLER is below 2^160 on every path.
+        let mask = format!("33600556005b73{}165f5260205ff3", "ff".repeat(20));
+        let dropped = format!("33600556005b73{}505f5260205ff3", "00".repeat(20));
+        let original = hex::decode(&mask).unwrap();
+        let planned = plan(&original, &hex::decode(&dropped).unwrap()).unwrap();
+        assert!(matches!(first(&planned, 6), Obligation::Window(_)));
+        assert!(planned.precise);
+        // The dead STOP after the JUMP needs no obligation.
+        assert!(!planned.analysis.obligations.contains_key(&4));
+        let at = &planned.analysis.entries[&5];
+        assert_eq!(at.len(), 1);
+        assert_eq!(
+            at[0],
+            vec![facts::Abs {
+                bits: 160,
+                set: None
+            }]
+        );
+        // With a destination read from calldata the JUMPDEST knows nothing.
+        let unknown = mask.replacen("6005", "5f35", 1);
+        let candidate = dropped.replacen("6005", "5f35", 1);
+        assert!(
+            plan_err(
+                &hex::decode(unknown).unwrap(),
+                &hex::decode(candidate).unwrap()
+            )
+            .contains("unsupported difference")
+        );
+    }
+
+    fn has_window(plan: &Plan) -> bool {
+        plan.points()
+            .any(|(_, o)| matches!(o, Obligation::Window(_)))
+    }
+
+    fn first(plan: &Plan, pc: usize) -> &Obligation {
+        &plan.analysis.obligations[&pc]
     }
 
     fn plan_err(a: &[u8], b: &[u8]) -> String {

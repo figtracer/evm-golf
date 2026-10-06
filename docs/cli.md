@@ -105,7 +105,8 @@ proposals carry no proof or metadata.
 ## Output
 
 ```text
-DIR/result.json              per contract: accepted, gas before/after, rewrites
+DIR/result.json              per contract: accepted, gas before/after, rewrites,
+                             gas saved per call for each called function
 DIR/baseline/project.json    next project: accepted bytecode, same scenarios
 DIR/<id>/                    evidence: candidate.hex, Rewrites.lean/.log,
                              rewrites.json, scenario traces, failure.log

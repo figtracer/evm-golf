@@ -164,20 +164,25 @@ theorem window_cand {code : ByteArray} {j : Array UInt256} {pc e : UInt256} {ops
 
 /-- Decidable window equivalence: the candidate needs no deeper stack, ends with
 the same stack, costs no more gas, runs no more instructions and never grows
-the stack above some height the original reaches. -/
-def windowCheck (opsO opsN : List WOp) : Bool :=
+the stack above some height the original reaches. `env` bounds the bit length of
+the entry stack slots. -/
+def windowCheck (env : List Nat) (opsO opsN : List WOp) : Bool :=
   decide ((srun opsN ([], 0)).2 ≤ (srun opsO ([], 0)).2) &&
   decide (((srun opsN ([], 0)).1 ++ pulls (srun opsN ([], 0)).2
-    ((srun opsO ([], 0)).2 - (srun opsN ([], 0)).2)).map norm = (srun opsO ([], 0)).1.map norm) &&
+    ((srun opsO ([], 0)).2 - (srun opsN ([], 0)).2)).map (norm env) = (srun opsO ([], 0)).1.map (norm env)) &&
   decide (scost opsN ≤ scost opsO) && decide (opsN.length ≤ opsO.length) &&
   decide (0 < opsO.length) &&
   (sheights opsN ([], 0)).all (fun h => (sheights opsO ([], 0)).any (fun h' => decide (h ≤ h')))
 
 theorem window_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : Array UInt256)
-    (P : UInt256 → Prop) (pc e : UInt256) (opsO opsN : List WOp)
-    (wo : WCode old pc opsO e) (wn : WCode new pc opsN e) (check : windowCheck opsO opsN = true)
-    (next : P e) : Segment owner old new oj nj P pc := by
-  intro fuel s t surplus skipped r rel hpc ok
+    (Q : UInt256 → List UInt256 → Prop) (A : List UInt256 → Prop) (pc e : UInt256)
+    (opsO opsN : List WOp) (env : List Nat)
+    (wo : WCode old pc opsO e) (wn : WCode new pc opsN e) (check : windowCheck env opsO opsN = true)
+    (fits : ∀ st, A st → Fits env st)
+    (next : ∀ st, A st →
+      Q e ((srun opsO ([], 0)).1.map (Sym.val st) ++ st.drop (srun opsO ([], 0)).2)) :
+    Segment owner old new oj nj Q A pc := by
+  intro fuel s t surplus skipped r rel hpc hA ok
   have sc : s.executionEnv.code = old := rel.maps.2.2.1.2.1
   have tc : t.executionEnv.code = new := rel.maps.2.2.2.2.1
   have samePC := offset_pc rel
@@ -197,13 +202,13 @@ theorem window_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : A
       omega)
     (by omega)
   refine ⟨f, _, _, surplus + (scost opsO - scost opsN), skipped + (opsO.length - opsN.length),
-    opsN.length, by omega, finO, next, ?_, fun g => cand g⟩
+    opsN.length, by omega, finO, next _ hA, ?_, fun g => cand g⟩
   have hstk : (srun opsO ([], 0)).1.map (Sym.val s.stack) ++ s.stack.drop (srun opsO ([], 0)).2 =
       (srun opsN ([], 0)).1.map (Sym.val s.stack) ++ s.stack.drop (srun opsN ([], 0)).2 := by
     have hd : s.stack.drop (srun opsO ([], 0)).2 = s.stack.drop ((srun opsN ([], 0)).2 +
         ((srun opsO ([], 0)).2 - (srun opsN ([], 0)).2)) := by congr 1; omega
-    have vals : ∀ l : List Sym, l.map (Sym.val s.stack) = (l.map norm).map (Sym.val s.stack) := by
-      intro l; rw [List.map_map]; congr 1; funext x; exact (norm_val _ x).symm
+    have vals : ∀ l : List Sym, l.map (Sym.val s.stack) = (l.map (norm env)).map (Sym.val s.stack) := by
+      intro l; rw [List.map_map]; congr 1; funext x; exact (norm_val env _ (fits _ hA) x).symm
     rw [hd, vals (srun opsO ([], 0)).1, ← heq, ← vals, List.map_append, List.append_assoc,
       pulls_val _ _ _ (by omega)]
   refine ⟨?_, ?_, ?_, rel.maps⟩

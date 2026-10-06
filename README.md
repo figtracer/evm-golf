@@ -48,30 +48,39 @@ evm-golf inspect project.json > proposals.json         # discovered, unverified 
 evm-golf verify project.json --proposals proposals.json --out runs/check-1
 ```
 
-Each run writes `result.json` (gas before and after per contract) and
-`baseline/project.json`, a ready-to-use project pointing at the accepted bytecode.
+Each run prints and writes the gas saved per call for each function, for
+example `transfer(address,uint256): 0 to 15 gas saved per call (5 calls)`. A
+function can save different amounts on different paths, so the report gives a
+range.
+`result.json` also has the totals, and `baseline/project.json` is a ready-to-use
+project pointing at the accepted bytecode.
 Use `cargo run --locked --` in place of `evm-golf` if it is not installed.
 Try it on [examples/quickstart](examples/quickstart):
 `cargo run --locked -- optimize examples/quickstart/project.json --out runs/demo`.
 
 ## Results
 
-`optimize` with default settings, aggregated over the supplied transactions
-(every stage proved and replayed, no failed batches):
+`optimize` with default settings on 36 ERC20 and ERC4626 builds: OpenZeppelin,
+Solady and Solmate; legacy and via-IR pipelines; optimizer off, 200 and 10,000
+runs. Every stage was proved and replayed. Gas saved per call, as the median
+over the builds whose transactions call the function, and the largest:
 
-| Workload | Baseline | Transactions | Gas saved |
-| --- | --- | ---: | ---: |
-| 36 ERC20 and ERC4626 builds | solc output | 1,026 | 8,981 |
-| Balancer vault token info | already optimized runtime | 23 | 219 more |
-| Uniswap V3 pool, tick crossing | already optimized runtime | 37 | 228 more |
-| Uniswap V3 pool, no crossing | already optimized runtime | 40 | 407 more |
+| Function | Builds | Median | Largest |
+| --- | ---: | ---: | ---: |
+| `transfer` | 18 | 14 | 33 |
+| `transferFrom` | 18 | 15.5 | 44 |
+| `approve` | 18 | 9 | 23 |
+| `balanceOf` | 36 | 3 | 15 |
+| `deposit` | 18 | 6 | 128 |
+| `mint` | 18 | 10 | 116 |
+| `withdraw` | 18 | 10.5 | 182 |
+| `redeem` | 18 | 10.5 | 118 |
 
-The 36 builds cover OpenZeppelin, Solady and Solmate, legacy and via-IR pipelines,
-and optimizer off, 200 and 10,000 runs. Rows are separate baselines; do not add
-them. Savings are execution gas only: they are about 0.03% of total transaction
-gas here, which is dominated by intrinsic and storage costs. Unoptimized via-IR
-builds gain most (300 to 550 gas each), mostly from jump threading. Typical
-accepted rewrites:
+A call saves different amounts on different paths. Unoptimized builds gain
+most, mostly from jump threading. On runtimes that were already optimized
+(Balancer vault token info, Uniswap V3 pool swaps) the search still saves 6 to
+10 gas per transaction on average. Savings are execution gas only; intrinsic
+and storage costs dominate total transaction gas. Typical accepted rewrites:
 
 | Before | After | Saved per execution |
 | --- | --- | ---: |
@@ -91,7 +100,9 @@ scenarios are not covered, and contracts are optimized independently.
 Only a subset of opcodes and control flow is supported. A developer command
 proves whole-program refinement against EVMYulLean (interpreter, code execution,
 message call and transaction level), but only for call-free runtimes with the
-power, JUMPI-threading and stack-window rewrites. See
+power, JUMPI-threading and stack-window rewrites. That proof carries facts
+about the stack across jumps, so a window can drop, for example, a mask on a
+`CALLER` value. See
 [verification](docs/verification.md) for the exact boundary and
 [runtime support](docs/runtime.md) for what can be optimized.
 

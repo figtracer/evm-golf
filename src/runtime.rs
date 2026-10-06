@@ -121,6 +121,10 @@ pub struct CaseResult {
     pub baseline_gas: u64,
     pub candidate_gas: u64,
     pub outcome: String,
+    /// Calldata selector of a direct call to the target (`0x` and 8 hex
+    /// digits), `fallback` for shorter calldata, `indirect` when the
+    /// transaction calls another account first.
+    pub function: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -516,6 +520,7 @@ fn compare_results(left: Execution, right: Execution) -> Result<CaseResult> {
             "revert"
         }
         .into(),
+        function: String::new(),
     })
 }
 

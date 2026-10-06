@@ -287,7 +287,7 @@ theorem power_case (owner : AccountAddress) (old new : ByteArray)
     (rel : DeployedOffset owner old new surplus skipped s t)
     (o : MulPowerAt old s.pc p w k) (n : ShiftPowerAt new s.pc p w k)
     (ok : X (fuel + 1) oj s = .ok r) :
-    ∃ f a tail, fuel = f + 2 ∧ X (f + 1) oj (mulPowerPost s old w k a tail) = .ok r ∧
+    ∃ f a tail, fuel = f + 2 ∧ s.stack = a :: tail ∧ X (f + 1) oj (mulPowerPost s old w k a tail) = .ok r ∧
       DeployedOffset owner old new (surplus + 2) skipped
         (mulPowerPost s old w k a tail) (shiftPowerPost t new w k a tail) ∧
       ∀ g nj, X (g + 3) nj t = X (g + 1) nj (shiftPowerPost t new w k a tail) := by
@@ -319,7 +319,7 @@ theorem power_case (owner : AccountAddress) (old new : ByteArray)
   have nt : ShiftPowerAt new t.pc p w k := by rw [←samePC]; exact n
   have bd := offset_power_boundary owner old new s t p w k surplus skipped a tail f2 0 oj oj
     rel nz range o nt stack gas height
-  refine ⟨f2, a, tail, rfl, by rw [←bd.1]; exact ok, bd.2.2, ?_⟩
+  refine ⟨f2, a, tail, rfl, stack, by rw [←bd.1]; exact ok, bd.2.2, ?_⟩
   intro g nj
   exact (offset_power_boundary owner old new s t p w k surplus skipped a tail f2 g oj nj
     rel nz range o nt stack gas height).2.1

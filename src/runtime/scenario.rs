@@ -306,6 +306,18 @@ pub(super) fn replay(
                     })
                     .data(Bytes::from(from_hex(&transaction.calldata)?))
                     .build()?;
+                let function = if destination != target {
+                    "indirect".to_owned()
+                } else {
+                    match tx.data.get(..4) {
+                        Some(selector) => format!("0x{}", hex::encode(selector)),
+                        None => "fallback".to_owned(),
+                    }
+                };
+                let label = |mut case: CaseResult| {
+                    case.function = function.clone();
+                    case
+                };
                 if let ReplayPolicy::GuardedCalls(directory) = policy {
                     let path = directory.join(format!("transaction-{i}.trace"));
                     let mut baseline = Calls::record(&path, target, &addresses, original, &copies)?;
@@ -331,7 +343,7 @@ pub(super) fn replay(
                         Some(&mut candidate),
                     )?;
                     candidate.finish()?;
-                    compare_results(a, b)
+                    compare_results(a, b).map(label)
                 } else {
                     compare_results(
                         execute_env(
@@ -353,6 +365,7 @@ pub(super) fn replay(
                             None,
                         )?,
                     )
+                    .map(label)
                 }
             })()
             .with_context(|| format!("transaction {i}"))

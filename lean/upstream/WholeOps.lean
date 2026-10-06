@@ -176,42 +176,50 @@ def Running (op : Operation .EVM) : Prop := ∀ μ, H μ op = none
 
 def Halting (op : Operation .EVM) : Prop := op = .STOP ∨ op = .RETURN ∨ op = .REVERT
 
-/-- A proved multi-instruction rewrite: from related states at `pc`, a successful
-source run reaches a covered point after fewer steps, while the candidate reaches
-a related state after a fixed number of interpreter iterations. -/
+/-- A proved multi-instruction rewrite: from related states at `pc` whose original
+stack satisfies `A`, a successful source run reaches a state satisfying the
+invariant `Q` after fewer steps, while the candidate reaches a related state after
+a fixed number of interpreter iterations. -/
 def Segment (owner : AccountAddress) (old new : ByteArray) (oj nj : Array UInt256)
-    (P : UInt256 → Prop) (pc : UInt256) : Prop :=
+    (Q : UInt256 → List UInt256 → Prop) (A : List UInt256 → Prop) (pc : UInt256) : Prop :=
   ∀ (fuel : ℕ) (s t : State) (surplus skipped : ℕ) (r : ExecutionResult State),
-    DeployedOffset owner old new surplus skipped s t → s.pc = pc → X fuel oj s = .ok r →
-    ∃ (f : ℕ) (s' t' : State) (surplus' skipped' k : ℕ), f < fuel ∧ X f oj s' = .ok r ∧ P s'.pc ∧
-      DeployedOffset owner old new surplus' skipped' s' t' ∧ ∀ g, X (g + 1 + k) nj t = X (g + 1) nj t'
+    DeployedOffset owner old new surplus skipped s t → s.pc = pc → A s.stack → X fuel oj s = .ok r →
+    ∃ (f : ℕ) (s' t' : State) (surplus' skipped' k : ℕ), f < fuel ∧ X f oj s' = .ok r ∧
+      Q s'.pc s'.stack ∧ DeployedOffset owner old new surplus' skipped' s' t' ∧
+      ∀ g, X (g + 1 + k) nj t = X (g + 1) nj t'
 
-/-- Obligations at one synchronization point. -/
-inductive Point (old new : ByteArray) (oj : Array UInt256) (P : UInt256 → Prop) :
-    UInt256 → Prop where
+/-- Obligations at one synchronization point. `A` holds of the original stack on
+entry; every successor must satisfy the invariant `Q` on (pc, original stack). -/
+inductive Point (old new : ByteArray) (oj : Array UInt256) (Q : UInt256 → List UInt256 → Prop)
+    (A : List UInt256 → Prop) : UInt256 → Prop where
   | same (pc : UInt256) (op : Operation .EVM) (arg : Option (UInt256 × Nat))
       (c : CongruentAt old new op) (a : Advances op) (run : Running op)
       (o : decode old pc = some (op, arg)) (n : decode new pc = some (op, arg))
-      (next : P (pc + UInt256.ofNat (advance op arg))) : Point old new oj P pc
+      (next : ∀ (f : ℕ) (u v : State), (δ op).getD 0 ≤ u.stack.length →
+        EVM.step (f + 1) (C' u op) (some (op, arg)) u = .ok v → A u.stack →
+        Q (pc + UInt256.ofNat (advance op arg)) v.stack) : Point old new oj Q A pc
   | halt (pc : UInt256) (op : Operation .EVM) (arg : Option (UInt256 × Nat))
       (c : CongruentAt old new op) (h : Halting op)
       (o : (decode old pc).getD (.STOP, .none) = (op, arg))
       (n : (decode new pc).getD (.STOP, .none) = (op, arg)) :
-      Point old new oj P pc
-  | invalid (pc : UInt256) (o : decode old pc = some (.INVALID, none)) : Point old new oj P pc
+      Point old new oj Q A pc
+  | invalid (pc : UInt256) (o : decode old pc = some (.INVALID, none)) : Point old new oj Q A pc
   | segment (pc : UInt256)
       (h : ∀ owner nj, (∀ x, oj.contains x = true → nj.contains x = true) →
-        Segment owner old new oj nj P pc) : Point old new oj P pc
+        Segment owner old new oj nj Q A pc) : Point old new oj Q A pc
   | jump (pc : UInt256)
       (o : decode old pc = some (.JUMP, none)) (n : decode new pc = some (.JUMP, none))
-      (targets : ∀ x, oj.contains x = true → P x) : Point old new oj P pc
+      (targets : ∀ x tail, A (x :: tail) → oj.contains x = true → Q x tail) : Point old new oj Q A pc
   | jumpi (pc : UInt256)
       (o : decode old pc = some (.JUMPI, none)) (n : decode new pc = some (.JUMPI, none))
-      (next : P (pc + UInt256.ofNat 1))
-      (targets : ∀ x, oj.contains x = true → P x) : Point old new oj P pc
+      (next : ∀ x tail, A (x :: ⟨0⟩ :: tail) → Q (pc + UInt256.ofNat 1) tail)
+      (targets : ∀ x b tail, A (x :: b :: tail) → b ≠ ⟨0⟩ → oj.contains x = true → Q x tail) :
+      Point old new oj Q A pc
   | power (pc : UInt256) (p : Operation.POp) (w k : Nat) (nz : p ≠ .PUSH0) (range : k < 256)
       (o : MulPowerAt old pc p w k) (n : ShiftPowerAt new pc p w k)
-      (next : P (pc + UInt256.ofNat (w + 1) + UInt256.ofNat 1)) : Point old new oj P pc
+      (next : ∀ a tail, A (a :: tail) →
+        Q (pc + UInt256.ofNat (w + 1) + UInt256.ofNat 1) (UInt256.mul (UInt256.ofNat (2 ^ k)) a :: tail)) :
+      Point old new oj Q A pc
 
 def bump (u : State) (c : ℕ) : State :=
   { u with execLength := u.execLength + 1, gasAvailable := u.gasAvailable - UInt256.ofNat c }
@@ -727,6 +735,41 @@ theorem jumpi_pc (arg : Option (UInt256 × Nat)) (f c : ℕ) (u v : State)
     injection run with run
     subst run
     exact ⟨x, b, tail, rfl, rfl⟩
+
+theorem jump_stack (arg : Option (UInt256 × Nat)) (f c : ℕ) (u v : State)
+    (run : EVM.step (f + 1) c (some (.JUMP, arg)) u = .ok v) : u.stack = v.pc :: v.stack := by
+  have e : EVM.step (f + 1) c (some (.JUMP, arg)) u =
+      (match (bump u c).stack.pop with
+        | some ⟨stack, μ₀⟩ => Except.ok { bump u c with pc := μ₀, stack := stack }
+        | _ => Except.error .StackUnderflow : Except EVM.ExecutionException State) := rfl
+  rw [e] at run
+  cases hs : u.stack with
+  | nil => simp [bump, hs, Stack.pop] at run
+  | cons x tail =>
+    have hp : (bump u c).stack.pop = some (tail, x) := by simp [bump, hs, Stack.pop]
+    rw [hp] at run
+    injection run with run
+    subst run
+    rfl
+
+theorem jumpi_stack (arg : Option (UInt256 × Nat)) (f c : ℕ) (u v : State)
+    (run : EVM.step (f + 1) c (some (.JUMPI, arg)) u = .ok v) :
+    ∃ x b, u.stack = x :: b :: v.stack ∧ v.pc = if b != ⟨0⟩ then x else u.pc + ⟨1⟩ := by
+  have e : EVM.step (f + 1) c (some (.JUMPI, arg)) u =
+      (match (bump u c).stack.pop2 with
+        | some ⟨stack, μ₀, μ₁⟩ =>
+          Except.ok { bump u c with pc := if μ₁ != ⟨0⟩ then μ₀ else (bump u c).pc + ⟨1⟩, stack := stack }
+        | _ => Except.error .StackUnderflow : Except EVM.ExecutionException State) := rfl
+  rw [e] at run
+  match hs : u.stack with
+  | [] => simp [bump, hs, Stack.pop2] at run
+  | [_] => simp [bump, hs, Stack.pop2] at run
+  | x :: b :: tail =>
+    have hp : (bump u c).stack.pop2 = some (tail, x, b) := by simp [bump, hs, Stack.pop2]
+    rw [hp] at run
+    injection run with run
+    subst run
+    exact ⟨x, b, rfl, rfl⟩
 
 theorem push0_pc (arg : Option (UInt256 × Nat)) (u v : State)
     (run : EvmYul.step (.Push .PUSH0) arg u = .ok v) :

@@ -102,7 +102,7 @@ theorem contains_of_notIn {j : Array UInt256} {a : UInt256} (h : ¬X.notIn (some
   simpa [X.notIn, X.belongs] using h
 
 theorem thread_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : Array UInt256)
-    (P : UInt256 → Prop) (pc : UInt256) (p q : Operation.POp) (w w' : ℕ) (x y : UInt256)
+    (Q : UInt256 → List UInt256 → Prop) (A : List UInt256 → Prop) (pc : UInt256) (p q : Operation.POp) (w w' : ℕ) (x y : UInt256)
     (nzp : p ≠ .PUSH0) (nzq : q ≠ .PUSH0)
     (o : decode old pc = some (.Push p, some (x, w)))
     (n : decode new pc = some (.Push p, some (y, w)))
@@ -111,10 +111,11 @@ theorem thread_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : A
     (t1 : decode old x = some (.JUMPDEST, none))
     (t2 : decode old (x + UInt256.ofNat 1) = some (.Push q, some (y, w')))
     (t3 : decode old (x + UInt256.ofNat 1 + UInt256.ofNat (w' + 1)) = some (.JUMP, none))
-    (fall : P (pc + UInt256.ofNat (w + 1) + UInt256.ofNat 1)) (target : P y)
+    (fall : ∀ tail, A (⟨0⟩ :: tail) → Q (pc + UInt256.ofNat (w + 1) + UInt256.ofNat 1) tail)
+    (target : ∀ c tail, A (c :: tail) → c ≠ ⟨0⟩ → Q y tail)
     (jumps : ∀ z, oj.contains z = true → nj.contains z = true) :
-    Segment owner old new oj nj P pc := by
-  intro fuel s t surplus skipped r rel hpc ok
+    Segment owner old new oj nj Q A pc := by
+  intro fuel s t surplus skipped r rel hpc hA ok
   have sc : s.executionEnv.code = old := rel.maps.2.2.1.2.1
   have tc : t.executionEnv.code = new := rel.maps.2.2.2.2.1
   have samePC := offset_pc rel
@@ -191,7 +192,8 @@ theorem thread_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : A
     refine ⟨fB + 1, jumpiS (pushS s x w) x ⟨0⟩ tail, jumpiS (pushS t y w) y ⟨0⟩ tail, surplus, skipped,
       2, by omega, restB, ?_, ?_, fun g => by rw [show g + 1 + 2 = (g + 1) + 2 by omega, candA, candB]⟩
     · simp only [jumpiS, bne_zero, Bool.false_eq_true, if_false, pushS]
-      exact fall
+      rw [hs] at hA
+      exact fall tail hA
     · refine ⟨?_, ?_, ?_, rel.maps⟩
       · have h := congrArg (fun z : State => ({ z with
           stack := tail
@@ -247,7 +249,7 @@ theorem thread_segment (owner : AccountAddress) (old new : ByteArray) (oj nj : A
         (fun g => by rw [show C' (pushS t y w) .JUMPI = 10 from rfl,
           step_jumpi' g _ y c tail (by simp [pushS, tStack])])
     refine ⟨fE + 1, _, jumpiS (pushS t y w) y c tail, surplus + 12, skipped + 3, 2, by omega, restE,
-      by simpa only [jumpS] using target, ?_,
+      by rw [hs] at hA; simpa only [jumpS] using target c tail hA hc, ?_,
       fun g => by rw [show g + 1 + 2 = (g + 1) + 2 by omega, candA, candB]⟩
     -- gas spent: source 3+10+1+3+8 = 25, candidate 3+10 = 13
     have h1 : (s.gasAvailable - UInt256.ofNat 3).toNat = s.gasAvailable.toNat - 3 :=

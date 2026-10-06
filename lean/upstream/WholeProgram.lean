@@ -53,23 +53,25 @@ theorem candidate_step {owner old new surplus skipped s t} {oj nj : Array UInt25
 
 
 theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Array UInt256)
-    (P : UInt256 → Prop) (cover : ∀ pc, P pc → Point old new oj P pc)
+    (Q : UInt256 → List UInt256 → Prop)
+    (cover : ∀ pc st, Q pc st → ∃ A : List UInt256 → Prop, A st ∧ Point old new oj Q A pc)
     (jumps : ∀ x, oj.contains x = true → nj.contains x = true) :
     ∀ (fuel : ℕ) (s t : State) (surplus skipped : ℕ) (r : ExecutionResult State),
-      DeployedOffset owner old new surplus skipped s t → P s.pc →
+      DeployedOffset owner old new surplus skipped s t → Q s.pc s.stack →
       X fuel oj s = .ok r →
       ∃ f r', X f nj t = .ok r' ∧ OutcomeRelated owner old new r r' := by
   intro fuel
   induction fuel using Nat.strong_induction_on with
   | _ fuel ih =>
-  intro s t surplus skipped r rel hp ok
+  intro s t surplus skipped r rel hq ok
   have sc : s.executionEnv.code = old := rel.maps.2.2.1.2.1
   have tc : t.executionEnv.code = new := rel.maps.2.2.2.2.1
   have samePC := offset_pc rel
+  obtain ⟨A, hA, pt⟩ := cover s.pc s.stack hq
   cases fuel with
   | zero => rw [X_zero] at ok; cases ok
   | succ f =>
-  cases cover s.pc hp with
+  cases pt with
   | same op arg c a run o n next =>
     have ds : decode s.executionEnv.code s.pc = some (op, arg) := by rw [sc]; exact o
     have dt : decode t.executionEnv.code t.pc = some (op, arg) := by rw [tc, ←samePC]; exact n
@@ -81,8 +83,9 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
     obtain ⟨v', rel', cand⟩ := candidate_step c rel jumps (getD_of dt) z step
     have npc : nx.pc = (gasCut s op).pc + UInt256.ofNat (advance op arg) :=
       a f (C' (gasCut s op) op) arg (gasCut s op) nx step
+    have hn := next f (gasCut s op) nx z.inputs step hA
     obtain ⟨f', r', run', related⟩ :=
-      ih (f + 1) (by omega) nx v' surplus skipped r rel' (by rw [npc]; exact next) rest
+      ih (f + 1) (by omega) nx v' surplus skipped r rel' (by rw [npc]; exact hn) rest
     cases f' with
     | zero => rw [X_zero] at run'; cases run'
     | succ g =>
@@ -111,9 +114,9 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
     · simp only [e, beq_iff_eq, if_false]
       exact ⟨rfl, surplus, skipped, rel'⟩
   | segment h =>
-    obtain ⟨f', s', t', surplus', skipped', k, lt, srun, hp', rel', cand⟩ :=
-      h owner nj jumps (f + 1) s t surplus skipped r rel rfl ok
-    obtain ⟨g, r', run', related⟩ := ih f' lt s' t' surplus' skipped' r rel' hp' srun
+    obtain ⟨f', s', t', surplus', skipped', k, lt, srun, hq', rel', cand⟩ :=
+      h owner nj jumps (f + 1) s t surplus skipped r rel rfl hA ok
+    obtain ⟨g, r', run', related⟩ := ih f' lt s' t' surplus' skipped' r rel' hq' srun
     cases g with
     | zero => rw [X_zero] at run'; cases run'
     | succ g => exact ⟨g + 1 + k, r', by rw [cand g]; exact run', related⟩
@@ -130,14 +133,15 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
     | zero => rw [step_zero] at step; cases step
     | succ f =>
     obtain ⟨v', rel', cand⟩ := candidate_step jump_congruent.at rel jumps (getD_of dt) z step
-    obtain ⟨tail, stack⟩ := jump_pc none f _ _ nx step
+    have stack := jump_stack none f _ _ nx step
+    change s.stack = nx.pc :: nx.stack at stack
     have valid : oj.contains nx.pc = true := by
       have zj := z.jump
-      change s.stack = nx.pc :: tail at stack
       simp only [stack, X.notIn, X.belongs, true_and] at zj
       simpa using zj
+    rw [stack] at hA
     obtain ⟨f', r', run', related⟩ :=
-      ih (f + 1) (by omega) nx v' surplus skipped r rel' (targets _ valid) rest
+      ih (f + 1) (by omega) nx v' surplus skipped r rel' (targets _ _ hA valid) rest
     cases f' with
     | zero => rw [X_zero] at run'; cases run'
     | succ g =>
@@ -153,14 +157,15 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
     | zero => rw [step_zero] at step; cases step
     | succ f =>
     obtain ⟨v', rel', cand⟩ := candidate_step jumpi_congruent.at rel jumps (getD_of dt) z step
-    obtain ⟨x, b, tail, stack, npc⟩ := jumpi_pc none f _ _ nx step
-    change s.stack = x :: b :: tail at stack
+    obtain ⟨x, b, stack, npc⟩ := jumpi_stack none f _ _ nx step
+    change s.stack = x :: b :: nx.stack at stack
     change nx.pc = if b != ⟨0⟩ then x else s.pc + ⟨1⟩ at npc
-    have target : P nx.pc := by
+    rw [stack] at hA
+    have target : Q nx.pc nx.stack := by
       by_cases hb : b = ⟨0⟩
       · subst hb
         rw [npc]
-        exact next
+        exact next x _ hA
       · have zj := z.jumpi
         have valid : oj.contains x = true := by
           simp only [stack, X.notIn, X.belongs] at zj
@@ -171,7 +176,7 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
           have e : ((⟨v⟩ : UInt256) == ⟨0⟩) = (v == 0) := rfl
           simp [bne, e, hv]
         rw [npc, if_pos hb']
-        exact targets x valid
+        exact targets x b _ hA hb valid
     obtain ⟨f', r', run', related⟩ :=
       ih (f + 1) (by omega) nx v' surplus skipped r rel' target rest
     cases f' with
@@ -181,10 +186,11 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
       rw [cand g, jumpi_running v'.toMachineState]
       exact run'
   | power p w k nz range o n next =>
-    obtain ⟨f2, a, tail, hf, srest, rel', cand⟩ :=
+    obtain ⟨f2, a, tail, hf, stack, srest, rel', cand⟩ :=
       power_case owner old new s t f surplus skipped oj r p w k nz range rel o n ok
+    rw [stack] at hA
     obtain ⟨f', r', run', related⟩ :=
-      ih (f2 + 1) (by omega) _ _ (surplus + 2) skipped r rel' next srest
+      ih (f2 + 1) (by omega) _ _ (surplus + 2) skipped r rel' (next a tail hA) srest
     cases f' with
     | zero => rw [X_zero] at run'; cases run'
     | succ g => exact ⟨g + 3, r', by rw [cand g nj]; exact run', related⟩

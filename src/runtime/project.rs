@@ -2,7 +2,7 @@
 //! three user-facing workflows (inspect, optimize, verify) over them.
 
 use anyhow::{Context as _, Result, ensure};
-use revm::primitives::keccak256;
+use revm::primitives::{hex, keccak256};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -76,6 +76,82 @@ pub struct ContractResult {
     pub rewrites: usize,
     /// Proposal batches that failed during optimize and were not applied.
     pub failed_batches: usize,
+    /// Gas saved per call, grouped by called function.
+    pub functions: Vec<FunctionGas>,
+}
+
+/// Savings of the supplied transactions that call one function. A function
+/// saves different amounts on different paths, so the range is reported.
+#[derive(Debug, Serialize)]
+pub struct FunctionGas {
+    /// Known signature, or the selector.
+    pub function: String,
+    pub calls: usize,
+    pub saved_min: u64,
+    pub saved_max: u64,
+}
+
+/// Common ERC20 and ERC4626 signatures, named in reports by their selector.
+const KNOWN: &[&str] = &[
+    "transfer(address,uint256)",
+    "transferFrom(address,address,uint256)",
+    "approve(address,uint256)",
+    "balanceOf(address)",
+    "allowance(address,address)",
+    "totalSupply()",
+    "name()",
+    "symbol()",
+    "decimals()",
+    "permit(address,address,uint256,uint256,uint8,bytes32,bytes32)",
+    "nonces(address)",
+    "DOMAIN_SEPARATOR()",
+    "increaseAllowance(address,uint256)",
+    "decreaseAllowance(address,uint256)",
+    "mint(address,uint256)",
+    "burn(uint256)",
+    "burn(address,uint256)",
+    "asset()",
+    "totalAssets()",
+    "convertToShares(uint256)",
+    "convertToAssets(uint256)",
+    "maxDeposit(address)",
+    "previewDeposit(uint256)",
+    "deposit(uint256,address)",
+    "maxMint(address)",
+    "previewMint(uint256)",
+    "mint(uint256,address)",
+    "maxWithdraw(address)",
+    "previewWithdraw(uint256)",
+    "withdraw(uint256,address,address)",
+    "maxRedeem(address)",
+    "previewRedeem(uint256)",
+    "redeem(uint256,address,address)",
+];
+
+fn function_name(label: &str) -> String {
+    KNOWN
+        .iter()
+        .find(|sig| format!("0x{}", hex::encode(&keccak256(sig.as_bytes())[..4])) == label)
+        .map_or_else(|| label.to_owned(), |sig| (*sig).to_owned())
+}
+
+fn functions(cases: &[CaseResult]) -> Vec<FunctionGas> {
+    let mut groups: std::collections::BTreeMap<&str, Vec<u64>> = Default::default();
+    for case in cases {
+        groups
+            .entry(case.function.as_str())
+            .or_default()
+            .push(case.baseline_gas - case.candidate_gas);
+    }
+    groups
+        .into_iter()
+        .map(|(label, saved)| FunctionGas {
+            function: function_name(label),
+            calls: saved.len(),
+            saved_min: *saved.iter().min().expect("nonempty group"),
+            saved_max: *saved.iter().max().expect("nonempty group"),
+        })
+        .collect()
 }
 
 #[derive(Debug, Serialize)]
@@ -171,6 +247,7 @@ fn rejected(contract: &Contract, error: anyhow::Error) -> ContractResult {
         transactions: 0,
         rewrites: 0,
         failed_batches: 0,
+        functions: Vec::new(),
     }
 }
 
@@ -200,6 +277,7 @@ pub fn optimize(contracts: &[Contract], rounds: usize, out: &Path) -> Result<Pro
                     transactions: report.cases.len(),
                     rewrites: report.stages.iter().map(|stage| stage.rewrites).sum(),
                     failed_batches: report.failures.len(),
+                    functions: functions(&report.cases),
                 }
             }
             Err(error) => rejected(contract, error),
@@ -268,6 +346,7 @@ pub fn verify(contracts: &[Contract], proposals: &Proposals, out: &Path) -> Resu
                     transactions: report.cases.len(),
                     rewrites: report.rewrites.len(),
                     failed_batches: 0,
+                    functions: functions(&report.cases),
                 }
             }
             Err(error) => rejected(contract, error),

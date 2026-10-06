@@ -323,19 +323,39 @@ theorem build_val {f e} (h : ACLaw (binF f) e) (base : List UInt256) : ∀ l : L
     have ih := build_val h base (y :: l)
     simp only [build, Sym.val] at ih ⊢; rw [ih]; rfl
 
-/-- An upper bound on the bit length of a term's value. -/
-def Sym.bits : Sym → Nat
-  | .input _ => 256
-  | .lit v => Nat.log2 v.val.val + 1
+/-- Bit length with structural recursion, so the kernel evaluates it. -/
+def bitLenAux : Nat → Nat → Nat
+  | 0, _ => 0
+  | k + 1, n => if n = 0 then 0 else bitLenAux k (n / 2) + 1
+
+def bitLen (n : Nat) : Nat := bitLenAux 256 n
+
+theorem bitLenAux_lt : ∀ (k n : Nat), n < 2 ^ k → n < 2 ^ bitLenAux k n
+  | 0, n, h => by simp only [bitLenAux]; exact h
+  | k + 1, n, h => by
+    simp only [bitLenAux]
+    split
+    · simp_all
+    · have hk : n / 2 < 2 ^ k := by rw [Nat.pow_succ] at h; omega
+      have ih := bitLenAux_lt k (n / 2) hk
+      rw [Nat.pow_succ]; omega
+
+theorem bitLen_lt {n : Nat} (h : n < 2 ^ 256) : n < 2 ^ bitLen n := bitLenAux_lt 256 n h
+
+/-- An upper bound on the bit length of a term's value, given bounds `env` on the
+inputs (missing entries mean 256). -/
+def Sym.bits (env : List Nat) : Sym → Nat
+  | .input i => env.getD i 256
+  | .lit v => bitLen v.val.val
   | .un .iszero _ => 1
   | .un .not _ => 256
   | .bin f a b =>
     match f with
-    | .and => min a.bits b.bits
-    | .or | .xor => max a.bits b.bits
+    | .and => min (a.bits env) (b.bits env)
+    | .or | .xor => max (a.bits env) (b.bits env)
     | .lt | .gt | .slt | .sgt | .eq => 1
-    | .div | .mod => a.bits
-    | .shr => b.bits
+    | .div | .mod => a.bits env
+    | .shr => b.bits env
     | _ => 256
 
 theorem lt_size (x : UInt256) : x.val.val < 2 ^ 256 := x.val.isLt
@@ -345,14 +365,21 @@ theorem fromBool_lt (b : Bool) : (UInt256.fromBool b).val.val < 2 ^ 1 := by
 
 theorem pow_mono {m n : Nat} (h : m ≤ n) : 2 ^ m ≤ 2 ^ n := Nat.pow_le_pow_right (by decide) h
 
-theorem bits_sound (base : List UInt256) : ∀ s : Sym, (s.val base).val.val < 2 ^ s.bits
-  | .input _ => lt_size _
-  | .lit v => Nat.lt_log2_self
+/-- Every input fits its bound in `env`. -/
+def Fits (env : List Nat) (base : List UInt256) : Prop :=
+  ∀ i, (base.getD i ⟨0⟩).val.val < 2 ^ env.getD i 256
+
+theorem fits_nil (base : List UInt256) : Fits [] base := fun _ => lt_size _
+
+theorem bits_sound (env : List Nat) (base : List UInt256) (hf : Fits env base) :
+    ∀ s : Sym, (s.val base).val.val < 2 ^ s.bits env
+  | .input i => hf i
+  | .lit v => bitLen_lt (lt_size v)
   | .un .iszero _ => fromBool_lt _
   | .un .not _ => lt_size _
   | .bin f a b => by
-    have ha := bits_sound base a
-    have hb := bits_sound base b
+    have ha := bits_sound env base hf a
+    have hb := bits_sound env base hf b
     cases f <;> simp only [Sym.bits, Sym.val, binF]
     all_goals first
       | exact lt_size _
@@ -373,7 +400,7 @@ theorem bits_sound (base : List UInt256) : ∀ s : Sym, (s.val base).val.val < 2
       generalize Sym.val base a = va at ha ⊢; generalize Sym.val base b = vb at hb ⊢
       obtain ⟨x⟩ := va; obtain ⟨y⟩ := vb
       rw [land_v]
-      rcases Nat.le_total a.bits b.bits with h | h
+      rcases Nat.le_total (a.bits env) (b.bits env) with h | h
       · rw [Nat.min_eq_left h]; exact lt_of_le_of_lt Nat.and_le_left ha
       · rw [Nat.min_eq_right h]; exact lt_of_le_of_lt Nat.and_le_right hb
     · -- or
@@ -396,27 +423,27 @@ theorem bits_sound (base : List UInt256) : ∀ s : Sym, (s.val base).val.val < 2
       · exact Nat.two_pow_pos _
       · exact lt_of_le_of_lt (le_trans (Nat.mod_le _ _) (Nat.shiftRight_le _ _)) hb
 
-def minBits (l : List Sym) : Nat := l.foldr (fun s m => min s.bits m) 256
+def minBits (env : List Nat) (l : List Sym) : Nat := l.foldr (fun s m => min (s.bits env) m) 256
 
-theorem and_fold_lt (base : List UInt256) : ∀ l : List Sym,
-    (fv (binF .and) ones base l).val.val < 2 ^ minBits l
+theorem and_fold_lt (env : List Nat) (base : List UInt256) (hf : Fits env base) : ∀ l : List Sym,
+    (fv (binF .and) ones base l).val.val < 2 ^ minBits env l
   | [] => lt_size _
   | x :: l => by
-    have hx := bits_sound base x
-    have hl := and_fold_lt base l
+    have hx := bits_sound env base hf x
+    have hl := and_fold_lt env base hf l
     simp only [fv, List.foldr_cons, minBits] at hl ⊢
     generalize List.foldr (fun s acc => binF BinK.and (Sym.val base s) acc) ones l = r at hl ⊢
     generalize Sym.val base x = vx at hx ⊢
     obtain ⟨u⟩ := vx; obtain ⟨w⟩ := r
     show (UInt256.land ⟨u⟩ ⟨w⟩).val.val < _
     rw [land_v]
-    rcases Nat.le_total x.bits (List.foldr (fun s m => min s.bits m) 256 l) with h | h
+    rcases Nat.le_total (x.bits env) (List.foldr (fun s m => min (s.bits env) m) 256 l) with h | h
     · rw [Nat.min_eq_left h]; exact lt_of_le_of_lt Nat.and_le_left hx
     · rw [Nat.min_eq_right h]; exact lt_of_le_of_lt Nat.and_le_right hl
 
 /-- A literal mask that keeps every bit an `and` operand list can have set. -/
-def maskDrop (f : BinK) (c : UInt256) (rest : List Sym) : Bool :=
-  f == .and && c.val.val &&& (2 ^ minBits rest - 1) == 2 ^ minBits rest - 1
+def maskDrop (env : List Nat) (f : BinK) (c : UInt256) (rest : List Sym) : Bool :=
+  f == .and && c.val.val &&& (2 ^ minBits env rest - 1) == 2 ^ minBits env rest - 1
 
 theorem mask_keep (c y m : Nat) (hy : y < 2 ^ m) (hc : c &&& (2 ^ m - 1) = 2 ^ m - 1) :
     c &&& y = y := by
@@ -425,10 +452,10 @@ theorem mask_keep (c y m : Nat) (hy : y < 2 ^ m) (hc : c &&& (2 ^ m - 1) = 2 ^ m
     _ = (c &&& (2 ^ m - 1)) &&& y := by rw [Nat.and_comm y, ← Nat.and_assoc]
     _ = y := by rw [hc, Nat.and_comm, e]
 
-theorem maskDrop_val (base : List UInt256) (c : UInt256) (rest : List Sym)
-    (h : maskDrop .and c rest = true) :
+theorem maskDrop_val (env : List Nat) (base : List UInt256) (hf : Fits env base) (c : UInt256)
+    (rest : List Sym) (h : maskDrop env .and c rest = true) :
     binF .and c (fv (binF .and) ones base rest) = binF .and ones (fv (binF .and) ones base rest) := by
-  have hb := and_fold_lt base rest
+  have hb := and_fold_lt env base hf rest
   simp only [maskDrop, beq_self_eq_true, Bool.true_and, beq_iff_eq] at h
   generalize fv (binF .and) ones base rest = r at hb ⊢
   rw [show binF .and ones r = r from land_idl r]
@@ -446,8 +473,8 @@ def acBuild (f : BinK) (e c : UInt256) (rest : List Sym) : Sym :=
     then (if idem f then dedup (sortS rest) else sortS rest)
     else .lit c :: (if idem f then dedup (sortS rest) else sortS rest))
 
-def acNorm (f : BinK) (e : UInt256) (l : List Sym) : Sym :=
-  acBuild f e (if maskDrop f (litFold f e l).1 (litFold f e l).2 then e else (litFold f e l).1)
+def acNorm (env : List Nat) (f : BinK) (e : UInt256) (l : List Sym) : Sym :=
+  acBuild f e (if maskDrop env f (litFold f e l).1 (litFold f e l).2 then e else (litFold f e l).1)
     (litFold f e l).2
 
 theorem acBuild_val {f e} (h : ACLaw (binF f) e) (base : List UInt256) (c : UInt256) (rest : List Sym) :
@@ -465,8 +492,9 @@ theorem acBuild_val {f e} (h : ACLaw (binF f) e) (base : List UInt256) (c : UInt
     · rename_i hc; rw [hr, hc, h.idl]
     · simp only [fv, List.foldr_cons, Sym.val] at hr ⊢; rw [hr]
 
-theorem acNorm_val {f e} (h : ACLaw (binF f) e) (base : List UInt256) (l : List Sym) :
-    (acNorm f e l).val base = fv (binF f) e base l := by
+theorem acNorm_val {f e} (h : ACLaw (binF f) e) (env : List Nat) (base : List UInt256)
+    (hf : Fits env base) (l : List Sym) :
+    (acNorm env f e l).val base = fv (binF f) e base l := by
   have lf := litFold_val h base l
   unfold acNorm
   rw [acBuild_val h]
@@ -478,7 +506,7 @@ theorem acNorm_val {f e} (h : ACLaw (binF f) e) (base : List UInt256) (l : List 
       have : UInt256.land e ones = e := by rw [land_comm']; exact land_idl e
       exact this.symm.trans (h.idl ones)
     subst he
-    rw [← maskDrop_val base _ _ hm, lf]
+    rw [← maskDrop_val env base hf _ _ hm, lf]
   · exact lf
 
 def pow2 (k : UInt256) : UInt256 := UInt256.ofNat (2 ^ k.val.val)
@@ -541,15 +569,15 @@ def foldable : BinK → Bool
   | _ => false
 
 /-- Rewrites for non-associative operators, applied to normalized operands. -/
-def normOp (f : BinK) (a b : Sym) : Sym :=
+def normOp (env : List Nat) (f : BinK) (a b : Sym) : Sym :=
   match f with
   | .sub => if a = b then .lit ⟨0⟩ else
       match b with
-      | .lit c => acNorm .add ⟨0⟩ (flat .add a ++ [.lit (UInt256.sub ⟨0⟩ c)])
+      | .lit c => acNorm env .add ⟨0⟩ (flat .add a ++ [.lit (UInt256.sub ⟨0⟩ c)])
       | _ => .bin .sub a b
   | .shl =>
       match a with
-      | .lit k => if k.val.val < 256 then acNorm .mul ⟨1⟩ (flat .mul b ++ [.lit (pow2 k)]) else .lit ⟨0⟩
+      | .lit k => if k.val.val < 256 then acNorm env .mul ⟨1⟩ (flat .mul b ++ [.lit (pow2 k)]) else .lit ⟨0⟩
       | _ => .bin .shl a b
   | .shr =>
       match a with
@@ -562,18 +590,18 @@ def normOp (f : BinK) (a b : Sym) : Sym :=
       else if b.lt a then .bin .eq b a else .bin .eq a b
   | _ => .bin f a b
 
-def normBin (f : BinK) (a b : Sym) : Sym :=
+def normBin (env : List Nat) (f : BinK) (a b : Sym) : Sym :=
   match ident f with
-  | some e => acNorm f e (flat f a ++ flat f b)
+  | some e => acNorm env f e (flat f a ++ flat f b)
   | none =>
     match a, b with
-    | .lit x, .lit y => if foldable f then .lit (binF f x y) else normOp f a b
-    | _, _ => normOp f a b
+    | .lit x, .lit y => if foldable f then .lit (binF f x y) else normOp env f a b
+    | _, _ => normOp env f a b
 
-def normUn (f : UnK) (a : Sym) : Sym :=
+def normUn (env : List Nat) (f : UnK) (a : Sym) : Sym :=
   match a with
   | .lit x => .lit (unF f x)
-  | .un .iszero y => if f = .iszero ∧ y.bits ≤ 1 then y else .un f a
+  | .un .iszero y => if f = .iszero ∧ y.bits env ≤ 1 then y else .un f a
   | _ => .un f a
 
 theorem iszero_iszero (y : UInt256) (h : y.val.val < 2) : UInt256.isZero (UInt256.isZero y) = y := by
@@ -581,30 +609,30 @@ theorem iszero_iszero (y : UInt256) (h : y.val.val < 2) : UInt256.isZero (UInt25
   simp only at h
   rcases (by omega : n = 0 ∨ n = 1) with rfl | rfl <;> rfl
 
-/-- Canonical form used to compare window results. -/
-def norm : Sym → Sym
-  | .un f a => normUn f (norm a)
-  | .bin f a b => normBin f (norm a) (norm b)
+/-- Canonical form used to compare window results, given input bounds `env`. -/
+def norm (env : List Nat) : Sym → Sym
+  | .un f a => normUn env f (norm env a)
+  | .bin f a b => normBin env f (norm env a) (norm env b)
   | s => s
 
 theorem add_law : ACLaw (binF .add) ⟨0⟩ := ident_law rfl
 theorem mul_law : ACLaw (binF .mul) ⟨1⟩ := ident_law rfl
 
-theorem normOp_val (base : List UInt256) (f : BinK) (a b : Sym) :
-    (normOp f a b).val base = binF f (a.val base) (b.val base) := by
+theorem normOp_val (env : List Nat) (base : List UInt256) (hf : Fits env base) (f : BinK) (a b : Sym) :
+    (normOp env f a b).val base = binF f (a.val base) (b.val base) := by
   unfold normOp
   split
   · split
     · subst_vars; simp only [Sym.val, binF, sub_self']
     · split
       · rename_i c _
-        rw [acNorm_val add_law, fv_append add_law, flat_val add_law]
+        rw [acNorm_val add_law env base hf, fv_append add_law, flat_val add_law]
         simp only [fv, List.foldr_cons, List.foldr_nil, Sym.val, binF]
         rw [show UInt256.add (UInt256.sub ⟨0⟩ c) ⟨0⟩ = UInt256.sub ⟨0⟩ c from add_law.idr _, ← sub_add']
       · rfl
   · split
     · split
-      · rw [acNorm_val mul_law, fv_append mul_law, flat_val mul_law]
+      · rw [acNorm_val mul_law env base hf, fv_append mul_law, flat_val mul_law]
         simp only [fv, List.foldr_cons, List.foldr_nil, Sym.val]
         rw [mul_law.idr]; show _ = flip UInt256.shiftLeft _ _; rw [shl_mul _ _ ‹_›]; rfl
       · simp only [Sym.val, binF]; rw [shl_big _ _ ‹_›]
@@ -633,21 +661,21 @@ theorem normOp_val (base : List UInt256) (f : BinK) (a b : Sym) :
         · rfl
   · rfl
 
-theorem normBin_val (base : List UInt256) (f : BinK) (a b : Sym) :
-    (normBin f a b).val base = binF f (a.val base) (b.val base) := by
+theorem normBin_val (env : List Nat) (base : List UInt256) (hf : Fits env base) (f : BinK) (a b : Sym) :
+    (normBin env f a b).val base = binF f (a.val base) (b.val base) := by
   unfold normBin
   split
   · rename_i e he
     have h := ident_law he
-    rw [acNorm_val h, fv_append h, flat_val h, flat_val h]
+    rw [acNorm_val h env base hf, fv_append h, flat_val h, flat_val h]
   · split
     · split
       · rfl
-      · exact normOp_val base f _ _
-    · exact normOp_val base f a b
+      · exact normOp_val env base hf f _ _
+    · exact normOp_val env base hf f a b
 
-theorem normUn_val (base : List UInt256) (f : UnK) (a : Sym) :
-    (normUn f a).val base = unF f (a.val base) := by
+theorem normUn_val (env : List Nat) (base : List UInt256) (hf : Fits env base) (f : UnK) (a : Sym) :
+    (normUn env f a).val base = unF f (a.val base) := by
   unfold normUn
   split
   · rfl
@@ -655,16 +683,18 @@ theorem normUn_val (base : List UInt256) (f : UnK) (a : Sym) :
     split
     · rename_i h
       obtain ⟨rfl, hb⟩ := h
-      have := bits_sound base y
+      have := bits_sound env base hf y
       exact (iszero_iszero _ (lt_of_lt_of_le this (pow_mono hb))).symm
     · rfl
   · rfl
 
-theorem norm_val (base : List UInt256) : ∀ s : Sym, (norm s).val base = s.val base
+theorem norm_val (env : List Nat) (base : List UInt256) (hf : Fits env base) :
+    ∀ s : Sym, (norm env s).val base = s.val base
   | .input _ => rfl
   | .lit _ => rfl
-  | .un f a => by simp only [norm, normUn_val, norm_val base a, Sym.val]
-  | .bin f a b => by simp only [norm, normBin_val, norm_val base a, norm_val base b, Sym.val]
+  | .un f a => by simp only [norm, normUn_val env base hf, norm_val env base hf a, Sym.val]
+  | .bin f a b => by
+    simp only [norm, normBin_val env base hf, norm_val env base hf a, norm_val env base hf b, Sym.val]
 
 
 #print axioms norm_val

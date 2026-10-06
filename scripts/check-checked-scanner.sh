@@ -167,7 +167,7 @@ out = pathlib.Path(sys.argv[1])
 report = json.loads((out / "result.json").read_text())
 assert report["covered_instructions"] == 10
 assert report["power_sites"] == [6]
-assert any("Υ" in item for item in report["unproved"])
+assert "Υ" in report["claim"] and any("Υ" in item for item in report["unproved"])
 assert json.loads((out / "environment.json").read_text())["semantics_profile"]["identity"] == "evm-golf-checked-scanner"
 PY_WHOLE
 # One-hop JUMPI threading through an unchanged trampoline.
@@ -196,6 +196,29 @@ import sys
 report = json.load(open(sys.argv[1]))
 assert report["window_sites"] == [1]
 PY_WINDOW
+# Stack facts cross a JUMP: CALLER is below 2^160 at the JUMPDEST, so the
+# mask after it can go. With a destination read from calldata it cannot.
+printf '%s\n' 33600556005b73ffffffffffffffffffffffffffffffffffffffff165f5260205ff3 > "$work/facts-original.hex"
+printf '%s\n' 33600556005b730000000000000000000000000000000000000000505f5260205ff3 > "$work/facts-candidate.hex"
+cargo run --locked -- certify-runtime-whole \
+  --original "$work/facts-original.hex" --candidate "$work/facts-candidate.hex" \
+  --out "$work/facts-accepted" 2>&1 | tee "$work/facts.log"
+python3 - "$work/facts-accepted/result.json" <<'PY_FACTS'
+import json
+import sys
+
+report = json.load(open(sys.argv[1]))
+assert report["window_sites"] == [6] and report["checked_entries"] == 10
+PY_FACTS
+printf '%s\n' 335f3556005b73ffffffffffffffffffffffffffffffffffffffff165f5260205ff3 > "$work/nofacts-original.hex"
+printf '%s\n' 335f3556005b730000000000000000000000000000000000000000505f5260205ff3 > "$work/nofacts-candidate.hex"
+if cargo run --locked -- certify-runtime-whole \
+  --original "$work/nofacts-original.hex" --candidate "$work/nofacts-candidate.hex" \
+  --out "$work/nofacts-rejected"; then
+  echo 'A mask needing unknown facts was accepted.' >&2
+  exit 1
+fi
+[[ ! -e "$work/nofacts-rejected/result.json" ]]
 printf '%s\n' 34600a57600760031b005b600080fd > "$work/whole-wrong.hex"
 if cargo run --locked -- certify-runtime-whole \
   --original "$work/whole-original.hex" --candidate "$work/whole-wrong.hex" \

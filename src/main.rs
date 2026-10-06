@@ -260,6 +260,17 @@ fn report(result: project::ProjectResult, out: &std::path::Path) -> Result<()> {
                 contract.transactions,
                 contract.rewrites
             );
+            for f in &contract.functions {
+                let saved = if f.saved_min == f.saved_max {
+                    f.saved_min.to_string()
+                } else {
+                    format!("{} to {}", f.saved_min, f.saved_max)
+                };
+                eprintln!(
+                    "  {}: {saved} gas saved per call ({} calls)",
+                    f.function, f.calls
+                );
+            }
         } else {
             eprintln!(
                 "{}: rejected: {}",

@@ -846,6 +846,33 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfWhole.window_segment",
         ],
     ),
+    (
+        "WholeFacts",
+        include_str!("../../lean/upstream/WholeFacts.lean"),
+        &[
+            "GolfWhole.implies_sound",
+            "GolfWhole.xf_wop",
+            "GolfWhole.xf_shape",
+            "GolfWhole.same_next",
+            "GolfWhole.jump_set",
+            "GolfWhole.window_next",
+            "GolfWhole.cover_of",
+            "GolfWhole.top_targets",
+        ],
+    ),
+    (
+        "WholeShape",
+        include_str!("../../lean/upstream/WholeShape.lean"),
+        &[
+            "GolfWhole.eff_sload",
+            "GolfWhole.eff_sstore",
+            "GolfWhole.eff_caller",
+            "GolfWhole.eff_log4",
+            "GolfWhole.eff_returndatacopy",
+            "GolfWhole.eff_jumpdest",
+            "GolfWhole.eff_keccak256",
+        ],
+    ),
 ];
 
 const MASK_MODULES: &[(&str, &str, &[&str])] = &[
