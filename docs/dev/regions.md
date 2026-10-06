@@ -231,7 +231,11 @@ Reachable instructions must be in the supported profile: stack, arithmetic,
 comparison and bitwise opcodes; memory, `KECCAK256`, calldata, call-context and
 block reads including `BLOCKHASH`; `MCOPY`; `SLOAD`, `SSTORE`, `TLOAD`, `TSTORE`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`,
 `JUMPDEST`, `STOP`, `RETURN`, `REVERT` and undefined opcodes. Calls, creation,
-`GAS`, code reads, balances, `RETURNDATACOPY` and `SELFDESTRUCT` are rejected.
+`GAS`, code reads, balances, `RETURNDATACOPY` and `SELFDESTRUCT` are rejected. Calls are
+excluded because the candidate keeps more gas: a callee given all remaining
+gas, or a nested call back into the cheaper code, can succeed where the
+original ran out of gas, so a claim with calls needs extra premises and
+induction over nested calls.
 
 Not proved: message-call (Θ) and transaction (Υ) equivalence, exceptional
 original runs, rewrite families other than the three above and formal
