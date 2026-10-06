@@ -212,8 +212,14 @@ deployed code. If the original returns success or revert, the candidate returns
 the same kind of result with the same output. On success the account maps stay
 related, created accounts and substate are equal and the candidate keeps at
 least as much gas; on revert it keeps at least as much gas. `whole_certificate`
-states the same for the interpreter `X` from any related states at pc 0. There
-is no trace, path or gas premise. Jump tables come from the checked-scanner
+states the same for the interpreter `X` from any related states at pc 0.
+`theta_certificate` lifts this to the message-call function Θ for a call to the
+owner, and `upsilon_certificate` to the transaction function Υ for a message-call
+transaction to the owner (not a precompile address): both runs finalize related
+provisional states with the same substate and status, and the candidate keeps at
+least as much gas, so by `charged_mono` it is charged no more. Final world states
+differ only through that refund and fee arithmetic. Θ and Υ need the original's
+inner Ξ to return success or revert. There is no trace, path or gas premise. Jump tables come from the checked-scanner
 profile, computed by a byte-list scanner proved equal to it.
 
 The generator lists every instruction reachable from pc 0 or a JUMPDEST and
@@ -229,19 +235,23 @@ normalized by a verified rewriter: operands of `ADD`, `MUL`, `AND`, `OR` and `XO
 are flattened, sorted and their literals folded, idempotent duplicates and
 identities are dropped, `SHL`/`SHR` by a literal become `MUL`/`DIV` by a power of
 two, `x - c` becomes `x + (-c)`, `GT`/`SGT` become swapped `LT`/`SLT` and
-`EQ x 0` becomes `ISZERO x`. The results must be equal for every input, and the
+`EQ x 0` becomes `ISZERO x`. A bit-length bound on every term (comparisons fit in
+one bit, `AND` in its narrower operand, `SHR` and `DIV` in their dividend) drops
+masks and double `ISZERO`s that cannot change a value. The results must be equal
+for every input, and the
 candidate must need no deeper stack, cost no more gas and execute no more
 instructions. The images must have the same jump table.
 Reachable instructions must be in the supported profile: stack, arithmetic,
 comparison and bitwise opcodes; memory, `KECCAK256`, calldata, call-context and
-block reads including `BLOCKHASH`; `MCOPY`; `SLOAD`, `SSTORE`, `TLOAD`, `TSTORE`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`,
-`JUMPDEST`, `STOP`, `RETURN`, `REVERT` and undefined opcodes. Calls, creation,
-`GAS`, code reads, balances, `RETURNDATACOPY` and `SELFDESTRUCT` are rejected. Calls are
+block reads including `BLOCKHASH` and `BLOBHASH`; `BALANCE`, `SELFBALANCE`, `CODESIZE`
+and `EXTCODESIZE` (the images have equal size); `RETURNDATACOPY`, `MCOPY`; `SLOAD`,
+`SSTORE`, `TLOAD`, `TSTORE`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`, `JUMPDEST`, `STOP`,
+`RETURN`, `REVERT` and undefined opcodes. Calls, creation, `GAS`, `CODECOPY`,
+`EXTCODECOPY`, `EXTCODEHASH` and `SELFDESTRUCT` are rejected. Calls are
 excluded because the candidate keeps more gas: a callee given all remaining
 gas, or a nested call back into the cheaper code, can succeed where the
 original ran out of gas, so a claim with calls needs extra premises and
 induction over nested calls.
 
-Not proved: message-call (Θ) and transaction (Υ) equivalence, exceptional
-original runs, rewrite families other than the three above and formal
-correspondence with revm.
+Not proved: exceptional original runs, calls, contract creation, rewrite
+families other than the three above and formal correspondence with revm.

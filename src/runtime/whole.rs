@@ -516,8 +516,26 @@ fn flat(op: u8, s: Sym, out: &mut Vec<Sym>) {
     }
 }
 
-/// Mirror of the Lean `acNorm`: fold literals, sort operands, drop duplicates
-/// of idempotent operators and rebuild a right-nested term.
+/// Mirror of the Lean `Sym.bits`: an upper bound on the bit length of a value.
+fn bits(s: &Sym) -> usize {
+    match s {
+        Sym::Input(_) | Sym::Un(0x19, _) => 256,
+        Sym::Lit(v) => (256 - v.leading_zeros()).max(1),
+        Sym::Un(..) => 1,
+        Sym::Bin(op, a, b) => match *op {
+            AND => bits(a).min(bits(b)),
+            OR | 0x18 => bits(a).max(bits(b)),
+            LT | 0x11 | SLT | 0x13 | EQ => 1,
+            DIV | 0x06 => bits(a),
+            0x1c => bits(b),
+            _ => 256,
+        },
+    }
+}
+
+/// Mirror of the Lean `acNorm`: fold literals, drop a literal mask that keeps
+/// every bit the other operands can have, sort operands, drop duplicates of
+/// idempotent operators and rebuild a right-nested term.
 fn ac_norm(op: u8, e: U256, list: Vec<Sym>) -> Sym {
     let mut c = e;
     let mut rest = Vec::new();
@@ -532,6 +550,15 @@ fn ac_norm(op: u8, e: U256, list: Vec<Sym>) -> Sym {
         OR => Some(U256::MAX),
         _ => None,
     };
+    let low = rest.iter().map(bits).fold(256, usize::min);
+    let ones = if low >= 256 {
+        U256::MAX
+    } else {
+        (U256::from(1) << low) - U256::from(1)
+    };
+    if op == AND && c & ones == ones {
+        c = e;
+    }
     if absorb == Some(c) {
         return Sym::Lit(c);
     }
@@ -603,6 +630,7 @@ fn norm(s: &Sym) -> Sym {
         Sym::Un(op, a) => match norm(a) {
             Sym::Lit(x) if *op == ISZERO => Sym::Lit(U256::from(u8::from(x.is_zero()))),
             Sym::Lit(x) => Sym::Lit(!x),
+            Sym::Un(ISZERO, y) if *op == ISZERO && bits(&y) <= 1 => *y,
             a => Sym::Un(*op, Box::new(a)),
         },
         Sym::Bin(op, a, b) => {
@@ -710,6 +738,26 @@ fn classify(instruction: &Instruction) -> Result<Obligation> {
         },
         0x80..=0x8f => simple(&format!("DUP{}", op - 0x7f)),
         0x90..=0x9f => simple(&format!("SWAP{}", op - 0x8f)),
+        0x38 | 0x3b => Obligation::Same {
+            op: format!(
+                "Operation.{}",
+                if op == 0x38 {
+                    "CODESIZE"
+                } else {
+                    "EXTCODESIZE"
+                }
+            ),
+            arg: "none".to_owned(),
+            same: format!(
+                "({}_same size_eq)",
+                if op == 0x38 {
+                    "codesize"
+                } else {
+                    "extcodesize"
+                }
+            ),
+            len: 1,
+        },
         0x56 => Obligation::Jump,
         0x57 => Obligation::Jumpi,
         0x00 => Obligation::Halt {
@@ -804,6 +852,13 @@ fn simple_name(op: u8) -> Option<&'static str> {
         0xa2 => "LOG2",
         0xa3 => "LOG3",
         0xa4 => "LOG4",
+        0x31 => "BALANCE",
+        0x47 => "SELFBALANCE",
+        0x3e => "RETURNDATACOPY",
+        0x44 => "PREVRANDAO",
+        0x48 => "BASEFEE",
+        0x49 => "BLOBHASH",
+        0x4a => "BLOBBASEFEE",
         _ => return None,
     })
 }
@@ -844,7 +899,7 @@ fn in_chunk_term(k: usize, n: usize) -> String {
 
 fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String)> {
     let mut modules = Vec::new();
-    let mut image = format!("import WholeXi\nimport WholeStorage\nimport WholeWindow\n{HEADER}");
+    let mut image = format!("import WholeUpsilon\nimport WholeEnv\nimport WholeWindow\n{HEADER}");
     for (side, code) in [("old", original), ("new", candidate)] {
         let mut names = Vec::new();
         for (i, chunk) in code.chunks(BYTES_PER_CHUNK).enumerate() {
@@ -1005,7 +1060,7 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
     modules.push((
         "WholeJumps".to_owned(),
         format!(
-            "{block_imports}{HEADER}{jumps_proof}\ntheorem targets : ∀ x, jumps.contains x = true → P x :=\n  jumps_points jumpsN pointsN (by decide +kernel)\nend GolfWholeCertificate\n"
+            "{block_imports}{HEADER}{jumps_proof}\ntheorem targets : ∀ x, jumps.contains x = true → P x :=\n  jumps_points jumpsN pointsN (by decide +kernel)\ntheorem size_eq : oldCode.size = newCode.size := by\n  show (ofBytes oldBytes).size = (ofBytes newBytes).size\n  simp only [ofBytes, ByteArray.size, List.size_toArray, List.length_map]\n  rw [show oldBytes = oldTail0 from rfl, show newBytes = newTail0 from rfl, oldLenT0, newLenT0]\nend GolfWholeCertificate\n"
         ),
     ));
     for (k, chunk) in chunks.iter().enumerate() {
@@ -1083,8 +1138,60 @@ theorem xi_certificate (owner : AccountAddress) (fuel : ℕ)
     fuel created genesis blocks σ σ₀ τ τ₀ g A I current original oldCurrent oldOriginal
     newCurrent newOriginal R run
 
+/-- The same claim for the message-call function Θ on a call to the owner, when the
+original's inner Ξ returns success or revert. -/
+theorem theta_certificate (owner : AccountAddress) (fuel : ℕ) (bvh : List ByteArray)
+    (created : Batteries.RBSet AccountAddress compare) (genesis : BlockHeader)
+    (blocks : ProcessedBlocks) (σ σ₀ τ τ₀ : AccountMap .EVM) (A : Substate)
+    (s o : AccountAddress) (g p v v' : UInt256) (d : ByteArray) (e : ℕ) (H : BlockHeader) (w : Bool)
+    (current : MapsRelated owner oldCode newCode σ τ)
+    (original : MapsRelated owner oldCode newCode σ₀ τ₀)
+    (oldCurrent : ∃ a, σ.find? owner = some a ∧ a.code = oldCode)
+    (oldOriginal : ∃ a, σ₀.find? owner = some a ∧ a.code = oldCode)
+    (newCurrent : ∃ a, τ.find? owner = some a ∧ a.code = newCode)
+    (newOriginal : ∃ a, τ₀.find? owner = some a ∧ a.code = newCode)
+    (R : ExecutionResult (Batteries.RBSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate))
+    (inner : Ξ fuel created genesis blocks (transfer σ s owner v) σ₀ g A
+      (thetaEnv bvh s o owner oldCode p v' d e H w) = .ok R) :
+    ∃ f Q Q', Θ (fuel + 1) bvh created genesis blocks σ σ₀ A s o owner (.Code oldCode) g p v v' d e H w = .ok Q ∧
+      Θ f bvh created genesis blocks τ τ₀ A s o owner (.Code newCode) g p v v' d e H w = .ok Q' ∧
+      ThetaRelated owner oldCode newCode Q Q' :=
+  theta_refines owner oldCode newCode
+    (fun fuel s t surplus skipped r rel start ok =>
+      whole_certificate owner fuel surplus skipped s t r rel start ok)
+    fuel bvh created genesis blocks σ σ₀ τ τ₀ A s o g p v v' d e H w current original
+    oldCurrent oldOriginal newCurrent newOriginal R inner
+
+/-- The same claim for the transaction function Υ on a message call to the owner:
+both runs finalize related provisional states with the same substate and status, and
+the candidate has at least as much remaining gas (so, by `charged_mono`, is charged
+no more gas when its remaining gas is within the limit). -/
+theorem upsilon_certificate (owner : AccountAddress) (fuel : ℕ) (σ τ : AccountMap .EVM) (H_f : ℕ)
+    (H genesis : BlockHeader) (blocks : ProcessedBlocks) (T : Transaction) (S_T : AccountAddress)
+    (rel : MapsRelated owner oldCode newCode σ τ)
+    (oldσ : ∃ a, σ.find? owner = some a ∧ a.code = oldCode)
+    (newτ : ∃ a, τ.find? owner = some a ∧ a.code = newCode)
+    (hr : T.base.recipient = some owner) (notPre : owner ∉ π)
+    (R : ExecutionResult (Batteries.RBSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate))
+    (inner : Ξ fuel .empty genesis blocks
+      (transfer (txCheckpoint σ H_f H T S_T) S_T owner T.base.value) (txCheckpoint σ H_f H T S_T)
+      (txGas T) (txSubstate H T S_T owner)
+      (thetaEnv T.blobVersionedHashes S_T S_T owner oldCode (txPrice H_f T) T.base.value T.base.data 0 H true) =
+        .ok R) :
+    ∃ f σP σP' g g' A z, MapsRelated owner oldCode newCode σP σP' ∧ g.toNat ≤ g'.toNat ∧
+      Υ (fuel + 1) σ H_f H genesis blocks T S_T =
+        .ok ((finalize σP g A H_f H T S_T).1, A, z, (finalize σP g A H_f H T S_T).2) ∧
+      Υ f τ H_f H genesis blocks T S_T =
+        .ok ((finalize σP' g' A H_f H T S_T).1, A, z, (finalize σP' g' A H_f H T S_T).2) :=
+  upsilon_refines owner oldCode newCode
+    (fun fuel s t surplus skipped r rel start ok =>
+      whole_certificate owner fuel surplus skipped s t r rel start ok)
+    fuel σ τ H_f H genesis blocks T S_T rel oldσ newτ hr notPre R inner
+
 #print axioms whole_certificate
 #print axioms xi_certificate
+#print axioms theta_certificate
+#print axioms upsilon_certificate
 end GolfWholeCertificate",
         chunk_of(0)
     )
@@ -1181,7 +1288,13 @@ fn obligation_term(
     let width = |instruction_len: usize| pc + instruction_len;
     match obligation {
         Obligation::Same { op, arg, same, len } => format!(
-            ".same _ {op} {arg} {same}.1 {same}.2.1 {same}.2.2 {} {} {}",
+            ".same _ {op} {arg} {} {same}.2.1 {same}.2.2 {} {} {}",
+            // Size-dependent facts are already specialized to the two images.
+            if same.contains("size_eq") {
+                format!("{same}.1")
+            } else {
+                format!("{same}.1.at")
+            },
             old(pc),
             new(pc),
             next(width(*len))
@@ -1193,12 +1306,12 @@ fn obligation_term(
             which,
             congruent,
         } => format!(
-            ".halt _ {op} none {congruent} {which} {} {}",
+            ".halt _ {op} none {congruent}.at {which} {} {}",
             get("old", pc),
             get("new", pc)
         ),
         Obligation::FallOff => format!(
-            ".halt _ Operation.STOP none congruent_stop (Or.inl rfl) {} {}",
+            ".halt _ Operation.STOP none congruent_stop.at (Or.inl rfl) {} {}",
             get("old", pc),
             get("new", pc)
         ),
@@ -1364,6 +1477,16 @@ mod tests {
             bin(ADD, lit(U256::from(7)), x())
         ));
         assert!(!same(bin(SUB, x(), y()), bin(SUB, y(), x())));
+        // Range facts: a comparison already fits in one bit, a byte in eight.
+        let one = || lit(U256::from(1));
+        assert!(same(bin(AND, bin(LT, x(), y()), one()), bin(LT, x(), y())));
+        let iszero = |a: Sym| Sym::Un(ISZERO, Box::new(a));
+        assert!(same(iszero(iszero(bin(EQ, x(), y()))), bin(EQ, x(), y())));
+        assert!(same(
+            bin(AND, bin(AND, x(), m()), lit(U256::from(0xffff))),
+            bin(AND, x(), m())
+        ));
+        assert!(!same(bin(AND, x(), one()), x()));
         assert!(!same(bin(0x12, x(), y()), bin(0x12, y(), x())));
     }
 

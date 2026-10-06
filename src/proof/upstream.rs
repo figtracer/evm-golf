@@ -772,6 +772,18 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
         ],
     ),
     (
+        "WholeEnv",
+        include_str!("../../lean/upstream/WholeEnv.lean"),
+        &[
+            "GolfWhole.same_balance",
+            "GolfWhole.same_selfbalance",
+            "GolfWhole.same_returndatacopy",
+            "GolfWhole.same_blobhash",
+            "GolfWhole.codesize_same",
+            "GolfWhole.extcodesize_same",
+        ],
+    ),
+    (
         "WholeScan",
         include_str!("../../lean/upstream/WholeScan.lean"),
         &["GolfWhole.dj_scan", "GolfWhole.decode_ofBytes"],
@@ -796,9 +808,34 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
         &["GolfWhole.xi_refines"],
     ),
     (
+        "WholeTheta",
+        include_str!("../../lean/upstream/WholeTheta.lean"),
+        &["GolfWhole.theta_refines"],
+    ),
+    (
+        "WholeUpsilon",
+        include_str!("../../lean/upstream/WholeUpsilon.lean"),
+        &["GolfWhole.upsilon_refines", "GolfWhole.charged_mono"],
+    ),
+    (
         "WholeThread",
         include_str!("../../lean/upstream/WholeThread.lean"),
         &["GolfWhole.thread_segment"],
+    ),
+    (
+        "WholeSym",
+        include_str!("../../lean/upstream/WholeSym.lean"),
+        &["GolfWhole.norm_val"],
+    ),
+    (
+        "WholeWOp",
+        include_str!("../../lean/upstream/WholeWOp.lean"),
+        &["GolfWhole.wfacts_dup", "GolfWhole.wfacts_swap"],
+    ),
+    (
+        "WholeWFacts",
+        include_str!("../../lean/upstream/WholeWFacts.lean"),
+        &["GolfWhole.wfacts"],
     ),
     (
         "WholeWindow",
@@ -1606,6 +1643,8 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
                     vec![
                         "GolfWholeCertificate.whole_certificate".to_owned(),
                         "GolfWholeCertificate.xi_certificate".to_owned(),
+                        "GolfWholeCertificate.theta_certificate".to_owned(),
+                        "GolfWholeCertificate.upsilon_certificate".to_owned(),
                     ]
                 } else {
                     Vec::new()

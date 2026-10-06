@@ -31,7 +31,7 @@ theorem step_zero (c : ℕ) (i : Option (Operation .EVM × Option (UInt256 × Na
 step from the related state, for any residual fuel. -/
 theorem candidate_step {owner old new surplus skipped s t} {oj nj : Array UInt256}
     {op : Operation .EVM} {arg : Option (UInt256 × Nat)} {f : ℕ} {nx : State}
-    (c : Congruent op) (rel : DeployedOffset owner old new surplus skipped s t)
+    (c : CongruentAt old new op) (rel : DeployedOffset owner old new surplus skipped s t)
     (jumps : ∀ x, oj.contains x = true → nj.contains x = true)
     (dt : (decode t.executionEnv.code t.pc).getD (.STOP, .none) = (op, arg))
     (z : ZOk oj op s)
@@ -129,7 +129,7 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
     cases f with
     | zero => rw [step_zero] at step; cases step
     | succ f =>
-    obtain ⟨v', rel', cand⟩ := candidate_step jump_congruent rel jumps (getD_of dt) z step
+    obtain ⟨v', rel', cand⟩ := candidate_step jump_congruent.at rel jumps (getD_of dt) z step
     obtain ⟨tail, stack⟩ := jump_pc none f _ _ nx step
     have valid : oj.contains nx.pc = true := by
       have zj := z.jump
@@ -152,7 +152,7 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
     cases f with
     | zero => rw [step_zero] at step; cases step
     | succ f =>
-    obtain ⟨v', rel', cand⟩ := candidate_step jumpi_congruent rel jumps (getD_of dt) z step
+    obtain ⟨v', rel', cand⟩ := candidate_step jumpi_congruent.at rel jumps (getD_of dt) z step
     obtain ⟨x, b, tail, stack, npc⟩ := jumpi_pc none f _ _ nx step
     change s.stack = x :: b :: tail at stack
     change nx.pc = if b != ⟨0⟩ then x else s.pc + ⟨1⟩ at npc

@@ -29,8 +29,8 @@ metadata is accepted. One certificate covers the whole runtime and proves:
 Only Lean's foundational axioms (`propext`, `Classical.choice`, `Quot.sound`)
 may appear in the axiom report, and every expected theorem must be reported.
 
-A separate developer command proves whole-program refinement of Ξ against
-pinned EVMYulLean for call-free runtimes with the power, JUMPI-threading and
+A separate developer command proves whole-program refinement of X, Ξ, Θ and Υ
+against pinned EVMYulLean for call-free runtimes with the power, JUMPI-threading and
 stack-window rewrites
 ([regions](dev/regions.md#whole-programs)). It does not affect `optimize` or
 `verify`.

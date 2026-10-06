@@ -153,6 +153,21 @@ structure Congruent (op : Operation .EVM) : Prop where
     ∃ v', EVM.step (g + 1) c (some (op, arg)) u' = .ok v' ∧
       DeployedOffset owner old new surplus skipped v v'
 
+/-- `Congruent` restricted to one pair of images, for opcodes that read the code size. -/
+structure CongruentAt (old new : ByteArray) (op : Operation .EVM) : Prop where
+  fuel : ∀ (f g c : ℕ) (arg : Option (UInt256 × Nat)) (u : State),
+    EVM.step (f + 1) c (some (op, arg)) u = EVM.step (g + 1) c (some (op, arg)) u
+  cost : ∀ {owner surplus skipped s t},
+    DeployedOffset owner old new surplus skipped s t → C' t op = C' s op
+  step : ∀ {owner surplus skipped u u' v} (f g c : ℕ) (arg : Option (UInt256 × Nat)),
+    DeployedOffset owner old new surplus skipped u u' → c ≤ u.gasAvailable.toNat →
+    EVM.step (f + 1) c (some (op, arg)) u = .ok v →
+    ∃ v', EVM.step (g + 1) c (some (op, arg)) u' = .ok v' ∧
+      DeployedOffset owner old new surplus skipped v v'
+
+theorem Congruent.at {op : Operation .EVM} (c : Congruent op) {old new : ByteArray} :
+    CongruentAt old new op := ⟨c.fuel, c.cost, c.step⟩
+
 def Advances (op : Operation .EVM) : Prop :=
   ∀ (f c : ℕ) (arg : Option (UInt256 × Nat)) (u v : State),
     EVM.step (f + 1) c (some (op, arg)) u = .ok v → v.pc = u.pc + UInt256.ofNat (advance op arg)
@@ -175,11 +190,11 @@ def Segment (owner : AccountAddress) (old new : ByteArray) (oj nj : Array UInt25
 inductive Point (old new : ByteArray) (oj : Array UInt256) (P : UInt256 → Prop) :
     UInt256 → Prop where
   | same (pc : UInt256) (op : Operation .EVM) (arg : Option (UInt256 × Nat))
-      (c : Congruent op) (a : Advances op) (run : Running op)
+      (c : CongruentAt old new op) (a : Advances op) (run : Running op)
       (o : decode old pc = some (op, arg)) (n : decode new pc = some (op, arg))
       (next : P (pc + UInt256.ofNat (advance op arg))) : Point old new oj P pc
   | halt (pc : UInt256) (op : Operation .EVM) (arg : Option (UInt256 × Nat))
-      (c : Congruent op) (h : Halting op)
+      (c : CongruentAt old new op) (h : Halting op)
       (o : (decode old pc).getD (.STOP, .none) = (op, arg))
       (n : (decode new pc).getD (.STOP, .none) = (op, arg)) :
       Point old new oj P pc
