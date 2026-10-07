@@ -15,11 +15,11 @@ only if Lean proves it and revm replays your transactions with the same results.
 
 ## Highlights
 
-- ⛳ Saves 14 gas per `transfer` on a usual ERC20 build, and up to 182 gas per
+- Saves 14 gas per `transfer` on a usual ERC20 build, and up to 182 gas per
   `withdraw` on an unoptimized ERC4626 vault ([results](docs/results.md)).
-- ✅ Every change is proved in Lean and replayed in revm before it is accepted.
-- 📐 Byte offsets never move, so jump tables and code copies stay valid.
-- 🤖 Bring your own agents: they propose byte patches, and the checker keeps
+- Every change is proved in Lean and replayed in revm before it is accepted.
+- Byte offsets never move, so jump tables and code copies stay valid.
+- Bring your own agents: they propose byte patches, and the checker keeps
   only what it can prove and replay.
 
 ## Quick start
@@ -75,13 +75,13 @@ Use `cargo run --locked --` in place of `evm-golf` if it is not installed.
 
 | Guarantee | |
 | --- | :---: |
-| Each rewritten piece of code gives the same result (Lean proof) | ✅ |
-| Byte offsets, jump targets and code copies stay valid | ✅ |
-| Your transactions give the same results and use no more gas (revm replay) | ✅ |
-| Inputs and states that your transactions do not cover | ❌ |
-| Behavior that depends on the remaining gas | ❌ |
-| Contracts that call each other, optimized together | ❌ |
-| The whole contract is equivalent to the original | ⚠️ developer command only; calls need stated assumptions |
+| Each rewritten piece of code gives the same result (Lean proof) | Yes |
+| Byte offsets, jump targets and code copies stay valid | Yes |
+| Your transactions give the same results and use no more gas (revm replay) | Yes |
+| Inputs and states that your transactions do not cover | No |
+| Behavior that depends on the remaining gas | No |
+| Contracts that call each other, optimized together | No |
+| The whole contract is equivalent to the original | Partly: developer command only; calls need stated assumptions |
 
 Only a subset of opcodes and control flow is supported. The developer command
 proves the whole contract against EVMYulLean, a formal model of the EVM; for
