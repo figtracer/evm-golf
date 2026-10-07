@@ -33,7 +33,7 @@ pub struct WholeCertificate {
     pub power_sites: Vec<usize>,
     pub thread_sites: Vec<usize>,
     pub window_sites: Vec<usize>,
-    /// CALL and STATICCALL instructions, with the GAS directly before them.
+    /// Call instructions, with the GAS directly before them.
     pub call_sites: Vec<usize>,
     pub assumptions: Vec<&'static str>,
     pub unproved: Vec<&'static str>,
@@ -67,7 +67,7 @@ struct WindowSite {
     new: Vec<(usize, Vec<u8>)>,
 }
 
-/// A CALL or STATICCALL, optionally with the GAS that feeds it directly before.
+/// A call opcode, optionally with the GAS that feeds it directly before.
 #[derive(Clone)]
 struct CallSite {
     op: u8,
@@ -85,10 +85,11 @@ impl CallSite {
         self.inputs - usize::from(self.gas_first)
     }
     fn lean(&self) -> (&'static str, &'static str) {
-        if self.op == 0xf1 {
-            ("Operation.CALL", "CallOp.call")
-        } else {
-            ("Operation.STATICCALL", "CallOp.staticcall")
+        match self.op {
+            0xf1 => ("Operation.CALL", "CallOp.call"),
+            0xf2 => ("Operation.CALLCODE", "CallOp.callcode"),
+            0xf4 => ("Operation.DELEGATECALL", "CallOp.delegatecall"),
+            _ => ("Operation.STATICCALL", "CallOp.staticcall"),
         }
     }
 }
@@ -190,7 +191,7 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
             ];
             if plan.calls() {
                 list.push("CalleeSummary: a callee other than the owner's code, run on related account maps with at least the original's gas, returns the same created set, substate, status and output, related account maps, no less gas than the original and no more than it was given; the original's callee keeps the owner's account");
-                list.push("Reentry: calls back into the owner's code return success or revert in the original run");
+                list.push("Reentry: calls back into the owner's code return success or revert in the original run (ecrecover_summary shows CalleeSummary holds for the ecrecover precompile given at least 3000 gas)");
                 list.push("the owner is not a precompile address");
             }
             list
@@ -198,7 +199,7 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
         unproved: {
             let mut list = vec![
                 "Θ and Υ for calls and transactions that do not target the owner directly",
-                "opcodes outside the supported profile: DELEGATECALL, CALLCODE, creation, CODECOPY, EXTCODECOPY, EXTCODEHASH, SELFDESTRUCT, and GAS that does not directly feed CALL or STATICCALL",
+                "opcodes outside the supported profile: creation, CODECOPY, EXTCODECOPY, EXTCODEHASH, SELFDESTRUCT, and GAS that does not directly feed a call",
                 "exceptional original runs (the claim is conditioned on original success or revert)",
                 "revm correspondence",
             ];
@@ -806,7 +807,7 @@ fn classify(instruction: &Instruction, next: Option<&Instruction>) -> Result<Obl
     let call = |op: u8, gas_first: bool| {
         Obligation::Call(CallSite {
             op,
-            inputs: if op == 0xf1 { 7 } else { 6 },
+            inputs: if matches!(op, 0xf1 | 0xf2) { 7 } else { 6 },
             gas_first,
         })
     };
@@ -859,11 +860,11 @@ fn classify(instruction: &Instruction, next: Option<&Instruction>) -> Result<Obl
         },
         0x56 => Obligation::Jump,
         0x57 => Obligation::Jumpi,
-        0xf1 | 0xfa => call(op, false),
+        0xf1 | 0xf2 | 0xf4 | 0xfa => call(op, false),
         0x5a => match next {
-            Some(n) if matches!(n.bytes[0], 0xf1 | 0xfa) => call(n.bytes[0], true),
+            Some(n) if matches!(n.bytes[0], 0xf1 | 0xf2 | 0xf4 | 0xfa) => call(n.bytes[0], true),
             _ => bail!(
-                "GAS at pc {} is supported only directly before CALL or STATICCALL",
+                "GAS at pc {} is supported only directly before a call opcode",
                 instruction.pc
             ),
         },
@@ -1653,10 +1654,27 @@ mod tests {
 
     #[test]
     fn plans_calls_with_their_gas() {
-        // PUSH0 x6; GAS; STATICCALL; POP; PUSH0 x7; CALL; STOP.
-        let code = hex::decode("5f5f5f5f5f5f5afa505f5f5f5f5f5f5ff100").unwrap();
+        // PUSH0 x6; GAS; STATICCALL; POP; PUSH0 x7; CALL; POP; PUSH0 x6; GAS; DELEGATECALL;
+        // CALLCODE; STOP.
+        let code = hex::decode("5f5f5f5f5f5f5afa505f5f5f5f5f5f5ff1505f5f5f5f5f5f5af4f200").unwrap();
         let planned = plan(&code, &code).unwrap();
         assert!(planned.calls());
+        assert!(matches!(
+            first(&planned, 24),
+            Obligation::Call(CallSite {
+                op: 0xf4,
+                inputs: 6,
+                gas_first: true
+            })
+        ));
+        assert!(matches!(
+            first(&planned, 26),
+            Obligation::Call(CallSite {
+                op: 0xf2,
+                inputs: 7,
+                gas_first: false
+            })
+        ));
         assert!(matches!(
             first(&planned, 6),
             Obligation::Call(CallSite {
@@ -1676,7 +1694,10 @@ mod tests {
         let pcs: Vec<usize> = planned.points().map(|(pc, _)| *pc).collect();
         assert_eq!(
             pcs,
-            vec![0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![
+                0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24, 26, 27
+            ]
         );
         // GAS anywhere else is not supported.
         let gas = hex::decode("5a00").unwrap();

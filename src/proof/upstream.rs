@@ -779,6 +779,11 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
         ],
     ),
     (
+        "WholePrecompile",
+        include_str!("../../lean/upstream/WholePrecompile.lean"),
+        &["GolfWhole.ecrecover_summary"],
+    ),
+    (
         "WholeProgram",
         include_str!("../../lean/upstream/WholeProgram.lean"),
         &[

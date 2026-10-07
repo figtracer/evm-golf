@@ -301,26 +301,116 @@ theorem step_staticcall_inv (f c : ℕ) (arg : Option (UInt256 × Nat)) (u v : S
       injection step with step
       exact ⟨stack, μ₀, μ₁, μ₃, μ₄, μ₅, μ₆, x, state', rfl, hc, step.symm⟩
 
+theorem step_callcode_of (f c : ℕ) (arg : Option (UInt256 × Nat)) (u : State)
+    (stack : Stack UInt256) (μ₀ μ₁ μ₂ μ₃ μ₄ μ₅ μ₆ x : UInt256) (state' : State)
+    (h : u.stack.pop7 = some (stack, μ₀, μ₁, μ₂, μ₃, μ₄, μ₅, μ₆))
+    (hc : call f c u.executionEnv.blobVersionedHashes μ₀ (.ofNat u.executionEnv.codeOwner)
+      (.ofNat u.executionEnv.codeOwner) μ₁ μ₂ μ₂ μ₃ μ₄ μ₅ μ₆ u.executionEnv.perm
+      { u with execLength := u.execLength + 1 } = .ok (x, state')) :
+    EVM.step (f + 1) c (some (.CALLCODE, arg)) u = .ok (state'.replaceStackAndIncrPC (stack.push x)) := by
+  unfold EVM.step
+  simp only [h, hc, bind, Except.bind, pure, Except.pure, liftM, monadLift, MonadLiftT.monadLift,
+    MonadLift.monadLift, instMonadLiftOptionExceptExecutionException, Option.option]
+
+theorem step_callcode_inv (f c : ℕ) (arg : Option (UInt256 × Nat)) (u v : State)
+    (step : EVM.step (f + 1) c (some (.CALLCODE, arg)) u = .ok v) :
+    ∃ stack μ₀ μ₁ μ₂ μ₃ μ₄ μ₅ μ₆ x state', u.stack.pop7 = some (stack, μ₀, μ₁, μ₂, μ₃, μ₄, μ₅, μ₆) ∧
+      call f c u.executionEnv.blobVersionedHashes μ₀ (.ofNat u.executionEnv.codeOwner)
+        (.ofNat u.executionEnv.codeOwner) μ₁ μ₂ μ₂ μ₃ μ₄ μ₅ μ₆ u.executionEnv.perm
+        { u with execLength := u.execLength + 1 } = .ok (x, state') ∧
+      v = state'.replaceStackAndIncrPC (stack.push x) := by
+  unfold EVM.step at step
+  cases h : u.stack.pop7 with
+  | none =>
+    simp only [h, bind, Except.bind, pure, Except.pure, liftM, monadLift, MonadLiftT.monadLift,
+      MonadLift.monadLift, instMonadLiftOptionExceptExecutionException, Option.option] at step
+    cases step
+  | some p =>
+    obtain ⟨stack, μ₀, μ₁, μ₂, μ₃, μ₄, μ₅, μ₆⟩ := p
+    simp only [h, bind, Except.bind, pure, Except.pure, liftM, monadLift, MonadLiftT.monadLift,
+      MonadLift.monadLift, instMonadLiftOptionExceptExecutionException, Option.option] at step
+    cases hc : call f c u.executionEnv.blobVersionedHashes μ₀ (.ofNat u.executionEnv.codeOwner)
+        (.ofNat u.executionEnv.codeOwner) μ₁ μ₂ μ₂ μ₃ μ₄ μ₅ μ₆ u.executionEnv.perm
+        { u with execLength := u.execLength + 1 } with
+    | error e => rw [hc] at step; cases step
+    | ok w =>
+      obtain ⟨x, state'⟩ := w
+      rw [hc] at step
+      injection step with step
+      exact ⟨stack, μ₀, μ₁, μ₂, μ₃, μ₄, μ₅, μ₆, x, state', rfl, hc, step.symm⟩
+
+theorem step_delegatecall_of (f c : ℕ) (arg : Option (UInt256 × Nat)) (u : State)
+    (stack : Stack UInt256) (μ₀ μ₁ μ₃ μ₄ μ₅ μ₆ x : UInt256) (state' : State)
+    (h : u.stack.pop6 = some (stack, μ₀, μ₁, μ₃, μ₄, μ₅, μ₆))
+    (hc : call f c u.executionEnv.blobVersionedHashes μ₀ (.ofNat u.executionEnv.source)
+      (.ofNat u.executionEnv.codeOwner) μ₁ ⟨0⟩ u.executionEnv.weiValue μ₃ μ₄ μ₅ μ₆ u.executionEnv.perm
+      { u with execLength := u.execLength + 1 } = .ok (x, state')) :
+    EVM.step (f + 1) c (some (.DELEGATECALL, arg)) u = .ok (state'.replaceStackAndIncrPC (stack.push x)) := by
+  unfold EVM.step
+  simp only [h, hc, bind, Except.bind, pure, Except.pure, liftM, monadLift, MonadLiftT.monadLift,
+    MonadLift.monadLift, instMonadLiftOptionExceptExecutionException, Option.option]
+
+theorem step_delegatecall_inv (f c : ℕ) (arg : Option (UInt256 × Nat)) (u v : State)
+    (step : EVM.step (f + 1) c (some (.DELEGATECALL, arg)) u = .ok v) :
+    ∃ stack μ₀ μ₁ μ₃ μ₄ μ₅ μ₆ x state', u.stack.pop6 = some (stack, μ₀, μ₁, μ₃, μ₄, μ₅, μ₆) ∧
+      call f c u.executionEnv.blobVersionedHashes μ₀ (.ofNat u.executionEnv.source)
+        (.ofNat u.executionEnv.codeOwner) μ₁ ⟨0⟩ u.executionEnv.weiValue μ₃ μ₄ μ₅ μ₆ u.executionEnv.perm
+        { u with execLength := u.execLength + 1 } = .ok (x, state') ∧
+      v = state'.replaceStackAndIncrPC (stack.push x) := by
+  unfold EVM.step at step
+  cases h : u.stack.pop6 with
+  | none =>
+    simp only [h, bind, Except.bind, pure, Except.pure, liftM, monadLift, MonadLiftT.monadLift,
+      MonadLift.monadLift, instMonadLiftOptionExceptExecutionException, Option.option] at step
+    cases step
+  | some p =>
+    obtain ⟨stack, μ₀, μ₁, μ₃, μ₄, μ₅, μ₆⟩ := p
+    simp only [h, bind, Except.bind, pure, Except.pure, liftM, monadLift, MonadLiftT.monadLift,
+      MonadLift.monadLift, instMonadLiftOptionExceptExecutionException, Option.option] at step
+    cases hc : call f c u.executionEnv.blobVersionedHashes μ₀ (.ofNat u.executionEnv.source)
+        (.ofNat u.executionEnv.codeOwner) μ₁ ⟨0⟩ u.executionEnv.weiValue μ₃ μ₄ μ₅ μ₆ u.executionEnv.perm
+        { u with execLength := u.execLength + 1 } with
+    | error e => rw [hc] at step; cases step
+    | ok w =>
+      obtain ⟨x, state'⟩ := w
+      rw [hc] at step
+      injection step with step
+      exact ⟨stack, μ₀, μ₁, μ₃, μ₄, μ₅, μ₆, x, state', rfl, hc, step.symm⟩
+
+theorem ofNat_toNat (n : ℕ) (h : n < UInt256.size) : (UInt256.ofNat n).toNat = n := by
+  show (Fin.ofNat UInt256.size n).val = n
+  simp only [Fin.ofNat, Nat.mod_eq_of_lt h]
+
+/-- An address pushed as a word and read back. -/
+theorem ofUInt256_ofNat (a : AccountAddress) : AccountAddress.ofUInt256 (UInt256.ofNat a.val) = a := by
+  have lt : a.val < UInt256.size := lt_trans a.isLt (by decide)
+  have e : (UInt256.ofNat a.val).toNat = a.val := ofNat_toNat a.val lt
+  unfold AccountAddress.ofUInt256
+  apply Fin.ext
+  show ((UInt256.ofNat a.val).toNat % AccountAddress.size) % AccountAddress.size = a.val
+  rw [e, Nat.mod_eq_of_lt a.isLt, Nat.mod_eq_of_lt a.isLt]
+
 /-! The body of `call`. -/
 
-/-- The gas handed to the callee, as `call` computes it. -/
-def callGas (t v gas : UInt256) (u : State) : ℕ :=
-  Ccallgas (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 t) v gas u.accountMap
+/-- The gas handed to the callee, as `call` computes it for code at `t` and recipient `rcp`. -/
+def callGas (t rcp v gas : UInt256) (u : State) : ℕ :=
+  Ccallgas (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 rcp) v gas u.accountMap
     u.toMachineState u.substate
 
-/-- The callee run of `call`: Θ on the code at `t`, or the no-call result. -/
-def callRun (f : ℕ) (bvh : List ByteArray) (gas t v v' io is : UInt256) (perm : Bool) (u : State) :
+/-- The callee run of `call`: Θ on the code at `t` for recipient `rcp`, or the no-call result. -/
+def callRun (f : ℕ) (bvh : List ByteArray) (gas src rcp t v v' io is : UInt256) (perm : Bool)
+    (u : State) :
     Except EVM.ExecutionException
       (Batteries.RBSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate × Bool × ByteArray) :=
   if v ≤ (u.accountMap.find? u.executionEnv.codeOwner |>.option ⟨0⟩ (·.balance)) ∧
       u.executionEnv.depth < 1024 then
     Θ f bvh u.createdAccounts u.genesisBlockHeader u.blocks u.accountMap u.σ₀
-      (u.addAccessedAccount (AccountAddress.ofUInt256 t)).substate (AccountAddress.ofUInt256 (.ofNat u.executionEnv.codeOwner))
-      u.executionEnv.sender (AccountAddress.ofUInt256 t) (toExecute .EVM u.accountMap (AccountAddress.ofUInt256 t))
-      (.ofNat (callGas t v gas u)) (.ofNat u.executionEnv.gasPrice) v v'
+      (u.addAccessedAccount (AccountAddress.ofUInt256 t)).substate (AccountAddress.ofUInt256 src)
+      u.executionEnv.sender (AccountAddress.ofUInt256 rcp) (toExecute .EVM u.accountMap (AccountAddress.ofUInt256 t))
+      (.ofNat (callGas t rcp v gas u)) (.ofNat u.executionEnv.gasPrice) v v'
       (u.memory.readWithPadding io.toNat is.toNat) (u.executionEnv.depth + 1) u.executionEnv.header perm
   else
-    .ok (u.createdAccounts, u.accountMap, .ofNat (callGas t v gas u),
+    .ok (u.createdAccounts, u.accountMap, .ofNat (callGas t rcp v gas u),
       (u.addAccessedAccount (AccountAddress.ofUInt256 t)).substate, false, .empty)
 
 /-- The status word `call` pushes. -/
@@ -344,11 +434,10 @@ def callPost (u : State) (gasCost : ℕ) (io is oo os : UInt256)
       activeWords := .ofNat (MachineState.M (MachineState.M u₁.activeWords.toNat io.toNat is.toNat)
         oo.toNat os.toNat) } }
 
-theorem call_inv {f gasCost : ℕ} {bvh : List ByteArray} {gas t v v' io is oo os : UInt256}
+theorem call_inv {f gasCost : ℕ} {bvh : List ByteArray} {gas src rcp t v v' io is oo os : UInt256}
     {perm : Bool} {u : State} {x : UInt256} {r : State}
-    (h : call (f + 1) gasCost bvh gas (.ofNat u.executionEnv.codeOwner) t t v v' io is oo os perm u =
-      .ok (x, r)) :
-    ∃ q, callRun f bvh gas t v v' io is perm u = .ok q ∧ x = callStatus u v q.2.2.2.2.1 ∧
+    (h : call (f + 1) gasCost bvh gas src rcp t v v' io is oo os perm u = .ok (x, r)) :
+    ∃ q, callRun f bvh gas src rcp t v v' io is perm u = .ok q ∧ x = callStatus u v q.2.2.2.2.1 ∧
       r = callPost u gasCost io is oo os q := by
   unfold call at h
   unfold callRun
@@ -366,11 +455,11 @@ theorem call_inv {f gasCost : ℕ} {bvh : List ByteArray} {gas t v v' io is oo o
     injection h with hx hr
     exact ⟨_, rfl, hx.symm, hr.symm⟩
 
-theorem call_of {f gasCost : ℕ} {bvh : List ByteArray} {gas t v v' io is oo os : UInt256}
+theorem call_of {f gasCost : ℕ} {bvh : List ByteArray} {gas src rcp t v v' io is oo os : UInt256}
     {perm : Bool} {u : State}
     {q : Batteries.RBSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate × Bool × ByteArray}
-    (h : callRun f bvh gas t v v' io is perm u = .ok q) :
-    call (f + 1) gasCost bvh gas (.ofNat u.executionEnv.codeOwner) t t v v' io is oo os perm u =
+    (h : callRun f bvh gas src rcp t v v' io is perm u = .ok q) :
+    call (f + 1) gasCost bvh gas src rcp t v v' io is oo os perm u =
       .ok (callStatus u v q.2.2.2.2.1, callPost u gasCost io is oo os q) := by
   unfold call
   unfold callRun at h
@@ -423,6 +512,20 @@ theorem cost_staticcall (u : State) (g₀ a₁ : UInt256) (rest : List UInt256) 
   simp only [C', hs]
   rfl
 
+theorem cost_callcode (u : State) (g₀ a₁ a₂ : UInt256) (rest : List UInt256)
+    (hs : u.stack = g₀ :: a₁ :: a₂ :: rest) :
+    C' u .CALLCODE = Ccall (AccountAddress.ofUInt256 a₁) u.executionEnv.codeOwner a₂ g₀ u.accountMap
+      u.toMachineState u.substate := by
+  simp only [C', hs]
+  rfl
+
+theorem cost_delegatecall (u : State) (g₀ a₁ : UInt256) (rest : List UInt256)
+    (hs : u.stack = g₀ :: a₁ :: rest) :
+    C' u .DELEGATECALL = Ccall (AccountAddress.ofUInt256 a₁) u.executionEnv.codeOwner ⟨0⟩ g₀ u.accountMap
+      u.toMachineState u.substate := by
+  simp only [C', hs]
+  rfl
+
 theorem mem_call_eq {op : Operation .EVM} {k : ℕ} (hop : CallOp op k) (a b : State) (x y : UInt256)
     (rest : List UInt256) (ha : a.stack = x :: rest) (hb : b.stack = y :: rest)
     (hw : a.activeWords = b.activeWords) : memoryExpansionCost a op = memoryExpansionCost b op := by
@@ -442,10 +545,6 @@ theorem pop6_eq {st stk : List UInt256} {a b c d e g : UInt256}
     simp only [Stack.pop6, Option.some.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩ := h; rfl
 
-theorem ofNat_toNat (n : ℕ) (h : n < UInt256.size) : (UInt256.ofNat n).toNat = n := by
-  show (Fin.ofNat UInt256.size n).val = n
-  simp only [Fin.ofNat, Nat.mod_eq_of_lt h]
-
 theorem rel_count {owner : AccountAddress} {old new : ByteArray} {surplus skipped : ℕ} {u u' : State}
     (h : DeployedOffset owner old new surplus skipped u u') :
     DeployedOffset owner old new surplus skipped { u with execLength := u.execLength + 1 }
@@ -461,21 +560,20 @@ pushes the same status and reaches a related state for every fuel at least the o
 theorem call_rel {owner : AccountAddress} {old new : ByteArray}
     (summary : CalleeSummary owner old new) (reentry : Reentry owner old) (notPre : owner ∉ π)
     (N : ℕ) (cert : Cert owner old new N) (ho : 0 < old.size) (hn : 0 < new.size)
-    (f : ℕ) (hN : f ≤ N) (bvh : List ByteArray) (gas gas' t v v' io is oo os : UInt256) (perm : Bool)
-    (u u' : State) (surplus skipped d gasCost gasCost' : ℕ) (x : UInt256) (r : State)
+    (f : ℕ) (hN : f ≤ N) (bvh : List ByteArray) (gas gas' src rcp t v v' io is oo os : UInt256)
+    (perm : Bool) (u u' : State) (surplus skipped d gasCost gasCost' : ℕ) (x : UInt256) (r : State)
     (rel : DeployedOffset owner old new surplus skipped u { u' with stack := u.stack })
+    (hr : AccountAddress.ofUInt256 t = owner → AccountAddress.ofUInt256 rcp = owner)
     (hd : gas'.toNat = gas.toNat + d) (hds : d ≤ surplus)
-    (hc : gasCost = Ccall (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 t) v gas u.accountMap
+    (hc : gasCost = Ccall (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 rcp) v gas u.accountMap
       u.toMachineState u.substate)
-    (hc' : gasCost' = Ccall (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 t) v gas' u'.accountMap
+    (hc' : gasCost' = Ccall (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 rcp) v gas' u'.accountMap
       u'.toMachineState u'.substate)
     (enough : gasCost ≤ u.gasAvailable.toNat)
-    (run : call (f + 1) gasCost bvh gas (.ofNat u.executionEnv.codeOwner) t t v v' io is oo os perm u =
-      .ok (x, r)) :
+    (run : call (f + 1) gasCost bvh gas src rcp t v v' io is oo os perm u = .ok (x, r)) :
     (x = ⟨0⟩ ∨ x = ⟨1⟩) ∧ gasCost' ≤ gasCost + surplus ∧ r.stack = u.stack ∧ r.pc = u.pc ∧
     ∀ f', f ≤ f' → ∃ r' surplus',
-      call (f' + 1) gasCost' bvh gas' (.ofNat u'.executionEnv.codeOwner) t t v v' io is oo os perm u' =
-        .ok (x, r') ∧
+      call (f' + 1) gasCost' bvh gas' src rcp t v v' io is oo os perm u' = .ok (x, r') ∧
       DeployedOffset owner old new surplus' skipped r { r' with stack := r.stack } ∧
       r'.gasAvailable.toNat ≤ u'.gasAvailable.toNat ∧ r'.stack = u'.stack ∧ r'.pc = u'.pc := by
   obtain ⟨q, hq, hx, hr⟩ := call_inv run
@@ -522,23 +620,23 @@ theorem call_rel {owner : AccountAddress} {old new : ByteArray}
     simpa only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas] using
       congrArg (fun x : State => x.memory) F
   rw [← sub] at hc'
-  have cx := cextra_rel maps ho hn (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 t) v u.substate
-  obtain ⟨c1, c2, c3, c4, c5⟩ := ccall_rel (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 t) v gas gas'
+  have cx := cextra_rel maps ho hn (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 rcp) v u.substate
+  obtain ⟨c1, c2, c3, c4, c5⟩ := ccall_rel (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 rcp) v gas gas'
     u.accountMap u'.accountMap u.toMachineState u'.toMachineState u.substate surplus d cx gasU hd hds
     (hc ▸ enough)
   rw [← hc, ← hc'] at c1 c2 c3
   rw [← hc] at c4
   rw [← hc'] at c5
-  have cg : callGas t v gas u = Ccallgas (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 t) v gas
+  have cg : callGas t rcp v gas u = Ccallgas (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 rcp) v gas
       u.accountMap u.toMachineState u.substate := rfl
-  have cg' : callGas t v gas' u' = Ccallgas (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 t) v gas'
-      u'.accountMap u'.toMachineState u.substate := by unfold callGas; rw [sub]
+  have cg' : callGas t rcp v gas' u' = Ccallgas (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 rcp)
+      v gas' u'.accountMap u'.toMachineState u.substate := by unfold callGas; rw [sub]
   rw [← cg] at c3 c4
   rw [← cg'] at c3 c5
   have bound : u.gasAvailable.toNat < UInt256.size := u.gasAvailable.val.isLt
   have bound' : u'.gasAvailable.toNat < UInt256.size := u'.gasAvailable.val.isLt
-  have hgC : (UInt256.ofNat (callGas t v gas' u')).toNat =
-      (UInt256.ofNat (callGas t v gas u)).toNat + (gasCost' - gasCost) := by
+  have hgC : (UInt256.ofNat (callGas t rcp v gas' u')).toNat =
+      (UInt256.ofNat (callGas t rcp v gas u)).toNat + (gasCost' - gasCost) := by
     rw [ofNat_toNat _ (by omega), ofNat_toNat _ (by omega)]; omega
   have bal := balance_rel maps owner
   have status : callStatus u' v z = callStatus u v z := by
@@ -562,7 +660,7 @@ theorem call_rel {owner : AccountAddress} {old new : ByteArray}
       obtain ⟨-, b, -, -, -⟩ := h
       simp only [Option.option, b]
   have key : (∃ a, σ'.find? owner = some a ∧ a.code = old) ∧ ∀ f', f ≤ f' → ∃ τ' g'',
-      callRun f' bvh gas' t v v' io is perm u' = .ok (cA, τ', g'', A', z, out) ∧
+      callRun f' bvh gas' src rcp t v v' io is perm u' = .ok (cA, τ', g'', A', z, out) ∧
       MapsRelated owner old new σ' τ' ∧ (∃ a, τ'.find? owner = some a ∧ a.code = new) ∧
       g'.toNat ≤ g''.toNat ∧ g''.toNat ≤ gasCost' := by
     unfold callRun at hq
@@ -571,9 +669,9 @@ theorem call_rel {owner : AccountAddress} {old new : ByteArray}
       obtain ⟨lo', cand⟩ := theta_call summary reentry notPre N cert f hN bvh u.createdAccounts
         u.genesisBlockHeader u.blocks u.accountMap u.σ₀ u'.accountMap u'.σ₀
         (u.addAccessedAccount (AccountAddress.ofUInt256 t)).substate
-        (AccountAddress.ofUInt256 (.ofNat u.executionEnv.codeOwner)) u.executionEnv.sender
-        (AccountAddress.ofUInt256 t) (AccountAddress.ofUInt256 t) (fun h => h)
-        (.ofNat (callGas t v gas u)) (.ofNat (callGas t v gas' u')) (gasCost' - gasCost) hgC
+        (AccountAddress.ofUInt256 src) u.executionEnv.sender
+        (AccountAddress.ofUInt256 rcp) (AccountAddress.ofUInt256 t) hr
+        (.ofNat (callGas t rcp v gas u)) (.ofNat (callGas t rcp v gas' u')) (gasCost' - gasCost) hgC
         (.ofNat u.executionEnv.gasPrice) v v' (u.memory.readWithPadding io.toNat is.toNat)
         (u.executionEnv.depth + 1) u.executionEnv.header perm maps maps0 lo lo0 ln ln0 cA σ' g' A' z out hq
       refine ⟨lo', fun f' hf => ?_⟩
@@ -585,7 +683,7 @@ theorem call_rel {owner : AccountAddress} {old new : ByteArray}
             (u.addAccessedAccount (AccountAddress.ofUInt256 t)).substate := by
           show Substate.addAccessedAccount u'.substate _ = Substate.addAccessedAccount u.substate _
           rw [sub]
-        rw [← cr, ← gen, ← bl, ← snd, ← gp, ← mem, ← dep, ← hdr, subA, ownU', ← ownU]
+        rw [← cr, ← gen, ← bl, ← snd, ← gp, ← mem, ← dep, ← hdr, subA]
         exact runN
       · rw [ofNat_toNat _ (by omega)] at cap; omega
     · have hcond' : ¬ (v ≤ (u'.accountMap.find? u'.executionEnv.codeOwner |>.option ⟨0⟩ (·.balance)) ∧
@@ -593,7 +691,7 @@ theorem call_rel {owner : AccountAddress} {old new : ByteArray}
       injection hq with hq
       simp only [Prod.mk.injEq] at hq
       obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩ := hq
-      refine ⟨lo, fun f' hf => ⟨u'.accountMap, .ofNat (callGas t v gas' u'), ?_, maps, ln, ?_, ?_⟩⟩
+      refine ⟨lo, fun f' hf => ⟨u'.accountMap, .ofNat (callGas t rcp v gas' u'), ?_, maps, ln, ?_, ?_⟩⟩
       · unfold callRun
         rw [if_neg hcond', ← cr]
         have subA : (u'.addAccessedAccount (AccountAddress.ofUInt256 t)).substate =
@@ -659,9 +757,7 @@ theorem zok_call {owner : AccountAddress} {old new : ByteArray} {surplus skipped
   · have := z.outputs; rw [hs] at this; rw [ht]; simpa using this
   · have := z.static
     rw [← perm]
-    cases hop
-    · simpa [W, hs, ht] using this
-    · simpa [W, hs, ht] using this
+    cases hop <;> simpa [W, hs, ht] using this
   · rintro ⟨h, -⟩; cases hop <;> cases h
   · rintro ⟨h, -⟩; cases hop <;> cases h
 
@@ -739,8 +835,10 @@ theorem call_core {owner : AccountAddress} {old new : ByteArray}
     have hc := cost_call (gasCut s .CALL) g₀ μ₁ μ₂ _ (by rw [hstack, hrest])
     have hc' := cost_call (gasCut t .CALL) g₀' μ₁ μ₂ _ (by rw [htstack, hrest])
     obtain ⟨xs, c2, rstack, rpc, cand⟩ := call_rel summary reentry notPre N cert ho hn f₂ (by omega)
-      (gasCut s .CALL).executionEnv.blobVersionedHashes g₀ g₀' μ₁ μ₂ μ₂ μ₃ μ₄ μ₅ μ₆
-      (gasCut s .CALL).executionEnv.perm _ _ surplus skipped d _ _ x state' relu hd hds hc hc' z.cost hcall
+      (gasCut s .CALL).executionEnv.blobVersionedHashes g₀ g₀'
+      (.ofNat (gasCut s .CALL).executionEnv.codeOwner) μ₁ μ₁ μ₂ μ₂ μ₃ μ₄ μ₅ μ₆
+      (gasCut s .CALL).executionEnv.perm _ _ surplus skipped d _ _ x state' relu (fun h => h) hd hds hc hc'
+      z.cost hcall
     refine ⟨_, x, xs, rest', ?_, ?_, fun g hg => ?_⟩
     · show state'.pc + UInt256.ofNat 1 = s.pc + UInt256.ofNat 1
       rw [rpc]; rfl
@@ -754,7 +852,10 @@ theorem call_core {owner : AccountAddress} {old new : ByteArray}
         simpa only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas] using
           (congrArg (fun x : State => x.executionEnv.blobVersionedHashes) rel.frame).symm
       have permE : (gasCut t .CALL).executionEnv.perm = (gasCut s .CALL).executionEnv.perm := perm.symm
-      rw [← bvhE, ← permE] at runC
+      have ownE : (gasCut t .CALL).executionEnv.codeOwner = (gasCut s .CALL).executionEnv.codeOwner :=
+        (rel.maps.2.2.2.1 : t.executionEnv.codeOwner = owner).trans
+          (rel.maps.2.2.1.1 : s.executionEnv.codeOwner = owner).symm
+      rw [← bvhE, ← permE, ← ownE] at runC
       have stepC := step_call_of (g₂ + 1) _ none _ _ _ _ _ _ _ _ _ _ _ ht' runC
       have zt := zok_call (nj := nj) CallOp.call s t g₀ g₀' rest hs ht rel memEq c2 z
       refine ⟨r'.replaceStackAndIncrPC (stk.push x), surplus', skipped, ?_, ?_, ?_⟩
@@ -778,8 +879,9 @@ theorem call_core {owner : AccountAddress} {old new : ByteArray}
     have hc := cost_staticcall (gasCut s .STATICCALL) g₀ μ₁ _ (by rw [hstack, hrest])
     have hc' := cost_staticcall (gasCut t .STATICCALL) g₀' μ₁ _ (by rw [htstack, hrest])
     obtain ⟨xs, c2, rstack, rpc, cand⟩ := call_rel summary reentry notPre N cert ho hn f₂ (by omega)
-      (gasCut s .STATICCALL).executionEnv.blobVersionedHashes g₀ g₀' μ₁ ⟨0⟩ ⟨0⟩ μ₃ μ₄ μ₅ μ₆
-      false _ _ surplus skipped d _ _ x state' relu hd hds hc hc' z.cost hcall
+      (gasCut s .STATICCALL).executionEnv.blobVersionedHashes g₀ g₀'
+      (.ofNat (gasCut s .STATICCALL).executionEnv.codeOwner) μ₁ μ₁ ⟨0⟩ ⟨0⟩ μ₃ μ₄ μ₅ μ₆
+      false _ _ surplus skipped d _ _ x state' relu (fun h => h) hd hds hc hc' z.cost hcall
     refine ⟨_, x, xs, rest', ?_, ?_, fun g hg => ?_⟩
     · show state'.pc + UInt256.ofNat 1 = s.pc + UInt256.ofNat 1
       rw [rpc]; rfl
@@ -792,9 +894,129 @@ theorem call_core {owner : AccountAddress} {old new : ByteArray}
           (gasCut s .STATICCALL).executionEnv.blobVersionedHashes := by
         simpa only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas] using
           (congrArg (fun x : State => x.executionEnv.blobVersionedHashes) rel.frame).symm
-      rw [← bvhE] at runC
+      have ownE : (gasCut t .STATICCALL).executionEnv.codeOwner =
+          (gasCut s .STATICCALL).executionEnv.codeOwner :=
+        (rel.maps.2.2.2.1 : t.executionEnv.codeOwner = owner).trans
+          (rel.maps.2.2.1.1 : s.executionEnv.codeOwner = owner).symm
+      rw [← bvhE, ← ownE] at runC
       have stepC := step_staticcall_of (g₂ + 1) _ none _ _ _ _ _ _ _ _ _ _ ht' runC
       have zt := zok_call (nj := nj) CallOp.staticcall s t g₀ g₀' rest hs ht rel memEq c2 z
+      refine ⟨r'.replaceStackAndIncrPC (stk.push x), surplus', skipped, ?_, ?_, ?_⟩
+      · show X (g₂ + 1 + 1 + 1) nj t = X (g₂ + 1 + 1) nj (r'.replaceStackAndIncrPC (stk.push x))
+        rw [X_run dt zt stepC]
+        simp [H]
+      · have := (replace_frameless (stk.push x) 1).preserve relr
+        rwa [rstack] at this
+      · show r'.gasAvailable.toNat ≤ t.gasAvailable.toNat
+        exact le_trans cap cut_t
+
+  | callcode =>
+    obtain ⟨stk, μ₀, μ₁, μ₂, μ₃, μ₄, μ₅, μ₆, x, state', hp, hcall, hnx⟩ := step_callcode_inv _ _ _ _ _ step
+    subst hnx
+    have hrest := pop7_eq hp
+    rw [hstack] at hrest
+    simp only [List.cons_append, List.nil_append, List.cons.injEq] at hrest
+    obtain ⟨rfl, hrest⟩ := hrest
+    cases f₁ with
+    | zero => rw [call_zero] at hcall; cases hcall
+    | succ f₂ =>
+    have ownS : (gasCut s .CALLCODE).executionEnv.codeOwner = owner := rel.maps.2.2.1.1
+    have ownT : (gasCut t .CALLCODE).executionEnv.codeOwner = owner := rel.maps.2.2.2.1
+    have hc : C' (gasCut s .CALLCODE) .CALLCODE = Ccall (AccountAddress.ofUInt256 μ₁)
+        (AccountAddress.ofUInt256 (.ofNat (gasCut s .CALLCODE).executionEnv.codeOwner)) μ₂ g₀
+        (gasCut s .CALLCODE).accountMap (gasCut s .CALLCODE).toMachineState (gasCut s .CALLCODE).substate := by
+      rw [cost_callcode (gasCut s .CALLCODE) g₀ μ₁ μ₂ _ (by rw [hstack, hrest]), ofUInt256_ofNat]
+    have hc' : C' (gasCut t .CALLCODE) .CALLCODE = Ccall (AccountAddress.ofUInt256 μ₁)
+        (AccountAddress.ofUInt256 (.ofNat (gasCut s .CALLCODE).executionEnv.codeOwner)) μ₂ g₀'
+        (gasCut t .CALLCODE).accountMap (gasCut t .CALLCODE).toMachineState (gasCut t .CALLCODE).substate := by
+      rw [cost_callcode (gasCut t .CALLCODE) g₀' μ₁ μ₂ _ (by rw [htstack, hrest]), ofUInt256_ofNat, ownS, ownT]
+    obtain ⟨xs, c2, rstack, rpc, cand⟩ := call_rel summary reentry notPre N cert ho hn f₂ (by omega)
+      (gasCut s .CALLCODE).executionEnv.blobVersionedHashes g₀ g₀'
+      (.ofNat (gasCut s .CALLCODE).executionEnv.codeOwner) (.ofNat (gasCut s .CALLCODE).executionEnv.codeOwner)
+      μ₁ μ₂ μ₂ μ₃ μ₄ μ₅ μ₆ (gasCut s .CALLCODE).executionEnv.perm _ _ surplus skipped d _ _ x state' relu
+      (fun _ => by rw [ofUInt256_ofNat]; exact ownS) hd hds hc hc' z.cost hcall
+    refine ⟨_, x, xs, rest', ?_, ?_, fun g hg => ?_⟩
+    · show state'.pc + UInt256.ofNat 1 = s.pc + UInt256.ofNat 1
+      rw [rpc]; rfl
+    · show x :: stk = x :: rest.drop 6; rw [hrest]; rfl
+    · obtain ⟨g₂, rfl⟩ : ∃ g₂, g = g₂ + 2 := ⟨g - 2, by omega⟩
+      obtain ⟨r', surplus', runC, relr, cap, rstack', rpc'⟩ := cand g₂ (by omega)
+      have ht' : (gasCut t .CALLCODE).stack.pop7 = some (stk, g₀', μ₁, μ₂, μ₃, μ₄, μ₅, μ₆) := by
+        rw [htstack, hrest]; rfl
+      have bvhE : (gasCut t .CALLCODE).executionEnv.blobVersionedHashes =
+          (gasCut s .CALLCODE).executionEnv.blobVersionedHashes := by
+        simpa only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas] using
+          (congrArg (fun x : State => x.executionEnv.blobVersionedHashes) rel.frame).symm
+      have permE : (gasCut t .CALLCODE).executionEnv.perm = (gasCut s .CALLCODE).executionEnv.perm := perm.symm
+      have ownE : (gasCut t .CALLCODE).executionEnv.codeOwner = (gasCut s .CALLCODE).executionEnv.codeOwner :=
+        ownT.trans ownS.symm
+      rw [← bvhE, ← permE, ← ownE] at runC
+      have stepC := step_callcode_of (g₂ + 1) _ none _ _ _ _ _ _ _ _ _ _ _ ht' runC
+      have zt := zok_call (nj := nj) CallOp.callcode s t g₀ g₀' rest hs ht rel memEq c2 z
+      refine ⟨r'.replaceStackAndIncrPC (stk.push x), surplus', skipped, ?_, ?_, ?_⟩
+      · show X (g₂ + 1 + 1 + 1) nj t = X (g₂ + 1 + 1) nj (r'.replaceStackAndIncrPC (stk.push x))
+        rw [X_run dt zt stepC]
+        simp [H]
+      · have := (replace_frameless (stk.push x) 1).preserve relr
+        rwa [rstack] at this
+      · show r'.gasAvailable.toNat ≤ t.gasAvailable.toNat
+        exact le_trans cap cut_t
+  | delegatecall =>
+    obtain ⟨stk, μ₀, μ₁, μ₃, μ₄, μ₅, μ₆, x, state', hp, hcall, hnx⟩ := step_delegatecall_inv _ _ _ _ _ step
+    subst hnx
+    have hrest := pop6_eq hp
+    rw [hstack] at hrest
+    simp only [List.cons_append, List.nil_append, List.cons.injEq] at hrest
+    obtain ⟨rfl, hrest⟩ := hrest
+    cases f₁ with
+    | zero => rw [call_zero] at hcall; cases hcall
+    | succ f₂ =>
+    have ownS : (gasCut s .DELEGATECALL).executionEnv.codeOwner = owner := rel.maps.2.2.1.1
+    have ownT : (gasCut t .DELEGATECALL).executionEnv.codeOwner = owner := rel.maps.2.2.2.1
+    have hc : C' (gasCut s .DELEGATECALL) .DELEGATECALL = Ccall (AccountAddress.ofUInt256 μ₁)
+        (AccountAddress.ofUInt256 (.ofNat (gasCut s .DELEGATECALL).executionEnv.codeOwner)) ⟨0⟩ g₀
+        (gasCut s .DELEGATECALL).accountMap (gasCut s .DELEGATECALL).toMachineState
+        (gasCut s .DELEGATECALL).substate := by
+      rw [cost_delegatecall (gasCut s .DELEGATECALL) g₀ μ₁ _ (by rw [hstack, hrest]), ofUInt256_ofNat]
+    have hc' : C' (gasCut t .DELEGATECALL) .DELEGATECALL = Ccall (AccountAddress.ofUInt256 μ₁)
+        (AccountAddress.ofUInt256 (.ofNat (gasCut s .DELEGATECALL).executionEnv.codeOwner)) ⟨0⟩ g₀'
+        (gasCut t .DELEGATECALL).accountMap (gasCut t .DELEGATECALL).toMachineState
+        (gasCut t .DELEGATECALL).substate := by
+      rw [cost_delegatecall (gasCut t .DELEGATECALL) g₀' μ₁ _ (by rw [htstack, hrest]), ofUInt256_ofNat,
+        ownS, ownT]
+    obtain ⟨xs, c2, rstack, rpc, cand⟩ := call_rel summary reentry notPre N cert ho hn f₂ (by omega)
+      (gasCut s .DELEGATECALL).executionEnv.blobVersionedHashes g₀ g₀'
+      (.ofNat (gasCut s .DELEGATECALL).executionEnv.source)
+      (.ofNat (gasCut s .DELEGATECALL).executionEnv.codeOwner) μ₁ ⟨0⟩
+      (gasCut s .DELEGATECALL).executionEnv.weiValue μ₃ μ₄ μ₅ μ₆ (gasCut s .DELEGATECALL).executionEnv.perm
+      _ _ surplus skipped d _ _ x state' relu (fun _ => by rw [ofUInt256_ofNat]; exact ownS) hd hds hc hc'
+      z.cost hcall
+    refine ⟨_, x, xs, rest', ?_, ?_, fun g hg => ?_⟩
+    · show state'.pc + UInt256.ofNat 1 = s.pc + UInt256.ofNat 1
+      rw [rpc]; rfl
+    · show x :: stk = x :: rest.drop 5; rw [hrest]; rfl
+    · obtain ⟨g₂, rfl⟩ : ∃ g₂, g = g₂ + 2 := ⟨g - 2, by omega⟩
+      obtain ⟨r', surplus', runC, relr, cap, rstack', rpc'⟩ := cand g₂ (by omega)
+      have ht' : (gasCut t .DELEGATECALL).stack.pop6 = some (stk, g₀', μ₁, μ₃, μ₄, μ₅, μ₆) := by
+        rw [htstack, hrest]; rfl
+      have bvhE : (gasCut t .DELEGATECALL).executionEnv.blobVersionedHashes =
+          (gasCut s .DELEGATECALL).executionEnv.blobVersionedHashes := by
+        simpa only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas] using
+          (congrArg (fun x : State => x.executionEnv.blobVersionedHashes) rel.frame).symm
+      have srcE : (gasCut t .DELEGATECALL).executionEnv.source = (gasCut s .DELEGATECALL).executionEnv.source := by
+        simpa only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas] using
+          (congrArg (fun x : State => x.executionEnv.source) rel.frame).symm
+      have weiE : (gasCut t .DELEGATECALL).executionEnv.weiValue =
+          (gasCut s .DELEGATECALL).executionEnv.weiValue := by
+        simpa only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas] using
+          (congrArg (fun x : State => x.executionEnv.weiValue) rel.frame).symm
+      have permE : (gasCut t .DELEGATECALL).executionEnv.perm = (gasCut s .DELEGATECALL).executionEnv.perm :=
+        perm.symm
+      have ownE : (gasCut t .DELEGATECALL).executionEnv.codeOwner =
+          (gasCut s .DELEGATECALL).executionEnv.codeOwner := ownT.trans ownS.symm
+      rw [← bvhE, ← srcE, ← weiE, ← permE, ← ownE] at runC
+      have stepC := step_delegatecall_of (g₂ + 1) _ none _ _ _ _ _ _ _ _ _ _ ht' runC
+      have zt := zok_call (nj := nj) CallOp.delegatecall s t g₀ g₀' rest hs ht rel memEq c2 z
       refine ⟨r'.replaceStackAndIncrPC (stk.push x), surplus', skipped, ?_, ?_, ?_⟩
       · show X (g₂ + 1 + 1 + 1) nj t = X (g₂ + 1 + 1) nj (r'.replaceStackAndIncrPC (stk.push x))
         rw [X_run dt zt stepC]

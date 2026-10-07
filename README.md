@@ -85,7 +85,7 @@ Use `cargo run --locked --` in place of `evm-golf` if it is not installed.
 
 Only a subset of opcodes and control flow is supported. The developer command
 proves the whole contract against EVMYulLean, a formal model of the EVM; for
-`CALL` and `STATICCALL` it states its assumptions about the callees. See
+calls it states its assumptions about the callees. See
 [verification](docs/verification.md) for the exact boundary and
 [runtime support](docs/runtime.md) for what can be optimized.
 

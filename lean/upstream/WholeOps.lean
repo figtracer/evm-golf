@@ -197,6 +197,8 @@ def Segment (owner : AccountAddress) (old new : ByteArray) (oj nj : Array UInt25
 inductive CallOp : Operation .EVM → ℕ → Prop where
   | call : CallOp .CALL 7
   | staticcall : CallOp .STATICCALL 6
+  | callcode : CallOp .CALLCODE 7
+  | delegatecall : CallOp .DELEGATECALL 6
 
 /-- Obligations at one synchronization point. `A` holds of the original stack on
 entry; every successor must satisfy the invariant `Q` on (pc, original stack).

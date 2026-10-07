@@ -249,8 +249,8 @@ comparison and bitwise opcodes; memory, `KECCAK256`, calldata, call-context and
 block reads including `BLOCKHASH` and `BLOBHASH`; `BALANCE`, `SELFBALANCE`, `CODESIZE`
 and `EXTCODESIZE` (the images have equal size); `RETURNDATACOPY`, `MCOPY`; `SLOAD`,
 `SSTORE`, `TLOAD`, `TSTORE`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`, `JUMPDEST`, `STOP`,
-`RETURN`, `REVERT` and undefined opcodes; `CALL` and `STATICCALL`, with `GAS`
-only directly before them. Creation, `DELEGATECALL`, `CALLCODE`, `CODECOPY`,
+`RETURN`, `REVERT` and undefined opcodes; `CALL`, `CALLCODE`, `DELEGATECALL` and
+`STATICCALL`, with `GAS` only directly before them. Creation, `CODECOPY`,
 `EXTCODECOPY`, `EXTCODEHASH`, `SELFDESTRUCT` and any other `GAS` are rejected.
 
 Not proved: exceptional original runs, callee behaviour outside the call
@@ -278,7 +278,10 @@ The proof pairs each call: the candidate's call costs at most the surplus more,
 hands the callee exactly that much more gas, and the caller's remaining gas
 stays related afterwards. A call-free runtime gets a certificate without these
 hypotheses. `result.json` lists the hypotheses under `assumptions` and the call
-positions under `call_sites`.
+positions under `call_sites`. `CalleeSummary` is an assumption, not a theorem,
+but [WholePrecompile.lean](../../lean/upstream/WholePrecompile.lean) proves that
+its conclusion holds for the ecrecover precompile whenever the original gives it
+at least 3000 gas (`ecrecover_summary`).
 
 ### Stack facts
 
