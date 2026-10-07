@@ -58,7 +58,8 @@ enum Action {
     },
     #[command(hide = true)]
     /// Prove whole-program refinement of a runtime pair against pinned upstream
-    /// EVM semantics. Supported opcode profile only; no calls or creation.
+    /// EVM semantics. Supported opcode profile only; calls and external code
+    /// reads under stated assumptions; no creation.
     CertifyRuntimeWhole {
         #[arg(long)]
         original: PathBuf,
@@ -163,10 +164,10 @@ fn main() -> Result<()> {
                 report.thread_sites.len(),
                 report.window_sites.len(),
                 report.call_sites.len(),
-                if report.call_sites.is_empty() {
+                if report.call_sites.is_empty() && report.inspected.is_empty() {
                     ""
                 } else {
-                    " and on the call assumptions listed in result.json"
+                    " and on the environment assumptions listed in result.json"
                 },
                 out.display()
             );

@@ -80,14 +80,103 @@ theorem candidate_step {owner old new surplus skipped s t} {oj nj : Array UInt25
       rw [c.fuel g 0, costEq]; exact step'
     exact X_run dt zt sg
 
+/-- The state after a code copy, from the copied bytes `m`. -/
+def copyPost (y : State) (dst len : UInt256) (rest : List UInt256) (m : ByteArray) : State :=
+  ({ y with toSharedState := { y.toSharedState with
+      memory := m
+      activeWords := .ofNat (MachineState.M y.activeWords.toNat dst.toNat len.toNat) } } : State).replaceStackAndIncrPC rest
+
+theorem copyPost_frame (y : State) (dst len : UInt256) (rest : List UInt256) (m : ByteArray) :
+    E (copyPost y dst len rest m) = E (copyPost (E y) dst len rest m) := by
+  simp only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas, copyPost, EVM.State.replaceStackAndIncrPC,
+    EVM.State.incrPC]
+
+theorem copy_frameless (dst len : UInt256) (rest : List UInt256) (m : ByteArray) :
+    Frameless (fun y => copyPost y dst len rest m) :=
+  ⟨fun y => copyPost_frame y dst len rest m, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl,
+    fun _ => rfl⟩
+
+/-- A code copy of a constant range on which both images agree: the candidate takes the same
+step from the related state, for any residual fuel, and the memories stay equal. -/
+theorem codecopy_step {owner old new surplus skipped s t} {oj nj : Array UInt256} {f : ℕ} {nx : State}
+    {dst : UInt256} {rest : List UInt256} (off len : ℕ)
+    (rel : DeployedOffset owner old new surplus skipped s t)
+    (jumps : ∀ x, oj.contains x = true → nj.contains x = true)
+    (dt : (decode t.executionEnv.code t.pc).getD (.STOP, .none) = (.CODECOPY, none))
+    (z : ZOk oj .CODECOPY s)
+    (step : EVM.step (f + 1) (C' (gasCut s .CODECOPY) .CODECOPY) (some (.CODECOPY, none))
+      (gasCut s .CODECOPY) = .ok nx)
+    (hs : s.stack = dst :: UInt256.ofNat off :: UInt256.ofNat len :: rest)
+    (hoff : off < UInt256.size) (hlen : len < UInt256.size)
+    (eq : ∀ (mem : ByteArray) (dst : ℕ), old.write off mem dst len = new.write off mem dst len) :
+    nx.pc = s.pc + UInt256.ofNat 1 ∧ nx.stack = rest ∧
+    ∃ v', DeployedOffset owner old new surplus skipped nx v' ∧
+      v'.gasAvailable.toNat ≤ t.gasAvailable.toNat ∧ ∀ g, X (g + 2) nj t = X (g + 1) nj v' := by
+  have cut := rel_gasCut rel .CODECOPY z.mem
+  have st := rel_stack cut
+  have costEq : C' (gasCut t .CODECOPY) .CODECOPY = C' (gasCut s .CODECOPY) .CODECOPY := by
+    simp only [C', st, show Operation.Env .CODECOPY ∈ InstructionGasGroups.Wcopy from by decide, if_true]
+  obtain ⟨zt, -⟩ := Z_transport rel costEq jumps z
+  have rb := rel_bump cut _ z.cost
+  have sc : (gasCut s .CODECOPY).executionEnv.code = old := rel.maps.2.2.1.2.1
+  have tc : (gasCut t .CODECOPY).executionEnv.code = new := rel.maps.2.2.2.2.1
+  have hstack : (bump (gasCut s .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)).stack.pop3 = some (rest, dst, UInt256.ofNat off, UInt256.ofNat len) := by
+    show (gasCut s .CODECOPY).stack.pop3 = _
+    show s.stack.pop3 = _
+    rw [hs]; rfl
+  have hstack' : (bump (gasCut t .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)).stack.pop3 = some (rest, dst, UInt256.ofNat off, UInt256.ofNat len) := by
+    show t.stack.pop3 = _
+    rw [← rel_stack rel, hs]; rfl
+  have shape : ∀ (y : State) (code : ByteArray), y.executionEnv.code = code →
+      ({ y with toSharedState := y.toSharedState.codeCopy dst (UInt256.ofNat off) (UInt256.ofNat len) } : State).replaceStackAndIncrPC rest =
+        copyPost y dst (UInt256.ofNat len) rest (code.write off y.memory dst.toNat len) := by
+    intro y code hy
+    simp only [copyPost, SharedState.codeCopy, hy, ofNat_toNat off hoff, ofNat_toNat len hlen]
+  have memEq : (bump (gasCut s .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)).memory = (bump (gasCut t .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)).memory := by
+    simpa only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas] using
+      congrArg (fun x : State => x.memory) rb.frame
+  change EVM.ternaryCopyOp SharedState.codeCopy (bump (gasCut s .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)) = .ok nx at step
+  unfold EVM.ternaryCopyOp at step
+  rw [hstack] at step
+  have hnx : nx = copyPost (bump (gasCut s .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)) dst (UInt256.ofNat len) rest
+      (old.write off (bump (gasCut s .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)).memory dst.toNat len) := by
+    injection step with step
+    rw [← step]
+    exact shape _ old sc
+  subst hnx
+  refine ⟨rfl, rfl, copyPost (bump (gasCut t .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)) dst (UInt256.ofNat len) rest
+    (new.write off (bump (gasCut t .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)).memory dst.toNat len), ?_, ?_, fun g => ?_⟩
+  · rw [← memEq, eq]
+    exact (copy_frameless _ _ _ _).preserve rb
+  · show (bump (gasCut t .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)).gasAvailable.toNat ≤ t.gasAvailable.toNat
+    have h2 : (gasCut t .CODECOPY).gasAvailable.toNat ≤ t.gasAvailable.toNat := by
+      change (t.gasAvailable - .ofNat (memoryExpansionCost t .CODECOPY)).toNat ≤ _
+      rw [word_sub_toNat _ _ (lt_of_le_of_lt zt.mem t.gasAvailable.val.isLt) zt.mem]; omega
+    rw [bump_gas _ _ (by
+      show C' (gasCut s .CODECOPY) .CODECOPY ≤ (gasCut t .CODECOPY).gasAvailable.toNat
+      rw [← costEq]; exact zt.cost)]
+    omega
+  · have sg : EVM.step (g + 1) (C' (gasCut t .CODECOPY) .CODECOPY) (some (.CODECOPY, none)) (gasCut t .CODECOPY) =
+        .ok (copyPost (bump (gasCut t .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)) dst (UInt256.ofNat len) rest
+          (new.write off (bump (gasCut t .CODECOPY) (C' (gasCut s .CODECOPY) .CODECOPY)).memory dst.toNat len)) := by
+      change EVM.ternaryCopyOp SharedState.codeCopy
+        (bump (gasCut t .CODECOPY) (C' (gasCut t .CODECOPY) .CODECOPY)) = _
+      rw [costEq]
+      unfold EVM.ternaryCopyOp
+      rw [hstack']
+      exact congrArg Except.ok (shape _ new tc)
+    rw [X_run dt zt sg]
+    simp [H]
+
 theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Array UInt256)
-    (Q : UInt256 → List UInt256 → Prop) (HC : Prop)
-    (cover : ∀ pc st, Q pc st → ∃ A : List UInt256 → Prop, A st ∧ Point HC old new oj Q A pc)
+    (Q : UInt256 → List UInt256 → Prop) (HC : Prop) (inspected : List Nat)
+    (cover : ∀ pc st, Q pc st → ∃ A : List UInt256 → Prop, A st ∧ Point HC inspected old new oj Q A pc)
     (jumps : ∀ x, oj.contains x = true → nj.contains x = true)
     (hoj : oj = D_J old (UInt256.ofNat 0)) (hnj : nj = D_J new (UInt256.ofNat 0))
     (start : Q (UInt256.ofNat 0) [])
     (summary : HC → CalleeSummary owner old new) (reentry : HC → Reentry owner old)
-    (notPre : HC → owner ∉ π) :
+    (notPre : HC → owner ∉ π)
+    (notInspected : HC → ∀ a ∈ inspected, AccountAddress.ofUInt256 (UInt256.ofNat a) ≠ owner) :
     ∀ (fuel : ℕ) (s t : State) (surplus skipped : ℕ) (r : ExecutionResult State),
       DeployedOffset owner old new surplus skipped s t → Q s.pc s.stack →
       X fuel oj s = .ok r →
@@ -139,7 +228,7 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
     obtain ⟨v', rel', cap, cand⟩ := candidate_step c rel jumps dt z step
     have hh := H_rel rel' op
     have some : ∃ out, H nx.toMachineState op = some out := by
-      rcases h with e | e | e <;> subst e <;> simp [H]
+      rcases h with e | e | e | e <;> subst e <;> simp [H]
     obtain ⟨out, hout⟩ := some
     rw [hout] at rest hh
     obtain ⟨g, rfl⟩ : ∃ g, fuel' = g + 2 := ⟨fuel' - 2, by omega⟩
@@ -261,6 +350,72 @@ theorem whole_refines (owner : AccountAddress) (old new : ByteArray) (oj nj : Ar
     obtain ⟨v', surplus', skipped', eq, rel'', cap⟩ := cand g (by omega)
     obtain ⟨r', run', related⟩ := ih f (by omega) v v' surplus' skipped' r rel'' hq' run g (by omega)
     exact ⟨r', by rw [eq]; exact run', outcome_cap cap related⟩
+  | codecopy off len hoff hlen o n eq args next =>
+    have ds : decode s.executionEnv.code s.pc = some (.CODECOPY, none) := by rw [sc]; exact o
+    have dt : decode t.executionEnv.code t.pc = some (.CODECOPY, none) := by rw [tc, ←samePC]; exact n
+    obtain ⟨z, nx, step, rest⟩ := X_inv (getD_of ds) ok
+    rw [show H nx.toMachineState .CODECOPY = none by simp [H]] at rest
+    cases f with
+    | zero => rw [step_zero] at step; cases step
+    | succ f =>
+    obtain ⟨dst, rest', hs⟩ := args s.stack hA
+    obtain ⟨npc, nst, v', rel', cap, cand⟩ :=
+      codecopy_step off len rel jumps (getD_of dt) z step hs hoff hlen eq
+    have hq' : Q nx.pc nx.stack := by
+      rw [npc, nst]
+      have := next s.stack hA
+      rwa [hs] at this
+    obtain ⟨g, rfl⟩ : ∃ g, fuel' = g + 2 := ⟨fuel' - 2, by omega⟩
+    obtain ⟨r', run', related⟩ :=
+      ih (f + 1) (by omega) nx v' surplus skipped r rel' hq' rest (g + 1) (by omega)
+    exact ⟨r', by rw [cand g]; exact run', outcome_cap cap related⟩
+  | extcodehash addr haddr hc mem o n args next =>
+    have ds : decode s.executionEnv.code s.pc = some (.EXTCODEHASH, none) := by rw [sc]; exact o
+    have dt : decode t.executionEnv.code t.pc = some (.EXTCODEHASH, none) := by rw [tc, ←samePC]; exact n
+    obtain ⟨z, nx, step, rest⟩ := X_inv (getD_of ds) ok
+    rw [show H nx.toMachineState .EXTCODEHASH = none by simp [H]] at rest
+    cases f with
+    | zero => rw [step_zero] at step; cases step
+    | succ f =>
+    obtain ⟨rest', hs⟩ := args s.stack hA
+    obtain ⟨npc, ⟨x, nst⟩, v', rel', cap, cand⟩ := extcodehash_step addr rel jumps (getD_of dt) z step hs
+      (notInspected hc addr mem) (decode_size o) (decode_size n)
+    have hq' : Q nx.pc nx.stack := by
+      rw [npc, nst]
+      have := next s.stack x hA
+      rwa [hs] at this
+    obtain ⟨g, rfl⟩ : ∃ g, fuel' = g + 2 := ⟨fuel' - 2, by omega⟩
+    obtain ⟨r', run', related⟩ :=
+      ih (f + 1) (by omega) nx v' surplus skipped r rel' hq' rest (g + 1) (by omega)
+    exact ⟨r', by rw [cand g]; exact run', outcome_cap cap related⟩
+  | extcodecopy addr haddr hc mem o n args next =>
+    have ds : decode s.executionEnv.code s.pc = some (.EXTCODECOPY, none) := by rw [sc]; exact o
+    have dt : decode t.executionEnv.code t.pc = some (.EXTCODECOPY, none) := by rw [tc, ←samePC]; exact n
+    obtain ⟨z, nx, step, rest⟩ := X_inv (getD_of ds) ok
+    rw [show H nx.toMachineState .EXTCODECOPY = none by simp [H]] at rest
+    cases f with
+    | zero => rw [step_zero] at step; cases step
+    | succ f =>
+    obtain ⟨rest', hs⟩ := args s.stack hA
+    have inputs := z.inputs
+    rw [hs] at inputs
+    obtain ⟨mstart, cstart, size, rest'', hr⟩ : ∃ a b c r, rest' = a :: b :: c :: r := by
+      match rest', inputs with
+      | a :: b :: c :: r, _ => exact ⟨a, b, c, r, rfl⟩
+      | [], h => simp [δ] at h
+      | [_], h => simp [δ] at h
+      | [_, _], h => simp [δ] at h
+    subst hr
+    obtain ⟨npc, nst, v', rel', cap, cand⟩ := extcodecopy_step addr rel jumps (getD_of dt) z step hs
+      (notInspected hc addr mem)
+    have hq' : Q nx.pc nx.stack := by
+      rw [npc, nst]
+      have := next s.stack hA
+      rwa [hs] at this
+    obtain ⟨g, rfl⟩ : ∃ g, fuel' = g + 2 := ⟨fuel' - 2, by omega⟩
+    obtain ⟨r', run', related⟩ :=
+      ih (f + 1) (by omega) nx v' surplus skipped r rel' hq' rest (g + 1) (by omega)
+    exact ⟨r', by rw [cand g]; exact run', outcome_cap cap related⟩
   | gascall op k hc hop o n o' n' next =>
     have ho := decode_size o
     have hn := decode_size n
@@ -530,6 +685,17 @@ theorem pop_gas (arg : Option (UInt256 × Nat)) (u v : State)
 theorem same_pop : Same .POP :=
   same_of (fun arg => EvmYul.step (.POP : Operation .EVM) arg) (fun _ _ _ _ => rfl) pop_preserves (fun _ _ _ => rfl)
     pop_gas pop_pc (fun _ => by simp [H])
+theorem same_pc : Same .PC :=
+  same_of (fun arg => EvmYul.step (.PC : Operation .EVM) arg) (fun _ _ _ _ => rfl) pc_preserves
+    (fun _ _ _ => rfl)
+    (fun _ u v h => by
+      change Except.ok (u.replaceStackAndIncrPC (u.stack.push u.pc)) = .ok v at h
+      injection h with h; subst h; rfl)
+    (fun _ u v h => by
+      change Except.ok (u.replaceStackAndIncrPC (u.stack.push u.pc)) = .ok v at h
+      injection h with h; subst h; rfl)
+    (fun _ => by simp [H])
+
 theorem same_jumpdest : Same .JUMPDEST :=
   same_of (fun arg => EvmYul.step (.JUMPDEST : Operation .EVM) arg) (fun _ _ _ _ => rfl) jumpdest_preserves
     (fun _ _ _ => rfl) (fun _ u v h => by injection h with h; subst h; rfl)

@@ -347,6 +347,12 @@ theorem eff_coinbase (arg) : Eff .COINBASE arg (Shape 0 [top]) :=
   eff_state (.ofNat ∘ Fin.val ∘ EvmYul.State.coinBase) (fun _ _ _ _ => rfl) arg
 theorem eff_selfbalance (arg) : Eff .SELFBALANCE arg (Shape 0 [top]) :=
   eff_state EvmYul.State.selfbalance (fun _ _ _ _ => rfl) arg
+theorem eff_pc (arg : Option (UInt256 × Nat)) : Eff .PC arg (Shape 0 [top]) := by
+  intro f u v _ step
+  change Except.ok ((bump u _).replaceStackAndIncrPC ((bump u _).stack.push (bump u _).pc)) = _ at step
+  injection step with step; subst step
+  exact sh_push [] rfl rfl _
+
 theorem eff_msize (arg) : Eff .MSIZE arg (Shape 0 [top]) :=
   eff_machine0 MachineState.msize (fun _ _ _ _ => rfl) arg
 theorem eff_returndatasize (arg) : Eff .RETURNDATASIZE arg (Shape 0 [top]) :=

@@ -249,13 +249,23 @@ comparison and bitwise opcodes; memory, `KECCAK256`, calldata, call-context and
 block reads including `BLOCKHASH` and `BLOBHASH`; `BALANCE`, `SELFBALANCE`, `CODESIZE`
 and `EXTCODESIZE` (the images have equal size); `RETURNDATACOPY`, `MCOPY`; `SLOAD`,
 `SSTORE`, `TLOAD`, `TSTORE`, `LOG0`–`LOG4`; `JUMP`, `JUMPI`, `JUMPDEST`, `STOP`,
-`RETURN`, `REVERT` and undefined opcodes; `CALL`, `CALLCODE`, `DELEGATECALL` and
-`STATICCALL`, with `GAS` only directly before them. Creation, `CODECOPY`,
-`EXTCODECOPY`, `EXTCODEHASH`, `SELFDESTRUCT` and any other `GAS` are rejected.
+`RETURN`, `REVERT`, `SELFDESTRUCT`, `PC` and undefined opcodes; `CALL`, `CALLCODE`, `DELEGATECALL`
+and `STATICCALL`, with `GAS` only directly before them; `CODECOPY` when its offset
+and size are constants on every path and the images agree on the copied bytes
+(`write_congr` turns the kernel-checked byte range equality into equal memory);
+`EXTCODEHASH` and `EXTCODECOPY` when the address is a constant on every path
+(the certificate assumes it is not the owner). Creation, any other `GAS`, a
+`CODECOPY` with a dynamic range and `EXTCODEHASH` or `EXTCODECOPY` with a
+dynamic address are rejected.
 
 Not proved: exceptional original runs, callee behaviour outside the call
 assumptions below, contract creation, rewrite families other than the three
-above and formal correspondence with revm.
+above and formal correspondence with revm. Creation stays out because the
+pinned `step` turns every `Lambda` error, including running out of fuel, into a
+failed create with an empty account map, so no refinement holds without a
+premise on the run's own fuel. A `GAS` whose value does not go directly into a
+call makes behaviour depend on the remaining gas, which the two runs do not
+share.
 
 ### Calls
 
@@ -273,12 +283,15 @@ assumptions as hypotheses of the final theorems:
   original run. The certificate then covers the nested run itself, by
   induction on the original fuel.
 - The owner is not a precompile address.
+- No constant address read by `EXTCODEHASH` or `EXTCODECOPY` is the owner. The
+  images differ there, so the reads would differ.
 
 The proof pairs each call: the candidate's call costs at most the surplus more,
 hands the callee exactly that much more gas, and the caller's remaining gas
 stays related afterwards. A call-free runtime gets a certificate without these
-hypotheses. `result.json` lists the hypotheses under `assumptions` and the call
-positions under `call_sites`. `CalleeSummary` is an assumption, not a theorem,
+hypotheses. `result.json` lists the hypotheses under `assumptions`, the call
+positions under `call_sites`, code copies under `codecopy_sites` and the read
+addresses under `inspected`. `CalleeSummary` is an assumption, not a theorem,
 but [WholePrecompile.lean](../../lean/upstream/WholePrecompile.lean) proves that
 its conclusion holds for the ecrecover precompile whenever the original gives it
 at least 3000 gas (`ecrecover_summary`).

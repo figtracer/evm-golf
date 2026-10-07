@@ -776,6 +776,8 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfWhole.call_rel",
             "GolfWhole.call_core",
             "GolfWhole.decode_size",
+            "GolfWhole.extcodehash_step",
+            "GolfWhole.extcodecopy_step",
         ],
     ),
     (
@@ -806,6 +808,7 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfWhole.same_log4",
             "GolfWhole.same_keccak256",
             "GolfWhole.same_tstore",
+            "GolfWhole.selfdestruct_at",
             "GolfWhole.same_mcopy",
             "GolfWhole.same_blockhash",
         ],
@@ -825,7 +828,11 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
     (
         "WholeScan",
         include_str!("../../lean/upstream/WholeScan.lean"),
-        &["GolfWhole.dj_scan", "GolfWhole.decode_ofBytes"],
+        &[
+            "GolfWhole.dj_scan",
+            "GolfWhole.decode_ofBytes",
+            "GolfWhole.write_congr",
+        ],
     ),
     (
         "WholeCover",
@@ -881,6 +888,11 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
             "GolfWhole.jump_set",
             "GolfWhole.window_next",
             "GolfWhole.call_next",
+            "GolfWhole.codecopy_args",
+            "GolfWhole.codecopy_next",
+            "GolfWhole.addr_args",
+            "GolfWhole.extcodehash_next",
+            "GolfWhole.extcodecopy_next",
             "GolfWhole.cover_of",
             "GolfWhole.top_targets",
         ],

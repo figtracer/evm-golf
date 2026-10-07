@@ -171,6 +171,7 @@ pub(super) fn shape(op: u8) -> Option<(usize, Facts, &'static str)> {
         0x55 => (2, vec![], "eff_sstore"),
         0x5d => (2, vec![], "eff_tstore"),
         0x5b => (0, vec![], "eff_jumpdest"),
+        0x58 => (0, t(), "eff_pc"),
         _ => return None,
     })
 }
@@ -244,6 +245,13 @@ pub(super) fn edges(pc: usize, obligation: &Obligation, fs: &[Abs], code: &[u8])
             out.extend(drop(fs, site.pop()));
             vec![Edge::To(pc + site.len(), out)]
         }
+        Obligation::CodeCopy => vec![Edge::To(pc + 1, drop(fs, 3))],
+        Obligation::ExtCode { hash: true } => {
+            let mut out = vec![top()];
+            out.extend(drop(fs, 1));
+            vec![Edge::To(pc + 1, out)]
+        }
+        Obligation::ExtCode { hash: false } => vec![Edge::To(pc + 1, drop(fs, 4))],
     }
 }
 

@@ -288,6 +288,46 @@ theorem call_next {T : List (Nat × List Abs)} {x : UInt256} {n pop : Nat} {fs f
     ∀ st y, Holds fs st → (y = ⟨0⟩ ∨ y = ⟨1⟩) → Inv T x (y :: st.drop pop) :=
   fun st _ h _ => inv_of sum mem chk ⟨top_holds _, holds_drop fs st pop h⟩
 
+/-- A code copy whose offset and size are known constants. -/
+theorem codecopy_args {fs : List Abs} {off len : Nat}
+    (h1 : (fs[1]?).bind Abs.set = some [off]) (h2 : (fs[2]?).bind Abs.set = some [len]) :
+    ∀ st, Holds fs st → ∃ dst rest, st = dst :: UInt256.ofNat off :: UInt256.ofNat len :: rest := by
+  intro st h
+  match fs, st, h with
+  | a₀ :: a₁ :: a₂ :: _, x₀ :: x₁ :: x₂ :: rest, ⟨_, h₁, h₂, _⟩ =>
+    simp only [List.getElem?_cons_succ, List.getElem?_cons_zero, Option.bind_some] at h1 h2
+    have e₁ : x₁.val.val ∈ [off] := h₁.2 _ h1
+    have e₂ : x₂.val.val ∈ [len] := h₂.2 _ h2
+    simp only [List.mem_singleton] at e₁ e₂
+    refine ⟨x₀, rest, ?_⟩
+    rw [← e₁, ← e₂, ofNat_val, ofNat_val]
+
+theorem codecopy_next {T : List (Nat × List Abs)} {x : UInt256} {n : Nat} {fs fs' : List Abs}
+    (sum : x = UInt256.ofNat n) (mem : (n, fs') ∈ T) (chk : implies (fs.drop 3) fs' = true) :
+    ∀ st, Holds fs st → Inv T x (st.drop 3) :=
+  fun st h => inv_of sum mem chk (holds_drop fs st 3 h)
+
+/-- An instruction whose top input is a known constant. -/
+theorem addr_args {fs : List Abs} {addr : Nat} (h : (fs[0]?).bind Abs.set = some [addr]) :
+    ∀ st, Holds fs st → ∃ rest, st = UInt256.ofNat addr :: rest := by
+  intro st hh
+  match fs, st, hh with
+  | a₀ :: _, x₀ :: rest, ⟨h₀, _⟩ =>
+    simp only [List.getElem?_cons_zero, Option.bind_some] at h
+    have e : x₀.val.val ∈ [addr] := h₀.2 _ h
+    simp only [List.mem_singleton] at e
+    exact ⟨rest, by rw [← e, ofNat_val]⟩
+
+theorem extcodehash_next {T : List (Nat × List Abs)} {x : UInt256} {n : Nat} {fs fs' : List Abs}
+    (sum : x = UInt256.ofNat n) (mem : (n, fs') ∈ T) (chk : implies (top :: fs.drop 1) fs' = true) :
+    ∀ st y, Holds fs st → Inv T x (y :: st.drop 1) :=
+  fun st _ h => inv_of sum mem chk ⟨top_holds _, holds_drop fs st 1 h⟩
+
+theorem extcodecopy_next {T : List (Nat × List Abs)} {x : UInt256} {n : Nat} {fs fs' : List Abs}
+    (sum : x = UInt256.ofNat n) (mem : (n, fs') ∈ T) (chk : implies (fs.drop 4) fs' = true) :
+    ∀ st, Holds fs st → Inv T x (st.drop 4) :=
+  fun st h => inv_of sum mem chk (holds_drop fs st 4 h)
+
 theorem window_fits {fs : List Abs} : ∀ st, Holds fs st → Fits (fs.map Abs.bits) st :=
   fun _ h => holds_fits h
 
@@ -313,9 +353,10 @@ theorem entries_app {R : Nat × List Abs → Prop} {l₁ l₂ : List (Nat × Lis
   · exact h₁ p hp
   · exact h₂ p hp
 
-theorem cover_of {HC : Prop} {old new : ByteArray} {oj : Array UInt256} {T : List (Nat × List Abs)}
-    (h : ∀ p ∈ T, Point HC old new oj (Inv T) (Holds p.2) (UInt256.ofNat p.1)) :
-    ∀ pc st, Inv T pc st → ∃ A : List UInt256 → Prop, A st ∧ Point HC old new oj (Inv T) A pc := by
+theorem cover_of {HC : Prop} {inspected : List Nat} {old new : ByteArray} {oj : Array UInt256}
+    {T : List (Nat × List Abs)}
+    (h : ∀ p ∈ T, Point HC inspected old new oj (Inv T) (Holds p.2) (UInt256.ofNat p.1)) :
+    ∀ pc st, Inv T pc st → ∃ A : List UInt256 → Prop, A st ∧ Point HC inspected old new oj (Inv T) A pc := by
   rintro pc st ⟨p, mem, rfl, hh⟩
   exact ⟨Holds p.2, hh, h p mem⟩
 
@@ -356,6 +397,11 @@ theorem top_targets (T : List (Nat × List Abs)) (jumpsN : List Nat)
 #print axioms jump_set
 #print axioms window_next
 #print axioms call_next
+#print axioms codecopy_args
+#print axioms codecopy_next
+#print axioms addr_args
+#print axioms extcodehash_next
+#print axioms extcodecopy_next
 #print axioms cover_of
 #print axioms top_targets
 

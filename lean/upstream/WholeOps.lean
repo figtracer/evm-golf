@@ -178,7 +178,8 @@ def Advances (op : Operation .EVM) : Prop :=
 
 def Running (op : Operation .EVM) : Prop := ∀ μ, H μ op = none
 
-def Halting (op : Operation .EVM) : Prop := op = .STOP ∨ op = .RETURN ∨ op = .REVERT
+def Halting (op : Operation .EVM) : Prop :=
+  op = .STOP ∨ op = .RETURN ∨ op = .REVERT ∨ op = .SELFDESTRUCT
 
 /-- A proved multi-instruction rewrite: from related states at `pc` whose original
 stack satisfies `A`, a successful source run reaches a state satisfying the
@@ -202,48 +203,62 @@ inductive CallOp : Operation .EVM → ℕ → Prop where
 
 /-- Obligations at one synchronization point. `A` holds of the original stack on
 entry; every successor must satisfy the invariant `Q` on (pc, original stack).
-Call obligations need the environment assumptions `HC`. -/
-inductive Point (HC : Prop) (old new : ByteArray) (oj : Array UInt256) (Q : UInt256 → List UInt256 → Prop)
-    (A : List UInt256 → Prop) : UInt256 → Prop where
+Call obligations and reads of other accounts' code need the environment assumptions `HC`;
+the constant addresses read are listed in `inspected`. -/
+inductive Point (HC : Prop) (inspected : List Nat) (old new : ByteArray) (oj : Array UInt256)
+    (Q : UInt256 → List UInt256 → Prop) (A : List UInt256 → Prop) : UInt256 → Prop where
   | same (pc : UInt256) (op : Operation .EVM) (arg : Option (UInt256 × Nat))
       (c : CongruentAt old new op) (a : Advances op) (run : Running op)
       (o : decode old pc = some (op, arg)) (n : decode new pc = some (op, arg))
       (next : ∀ (f : ℕ) (u v : State), (δ op).getD 0 ≤ u.stack.length →
         EVM.step (f + 1) (C' u op) (some (op, arg)) u = .ok v → A u.stack →
-        Q (pc + UInt256.ofNat (advance op arg)) v.stack) : Point HC old new oj Q A pc
+        Q (pc + UInt256.ofNat (advance op arg)) v.stack) : Point HC inspected old new oj Q A pc
   | halt (pc : UInt256) (op : Operation .EVM) (arg : Option (UInt256 × Nat))
       (c : CongruentAt old new op) (h : Halting op)
       (o : (decode old pc).getD (.STOP, .none) = (op, arg))
       (n : (decode new pc).getD (.STOP, .none) = (op, arg)) :
-      Point HC old new oj Q A pc
-  | invalid (pc : UInt256) (o : decode old pc = some (.INVALID, none)) : Point HC old new oj Q A pc
+      Point HC inspected old new oj Q A pc
+  | invalid (pc : UInt256) (o : decode old pc = some (.INVALID, none)) : Point HC inspected old new oj Q A pc
   | segment (pc : UInt256)
       (h : ∀ owner nj, (∀ x, oj.contains x = true → nj.contains x = true) →
-        Segment owner old new oj nj Q A pc) : Point HC old new oj Q A pc
+        Segment owner old new oj nj Q A pc) : Point HC inspected old new oj Q A pc
   | jump (pc : UInt256)
       (o : decode old pc = some (.JUMP, none)) (n : decode new pc = some (.JUMP, none))
-      (targets : ∀ x tail, A (x :: tail) → oj.contains x = true → Q x tail) : Point HC old new oj Q A pc
+      (targets : ∀ x tail, A (x :: tail) → oj.contains x = true → Q x tail) : Point HC inspected old new oj Q A pc
   | jumpi (pc : UInt256)
       (o : decode old pc = some (.JUMPI, none)) (n : decode new pc = some (.JUMPI, none))
       (next : ∀ x tail, A (x :: ⟨0⟩ :: tail) → Q (pc + UInt256.ofNat 1) tail)
       (targets : ∀ x b tail, A (x :: b :: tail) → b ≠ ⟨0⟩ → oj.contains x = true → Q x tail) :
-      Point HC old new oj Q A pc
+      Point HC inspected old new oj Q A pc
   | power (pc : UInt256) (p : Operation.POp) (w k : Nat) (nz : p ≠ .PUSH0) (range : k < 256)
       (o : MulPowerAt old pc p w k) (n : ShiftPowerAt new pc p w k)
       (next : ∀ a tail, A (a :: tail) →
         Q (pc + UInt256.ofNat (w + 1) + UInt256.ofNat 1) (UInt256.mul (UInt256.ofNat (2 ^ k)) a :: tail)) :
-      Point HC old new oj Q A pc
+      Point HC inspected old new oj Q A pc
   | call (pc : UInt256) (op : Operation .EVM) (k : ℕ) (hc : HC) (hop : CallOp op k)
       (o : decode old pc = some (op, none)) (n : decode new pc = some (op, none))
       (next : ∀ st x, A st → (x = ⟨0⟩ ∨ x = ⟨1⟩) → Q (pc + UInt256.ofNat 1) (x :: st.drop k)) :
-      Point HC old new oj Q A pc
+      Point HC inspected old new oj Q A pc
+  | codecopy (pc : UInt256) (off len : ℕ) (hoff : off < UInt256.size) (hlen : len < UInt256.size)
+      (o : decode old pc = some (.CODECOPY, none)) (n : decode new pc = some (.CODECOPY, none))
+      (eq : ∀ (mem : ByteArray) (dst : ℕ), old.write off mem dst len = new.write off mem dst len)
+      (args : ∀ st, A st → ∃ dst rest, st = dst :: UInt256.ofNat off :: UInt256.ofNat len :: rest)
+      (next : ∀ st, A st → Q (pc + UInt256.ofNat 1) (st.drop 3)) : Point HC inspected old new oj Q A pc
+  | extcodehash (pc : UInt256) (addr : ℕ) (haddr : addr < UInt256.size) (hc : HC) (mem : addr ∈ inspected)
+      (o : decode old pc = some (.EXTCODEHASH, none)) (n : decode new pc = some (.EXTCODEHASH, none))
+      (args : ∀ st, A st → ∃ rest, st = UInt256.ofNat addr :: rest)
+      (next : ∀ st x, A st → Q (pc + UInt256.ofNat 1) (x :: st.drop 1)) : Point HC inspected old new oj Q A pc
+  | extcodecopy (pc : UInt256) (addr : ℕ) (haddr : addr < UInt256.size) (hc : HC) (mem : addr ∈ inspected)
+      (o : decode old pc = some (.EXTCODECOPY, none)) (n : decode new pc = some (.EXTCODECOPY, none))
+      (args : ∀ st, A st → ∃ rest, st = UInt256.ofNat addr :: rest)
+      (next : ∀ st, A st → Q (pc + UInt256.ofNat 1) (st.drop 4)) : Point HC inspected old new oj Q A pc
   | gascall (pc : UInt256) (op : Operation .EVM) (k : ℕ) (hc : HC) (hop : CallOp op k)
       (o : decode old pc = some (.GAS, none)) (n : decode new pc = some (.GAS, none))
       (o' : decode old (pc + UInt256.ofNat 1) = some (op, none))
       (n' : decode new (pc + UInt256.ofNat 1) = some (op, none))
       (next : ∀ st x, A st → (x = ⟨0⟩ ∨ x = ⟨1⟩) →
         Q (pc + UInt256.ofNat 1 + UInt256.ofNat 1) (x :: st.drop (k - 1))) :
-      Point HC old new oj Q A pc
+      Point HC inspected old new oj Q A pc
 
 def bump (u : State) (c : ℕ) : State :=
   { u with execLength := u.execLength + 1, gasAvailable := u.gasAvailable - UInt256.ofNat c }

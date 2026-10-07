@@ -1026,6 +1026,168 @@ theorem call_core {owner : AccountAddress} {old new : ByteArray}
       · show r'.gasAvailable.toNat ≤ t.gasAvailable.toNat
         exact le_trans cap cut_t
 
+/-! Code reads of other accounts: equal unless the address is the owner. -/
+
+theorem code_rel {owner : AccountAddress} {old new : ByteArray} {σ τ : AccountMap .EVM}
+    (rel : MapsRelated owner old new σ τ) (a : AccountAddress) (hne : a ≠ owner) :
+    (σ.find? a).option ByteArray.empty (·.code) = (τ.find? a).option ByteArray.empty (·.code) ∧
+    (σ.find? a).option ⟨0⟩ Account.codeHash = (τ.find? a).option ⟨0⟩ Account.codeHash := by
+  rcases related_find rel a with ⟨e, e'⟩ | ⟨x, x', e, e', h⟩
+  · rw [e, e']; exact ⟨rfl, rfl⟩
+  · rw [e, e']
+    obtain ⟨-, -, -, -, c⟩ := h
+    rw [if_neg hne] at c
+    constructor <;> simp [Option.option, c, Account.codeHash, PersistentAccountState.codeHash]
+
+/-- The state after EXTCODEHASH of `v`, with the hash `b`. -/
+def hashPost (y : State) (v b : UInt256) (stk : Stack UInt256) : State :=
+  ({ y with toState := y.toState.addAccessedAccount (AccountAddress.ofUInt256 v) } : State).replaceStackAndIncrPC
+    (Stack.push stk b)
+
+theorem hash_frameless (v b : UInt256) (stk : Stack UInt256) : Frameless (fun y => hashPost y v b stk) :=
+  ⟨fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl⟩
+
+theorem extcodehash_shape (arg : Option (UInt256 × Nat)) (y : State) (v : UInt256) (stk : Stack UInt256)
+    (h : y.stack = v :: stk) :
+    EvmYul.step (.EXTCODEHASH : Operation .EVM) arg y =
+      .ok (hashPost y v (if EvmYul.State.dead y.accountMap (AccountAddress.ofUInt256 v) then ⟨0⟩
+        else (y.accountMap.find? (AccountAddress.ofUInt256 v)).option ⟨0⟩ Account.codeHash) stk) := by
+  change EVM.unaryStateOp EvmYul.State.extCodeHash y = _
+  unfold EVM.unaryStateOp
+  rw [h]
+  simp only [Stack.pop, Id.run, EvmYul.State.extCodeHash, EvmYul.State.lookupAccount, hashPost]
+  split <;> rfl
+
+/-- EXTCODEHASH of an address other than the owner: the candidate pushes the same hash. -/
+theorem extcodehash_step {owner old new surplus skipped s t} {oj nj : Array UInt256} {f : ℕ} {nx : State}
+    {rest : List UInt256} (addr : ℕ)
+    (rel : DeployedOffset owner old new surplus skipped s t)
+    (jumps : ∀ x, oj.contains x = true → nj.contains x = true)
+    (dt : (decode t.executionEnv.code t.pc).getD (.STOP, .none) = (.EXTCODEHASH, none))
+    (z : ZOk oj .EXTCODEHASH s)
+    (step : EVM.step (f + 1) (C' (gasCut s .EXTCODEHASH) .EXTCODEHASH) (some (.EXTCODEHASH, none))
+      (gasCut s .EXTCODEHASH) = .ok nx)
+    (hs : s.stack = UInt256.ofNat addr :: rest)
+    (hne : AccountAddress.ofUInt256 (UInt256.ofNat addr) ≠ owner) (ho : 0 < old.size) (hn : 0 < new.size) :
+    nx.pc = s.pc + UInt256.ofNat 1 ∧ (∃ x, nx.stack = x :: rest) ∧
+    ∃ v', DeployedOffset owner old new surplus skipped nx v' ∧
+      v'.gasAvailable.toNat ≤ t.gasAvailable.toNat ∧ ∀ g, X (g + 2) nj t = X (g + 1) nj v' := by
+  have cut := rel_gasCut rel .EXTCODEHASH z.mem
+  have costEq : C' (gasCut t .EXTCODEHASH) .EXTCODEHASH = C' (gasCut s .EXTCODEHASH) .EXTCODEHASH :=
+    (congrArg (fun x => C' x .EXTCODEHASH) cut.frame).symm
+  obtain ⟨zt, -⟩ := Z_transport rel costEq jumps z
+  have rb := rel_bump cut _ z.cost
+  have hs1 : (bump (gasCut s .EXTCODEHASH) (C' (gasCut s .EXTCODEHASH) .EXTCODEHASH)).stack =
+      UInt256.ofNat addr :: rest := hs
+  have hs2 : (bump (gasCut t .EXTCODEHASH) (C' (gasCut s .EXTCODEHASH) .EXTCODEHASH)).stack =
+      UInt256.ofNat addr :: rest := by rw [← rel_stack rb]; exact hs1
+  change EvmYul.step (.EXTCODEHASH : Operation .EVM) none
+    (bump (gasCut s .EXTCODEHASH) (C' (gasCut s .EXTCODEHASH) .EXTCODEHASH)) = .ok nx at step
+  rw [extcodehash_shape none _ _ rest hs1] at step
+  injection step with step
+  subst step
+  obtain ⟨-, hv⟩ := code_rel rb.maps.1 (AccountAddress.ofUInt256 (UInt256.ofNat addr)) hne
+  have hd := dead_rel rb.maps.1 ho hn (AccountAddress.ofUInt256 (UInt256.ofNat addr))
+  generalize hH : (if EvmYul.State.dead
+      (bump (gasCut s .EXTCODEHASH) (C' (gasCut s .EXTCODEHASH) .EXTCODEHASH)).accountMap
+      (AccountAddress.ofUInt256 (UInt256.ofNat addr)) then (⟨0⟩ : UInt256)
+    else ((bump (gasCut s .EXTCODEHASH) (C' (gasCut s .EXTCODEHASH) .EXTCODEHASH)).accountMap.find?
+      (AccountAddress.ofUInt256 (UInt256.ofNat addr))).option ⟨0⟩ Account.codeHash) = HO
+  refine ⟨rfl, ⟨HO, rfl⟩, hashPost (bump (gasCut t .EXTCODEHASH) (C' (gasCut s .EXTCODEHASH) .EXTCODEHASH))
+    (UInt256.ofNat addr) HO rest, ?_, ?_, fun g => ?_⟩
+  · exact (hash_frameless _ _ _).preserve rb
+  · show (bump (gasCut t .EXTCODEHASH) _).gasAvailable.toNat ≤ t.gasAvailable.toNat
+    have h2 : (gasCut t .EXTCODEHASH).gasAvailable.toNat ≤ t.gasAvailable.toNat := by
+      change (t.gasAvailable - .ofNat (memoryExpansionCost t .EXTCODEHASH)).toNat ≤ _
+      rw [word_sub_toNat _ _ (lt_of_le_of_lt zt.mem t.gasAvailable.val.isLt) zt.mem]; omega
+    rw [bump_gas _ _ (by rw [← costEq]; exact zt.cost)]; omega
+  · have sg : EVM.step (g + 1) (C' (gasCut t .EXTCODEHASH) .EXTCODEHASH) (some (.EXTCODEHASH, none))
+        (gasCut t .EXTCODEHASH) =
+        .ok (hashPost (bump (gasCut t .EXTCODEHASH) (C' (gasCut s .EXTCODEHASH) .EXTCODEHASH))
+          (UInt256.ofNat addr) HO rest) := by
+      change EvmYul.step (.EXTCODEHASH : Operation .EVM) none
+        (bump (gasCut t .EXTCODEHASH) (C' (gasCut t .EXTCODEHASH) .EXTCODEHASH)) = _
+      rw [costEq, extcodehash_shape none _ _ rest hs2]
+      show Except.ok (hashPost _ _ _ rest) = Except.ok (hashPost _ _ HO rest)
+      rw [← hH, hd, hv]
+    rw [X_run dt zt sg]
+    simp [H]
+
+/-- The state after EXTCODECOPY from code `b`. -/
+def extcopyPost (y : State) (acc mstart cstart size : UInt256) (stk : List UInt256) (b : ByteArray) : State :=
+  ({ y with toSharedState := { y.toSharedState with
+      memory := b.write cstart.toNat y.memory mstart.toNat size.toNat
+      substate := y.substate.addAccessedAccount (AccountAddress.ofUInt256 acc)
+      activeWords := .ofNat (MachineState.M y.activeWords.toNat mstart.toNat size.toNat) } } : State).replaceStackAndIncrPC stk
+
+theorem extcopy_frameless (acc mstart cstart size : UInt256) (stk : List UInt256) (b : ByteArray) :
+    Frameless (fun y => extcopyPost y acc mstart cstart size stk b) := by
+  refine ⟨fun y => ?_, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl⟩
+  simp only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas, extcopyPost, EVM.State.replaceStackAndIncrPC,
+    EVM.State.incrPC]
+
+theorem extcodecopy_shape (arg : Option (UInt256 × Nat)) (y : State) (acc mstart cstart size : UInt256)
+    (stk : List UInt256) (h : y.stack = acc :: mstart :: cstart :: size :: stk) :
+    EvmYul.step (.EXTCODECOPY : Operation .EVM) arg y =
+      .ok (extcopyPost y acc mstart cstart size stk
+        ((y.accountMap.find? (AccountAddress.ofUInt256 acc)).option ByteArray.empty (·.code))) := by
+  change EVM.quaternaryCopyOp SharedState.extCodeCopy' y = _
+  unfold EVM.quaternaryCopyOp
+  rw [h]
+  simp only [Stack.pop4, Id.run, SharedState.extCodeCopy', EvmYul.State.lookupAccount, extcopyPost]
+  rfl
+
+/-- EXTCODECOPY from an address other than the owner: the candidate copies the same bytes. -/
+theorem extcodecopy_step {owner old new surplus skipped s t} {oj nj : Array UInt256} {f : ℕ} {nx : State}
+    {mstart cstart size : UInt256} {rest : List UInt256} (addr : ℕ)
+    (rel : DeployedOffset owner old new surplus skipped s t)
+    (jumps : ∀ x, oj.contains x = true → nj.contains x = true)
+    (dt : (decode t.executionEnv.code t.pc).getD (.STOP, .none) = (.EXTCODECOPY, none))
+    (z : ZOk oj .EXTCODECOPY s)
+    (step : EVM.step (f + 1) (C' (gasCut s .EXTCODECOPY) .EXTCODECOPY) (some (.EXTCODECOPY, none))
+      (gasCut s .EXTCODECOPY) = .ok nx)
+    (hs : s.stack = UInt256.ofNat addr :: mstart :: cstart :: size :: rest)
+    (hne : AccountAddress.ofUInt256 (UInt256.ofNat addr) ≠ owner) :
+    nx.pc = s.pc + UInt256.ofNat 1 ∧ nx.stack = rest ∧
+    ∃ v', DeployedOffset owner old new surplus skipped nx v' ∧
+      v'.gasAvailable.toNat ≤ t.gasAvailable.toNat ∧ ∀ g, X (g + 2) nj t = X (g + 1) nj v' := by
+  have cut := rel_gasCut rel .EXTCODECOPY z.mem
+  have costEq : C' (gasCut t .EXTCODECOPY) .EXTCODECOPY = C' (gasCut s .EXTCODECOPY) .EXTCODECOPY :=
+    (congrArg (fun x => C' x .EXTCODECOPY) cut.frame).symm
+  obtain ⟨zt, -⟩ := Z_transport rel costEq jumps z
+  have rb := rel_bump cut _ z.cost
+  have hs1 : (bump (gasCut s .EXTCODECOPY) (C' (gasCut s .EXTCODECOPY) .EXTCODECOPY)).stack =
+      UInt256.ofNat addr :: mstart :: cstart :: size :: rest := hs
+  have hs2 : (bump (gasCut t .EXTCODECOPY) (C' (gasCut s .EXTCODECOPY) .EXTCODECOPY)).stack =
+      UInt256.ofNat addr :: mstart :: cstart :: size :: rest := by rw [← rel_stack rb]; exact hs1
+  change EvmYul.step (.EXTCODECOPY : Operation .EVM) none
+    (bump (gasCut s .EXTCODECOPY) (C' (gasCut s .EXTCODECOPY) .EXTCODECOPY)) = .ok nx at step
+  rw [extcodecopy_shape none _ _ _ _ _ rest hs1] at step
+  injection step with step
+  subst step
+  obtain ⟨hv, -⟩ := code_rel rb.maps.1 (AccountAddress.ofUInt256 (UInt256.ofNat addr)) hne
+  generalize hB : (((bump (gasCut s .EXTCODECOPY) (C' (gasCut s .EXTCODECOPY) .EXTCODECOPY)).accountMap.find?
+    (AccountAddress.ofUInt256 (UInt256.ofNat addr))).option ByteArray.empty (·.code)) = B
+  refine ⟨rfl, rfl, extcopyPost (bump (gasCut t .EXTCODECOPY) (C' (gasCut s .EXTCODECOPY) .EXTCODECOPY))
+    (UInt256.ofNat addr) mstart cstart size rest B, ?_, ?_, fun g => ?_⟩
+  · exact (extcopy_frameless _ _ _ _ _ _).preserve rb
+  · show (bump (gasCut t .EXTCODECOPY) _).gasAvailable.toNat ≤ t.gasAvailable.toNat
+    have h2 : (gasCut t .EXTCODECOPY).gasAvailable.toNat ≤ t.gasAvailable.toNat := by
+      change (t.gasAvailable - .ofNat (memoryExpansionCost t .EXTCODECOPY)).toNat ≤ _
+      rw [word_sub_toNat _ _ (lt_of_le_of_lt zt.mem t.gasAvailable.val.isLt) zt.mem]; omega
+    rw [bump_gas _ _ (by rw [← costEq]; exact zt.cost)]; omega
+  · have sg : EVM.step (g + 1) (C' (gasCut t .EXTCODECOPY) .EXTCODECOPY) (some (.EXTCODECOPY, none))
+        (gasCut t .EXTCODECOPY) =
+        .ok (extcopyPost (bump (gasCut t .EXTCODECOPY) (C' (gasCut s .EXTCODECOPY) .EXTCODECOPY))
+          (UInt256.ofNat addr) mstart cstart size rest B) := by
+      change EvmYul.step (.EXTCODECOPY : Operation .EVM) none
+        (bump (gasCut t .EXTCODECOPY) (C' (gasCut t .EXTCODECOPY) .EXTCODECOPY)) = _
+      rw [costEq, extcodecopy_shape none _ _ _ _ _ rest hs2]
+      show Except.ok (extcopyPost _ _ _ _ _ rest _) = Except.ok (extcopyPost _ _ _ _ _ rest B)
+      rw [← hB, hv]
+    rw [X_run dt zt sg]
+    simp [H]
+
 /-! The GAS step and byte-array sizes. -/
 
 theorem step_gas (f c : ℕ) (arg : Option (UInt256 × Nat)) (u : State) :
@@ -1061,5 +1223,7 @@ theorem decode_size {c : ByteArray} {pc : UInt256} {x : Operation .EVM × Option
 #print axioms call_rel
 #print axioms call_core
 #print axioms decode_size
+#print axioms extcodehash_step
+#print axioms extcodecopy_step
 
 end GolfWhole

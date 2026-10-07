@@ -674,6 +674,190 @@ theorem same_blockhash : Same .BLOCKHASH :=
     (fun ⟨_, _⟩ => frameless_rfl) (fun ⟨_, _⟩ _ => rfl)
     (fun _ _ _ => rfl) (fun _ => rfl) (fun _ => by simp [H])
 
+/-! SELFDESTRUCT: a halting instruction that moves the owner's balance. -/
+
+/-- The account map after SELFDESTRUCT by `ia` to `r`, as the pinned semantics computes it. -/
+def destructMap (σ : AccountMap .EVM) (ia r : AccountAddress) (created : Bool) : AccountMap .EVM :=
+  match σ.find? ia with
+  | none => σ
+  | some a =>
+    match σ.find? r with
+    | none =>
+      if (a.balance == ⟨0⟩) = true then σ
+      else (σ.insert r { (default : Account .EVM) with balance := a.balance }).insert ia { a with balance := ⟨0⟩ }
+    | some b =>
+      if r ≠ ia then (σ.insert r { b with balance := b.balance + a.balance }).insert ia { a with balance := ⟨0⟩ }
+      else if created then (σ.insert r { b with balance := ⟨0⟩ }).insert ia { a with balance := ⟨0⟩ }
+      else σ
+
+/-- The substate after SELFDESTRUCT. -/
+def destructSub (A : Substate) (ia r : AccountAddress) (created : Bool) : Substate :=
+  if created then
+    { A with selfDestructSet := A.selfDestructSet.insert ia, accessedAccounts := A.accessedAccounts.insert r }
+  else { A with accessedAccounts := A.accessedAccounts.insert r }
+
+/-- The state after SELFDESTRUCT. -/
+def destructPost (u : State) (a : UInt256) (stk : List UInt256) : State :=
+  ({ u with
+    accountMap := destructMap u.accountMap u.executionEnv.codeOwner (AccountAddress.ofUInt256 a)
+      (u.createdAccounts.contains u.executionEnv.codeOwner)
+    substate := destructSub u.substate u.executionEnv.codeOwner (AccountAddress.ofUInt256 a)
+      (u.createdAccounts.contains u.executionEnv.codeOwner) } : State).replaceStackAndIncrPC stk
+
+theorem selfdestruct_shape (arg : Option (UInt256 × Nat)) (u : State) (a : UInt256) (stk : List UInt256)
+    (h : u.stack = a :: stk) :
+    EvmYul.step (.SELFDESTRUCT : Operation .EVM) arg u = .ok (destructPost u a stk) := by
+  unfold EvmYul.step
+  simp only [h, Stack.pop, Id.run]
+  unfold destructPost destructMap destructSub
+  split <;> rename_i hc <;> simp only [hc, if_true, if_false, EvmYul.State.lookupAccount] <;> rfl
+
+theorem destruct_related {owner : AccountAddress} {old new : ByteArray} {σ τ : AccountMap .EVM}
+    (rel : MapsRelated owner old new σ τ) (r : AccountAddress) (created : Bool)
+    (oldσ : ∃ a, σ.find? owner = some a ∧ a.code = old) :
+    MapsRelated owner old new (destructMap σ owner r created) (destructMap τ owner r created) ∧
+    (∃ a, (destructMap σ owner r created).find? owner = some a ∧ a.code = old) := by
+  unfold destructMap
+  rcases related_find rel owner with ⟨e, e'⟩ | ⟨a, a', e, e', h⟩
+  · obtain ⟨x, hx, -⟩ := oldσ
+    rw [e] at hx; cases hx
+  · obtain ⟨n, b, sto, ts, c⟩ := h
+    rw [if_pos rfl] at c
+    rcases related_find rel r with ⟨f, f'⟩ | ⟨d, d', f, f', hd⟩
+    · simp only [e, e', f, f', b]
+      have ne : r ≠ owner := by intro hr; subst hr; rw [e] at f; cases f
+      split
+      · exact ⟨rel, oldσ⟩
+      · refine ⟨maps_insert_at owner owner old new _ _ _ _
+          (maps_insert_at owner r old new σ τ _ _ rel ⟨rfl, rfl, rfl, rfl, by rw [if_neg ne]⟩)
+          ⟨n, rfl, sto, ts, by rw [if_pos rfl]; exact c⟩, ?_⟩
+        rw [Batteries.RBMap.find?_insert, if_pos (compare_eq_iff_eq.mpr rfl)]
+        exact ⟨_, rfl, c.1⟩
+    · simp only [e, e', f, f']
+      obtain ⟨nd, bd, sd, td, cd⟩ := hd
+      by_cases hr : r = owner
+      · subst hr
+        simp only [ne_eq, not_true_eq_false, if_false]
+        rw [if_pos rfl] at cd
+        split
+        · refine ⟨maps_insert_at r r old new _ _ _ _
+            (maps_insert_at r r old new σ τ _ _ rel ⟨nd, rfl, sd, td, by rw [if_pos rfl]; exact cd⟩)
+            ⟨n, rfl, sto, ts, by rw [if_pos rfl]; exact c⟩, ?_⟩
+          rw [Batteries.RBMap.find?_insert, if_pos (compare_eq_iff_eq.mpr rfl)]
+          exact ⟨_, rfl, c.1⟩
+        · exact ⟨rel, oldσ⟩
+      · simp only [ne_eq, hr, not_false_eq_true, if_true]
+        rw [if_neg hr] at cd
+        refine ⟨maps_insert_at owner owner old new _ _ _ _
+          (maps_insert_at owner r old new σ τ _ _ rel ⟨nd, by simp only [bd, b], sd, td, by rw [if_neg hr]; exact cd⟩)
+          ⟨n, rfl, sto, ts, by rw [if_pos rfl]; exact c⟩, ?_⟩
+        rw [Batteries.RBMap.find?_insert, if_pos (compare_eq_iff_eq.mpr rfl)]
+        exact ⟨_, rfl, c.1⟩
+
+theorem destruct_linked {owner : AccountAddress} {code : ByteArray} {σ : AccountMap .EVM}
+    (r : AccountAddress) (created : Bool) (h : ∃ a, σ.find? owner = some a ∧ a.code = code) :
+    ∃ a, (destructMap σ owner r created).find? owner = some a ∧ a.code = code := by
+  have rel : MapsRelated owner code code σ σ := by
+    intro addr
+    cases e : σ.find? addr with
+    | none => trivial
+    | some a => exact ⟨rfl, rfl, rfl, rfl, by split <;> simp_all⟩
+  exact (destruct_related rel r created h).2
+
+theorem cost_selfdestruct (y : State) : C' y .SELFDESTRUCT =
+    GasConstants.Gselfdestruct +
+      (if y.substate.accessedAccounts.contains (AccountAddress.ofUInt256 y.stack[0]!) then 0
+        else GasConstants.Gcoldaccountaccess) +
+      (if EvmYul.State.dead y.accountMap (AccountAddress.ofUInt256 y.stack[0]!) ∧
+          (y.accountMap.find? y.executionEnv.codeOwner |>.option ⟨0⟩ (·.balance)) ≠ ⟨0⟩ then
+        GasConstants.Gnewaccount else 0) := rfl
+
+theorem cselfdestruct_rel {owner old new surplus skipped s t} (ho : 0 < old.size) (hn : 0 < new.size)
+    (h : DeployedOffset owner old new surplus skipped s t) : C' t .SELFDESTRUCT = C' s .SELFDESTRUCT := by
+  obtain ⟨o, o'⟩ := owner_eq h
+  have st := rel_stack h
+  have sub : s.substate = t.substate := by
+    simpa only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas] using
+      congrArg (fun x : State => x.substate) h.frame
+  rw [cost_selfdestruct, cost_selfdestruct, o, o', st, sub, dead_rel h.maps.1 ho hn]
+  rcases related_find h.maps.1 owner with ⟨e, e'⟩ | ⟨a, a', e, e', ha⟩
+  · rw [e, e']
+  · rw [e, e']
+    obtain ⟨-, b, -, -, -⟩ := ha
+    simp only [Option.option, b]
+
+theorem selfdestruct_nil (arg : Option (UInt256 × Nat)) (u : State) (h : u.stack = []) :
+    EvmYul.step (.SELFDESTRUCT : Operation .EVM) arg u = .error .StackUnderflow := by
+  unfold EvmYul.step
+  simp [h, Stack.pop, Id.run]
+
+theorem selfdestruct_at {old new : ByteArray} (ho : 0 < old.size) (hn : 0 < new.size) :
+    CongruentAt old new .SELFDESTRUCT := by
+  refine ⟨fun _ _ _ _ _ => rfl, fun rel => cselfdestruct_rel ho hn rel, ?_, ?_⟩
+  · intro owner surplus skipped u u' v f g c arg rel enough step
+    have rb := rel_bump rel c enough
+    change EvmYul.step (.SELFDESTRUCT : Operation .EVM) arg (bump u c) = .ok v at step
+    obtain ⟨a, stk, hs⟩ : ∃ a stk, (bump u c).stack = a :: stk := by
+      cases hs : (bump u c).stack with
+      | nil => rw [selfdestruct_nil arg _ hs] at step; cases step
+      | cons a stk => exact ⟨a, stk, rfl⟩
+    rw [selfdestruct_shape arg _ a stk hs] at step
+    injection step with step
+    subst step
+    have hs' : (bump u' c).stack = a :: stk := by rw [← rel_stack rb]; exact hs
+    refine ⟨destructPost (bump u' c) a stk, ?_, ?_⟩
+    · change EvmYul.step (.SELFDESTRUCT : Operation .EVM) arg (bump u' c) = _
+      rw [selfdestruct_shape arg _ a stk hs']
+    · obtain ⟨o, o'⟩ := owner_eq rb
+      have cr : (bump u c).createdAccounts = (bump u' c).createdAccounts := by
+        simpa only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas] using
+          congrArg (fun x : State => x.createdAccounts) rb.frame
+      have sub : (bump u c).substate = (bump u' c).substate := by
+        simpa only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas] using
+          congrArg (fun x : State => x.substate) rb.frame
+      have m := rb.maps
+      refine ⟨?_, rb.count, rb.gas, ?_⟩
+      · show E (destructPost (bump u c) a stk) = E (destructPost (bump u' c) a stk)
+        have key : ∀ (y : State) (A : Substate) (σ : AccountMap .EVM),
+            E (({ y with accountMap := σ, substate := A } : State).replaceStackAndIncrPC stk) =
+              E (({ E y with accountMap := σ, substate := A } : State).replaceStackAndIncrPC stk) := by
+          intro y A σ
+          simp only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas, EVM.State.replaceStackAndIncrPC,
+            EVM.State.incrPC]
+        unfold destructPost
+        rw [key, key (bump u' c), show E (bump u c) = E (bump u' c) from rb.frame, o, o', ← cr, ← sub]
+        simp only [E, eraseCount, deployedFrame, eraseMaps, eraseCodeGas, EVM.State.replaceStackAndIncrPC,
+          EVM.State.incrPC]
+      · obtain ⟨d1, d2⟩ := destruct_related m.1 (AccountAddress.ofUInt256 a)
+          ((bump u c).createdAccounts.contains owner) m.2.2.1.2.2.1
+        have d3 := destruct_linked (σ := (bump u' c).accountMap) (AccountAddress.ofUInt256 a)
+          ((bump u c).createdAccounts.contains owner) m.2.2.2.2.2.1
+        refine ⟨?_, m.2.1, ⟨o, m.2.2.1.2.1, ?_, m.2.2.1.2.2.2⟩, ⟨o', m.2.2.2.2.1, ?_, m.2.2.2.2.2.2⟩⟩
+        · show MapsRelated owner old new
+            (destructMap (bump u c).accountMap (bump u c).executionEnv.codeOwner (AccountAddress.ofUInt256 a)
+              ((bump u c).createdAccounts.contains (bump u c).executionEnv.codeOwner))
+            (destructMap (bump u' c).accountMap (bump u' c).executionEnv.codeOwner (AccountAddress.ofUInt256 a)
+              ((bump u' c).createdAccounts.contains (bump u' c).executionEnv.codeOwner))
+          rw [o, o', ← cr]; exact d1
+        · show ∃ x, (destructMap (bump u c).accountMap (bump u c).executionEnv.codeOwner (AccountAddress.ofUInt256 a)
+            ((bump u c).createdAccounts.contains (bump u c).executionEnv.codeOwner)).find? owner = some x ∧ x.code = old
+          rw [o]; exact d2
+        · show ∃ x, (destructMap (bump u' c).accountMap (bump u' c).executionEnv.codeOwner (AccountAddress.ofUInt256 a)
+            ((bump u' c).createdAccounts.contains (bump u' c).executionEnv.codeOwner)).find? owner = some x ∧ x.code = new
+          rw [o', ← cr]; exact d3
+  · intro f c arg u v enough step
+    change EvmYul.step (.SELFDESTRUCT : Operation .EVM) arg (bump u c) = .ok v at step
+    obtain ⟨a, stk, hs⟩ : ∃ a stk, (bump u c).stack = a :: stk := by
+      cases hs : (bump u c).stack with
+      | nil => rw [selfdestruct_nil arg _ hs] at step; cases step
+      | cons a stk => exact ⟨a, stk, rfl⟩
+    rw [selfdestruct_shape arg _ a stk hs] at step
+    injection step with step
+    subst step
+    show (bump u c).gasAvailable.toNat ≤ u.gasAvailable.toNat
+    rw [bump_gas u c enough]; exact Nat.sub_le _ _
+
+#print axioms selfdestruct_at
 #print axioms same_mcopy
 #print axioms same_blockhash
 #print axioms same_tstore

@@ -35,6 +35,10 @@ pub struct WholeCertificate {
     pub window_sites: Vec<usize>,
     /// Call instructions, with the GAS directly before them.
     pub call_sites: Vec<usize>,
+    /// CODECOPY instructions; each copies a constant range on which the images agree.
+    pub codecopy_sites: Vec<usize>,
+    /// Constant addresses read by EXTCODEHASH or EXTCODECOPY; assumed not to be the owner.
+    pub inspected: Vec<usize>,
     pub assumptions: Vec<&'static str>,
     pub unproved: Vec<&'static str>,
     pub lean_version: String,
@@ -139,6 +143,12 @@ enum Obligation {
     Thread(ThreadSite),
     Window(WindowSite),
     Call(CallSite),
+    /// A code copy; its offset and size must be constants at every entry.
+    CodeCopy,
+    /// EXTCODEHASH or EXTCODECOPY; the address must be a constant at every entry.
+    ExtCode {
+        hash: bool,
+    },
 }
 
 pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCertificate> {
@@ -183,12 +193,22 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
             .points()
             .filter_map(|(pc, obligation)| matches!(obligation, Obligation::Call(_)).then_some(*pc))
             .collect(),
+        codecopy_sites: plan
+            .points()
+            .filter_map(|(pc, obligation)| {
+                matches!(obligation, Obligation::CodeCopy).then_some(*pc)
+            })
+            .collect(),
+        inspected: plan.inspected.clone(),
         assumptions: {
             let mut list = vec![
                 "Ξ: a fresh call frame whose current and original account maps differ only in the owner's deployed code; X: states at pc 0 equal except deployed code, execution count and extra candidate gas",
                 "valid jump tables are computed by the checked-scanner profile of D_J",
                 "if the original returns success or revert, so does the candidate with the same fuel or more, with equal output; on success, related account maps, equal substate and no less gas; on revert, no less gas; the candidate never ends with more gas than it started with",
             ];
+            if !plan.inspected.is_empty() {
+                list.push("the constant addresses read by EXTCODEHASH or EXTCODECOPY (result.json `inspected`) are not the owner");
+            }
             if plan.calls() {
                 list.push("CalleeSummary: a callee other than the owner's code, run on related account maps with at least the original's gas, returns the same created set, substate, status and output, related account maps, no less gas than the original and no more than it was given; the original's callee keeps the owner's account");
                 list.push("Reentry: calls back into the owner's code return success or revert in the original run (ecrecover_summary shows CalleeSummary holds for the ecrecover precompile given at least 3000 gas)");
@@ -199,7 +219,7 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
         unproved: {
             let mut list = vec![
                 "Θ and Υ for calls and transactions that do not target the owner directly",
-                "opcodes outside the supported profile: creation, CODECOPY, EXTCODECOPY, EXTCODEHASH, SELFDESTRUCT, and GAS that does not directly feed a call",
+                "opcodes outside the supported profile: creation, GAS that does not directly feed a call, CODECOPY whose range is not constant or is changed by a rewrite, and EXTCODEHASH or EXTCODECOPY with a non-constant address",
                 "exceptional original runs (the claim is conditioned on original success or revert)",
                 "revm correspondence",
             ];
@@ -222,6 +242,8 @@ struct Plan {
     jumpdests: Vec<usize>,
     /// Entries carry stack facts because some window needs them.
     precise: bool,
+    /// Sorted constant addresses read by EXTCODEHASH or EXTCODECOPY.
+    inspected: Vec<usize>,
 }
 
 impl Plan {
@@ -232,6 +254,11 @@ impl Plan {
     /// Some reached instruction is a call; the certificate then needs the call assumptions.
     fn calls(&self) -> bool {
         self.points().any(|(_, o)| matches!(o, Obligation::Call(_)))
+    }
+
+    /// The final theorems take environment assumptions.
+    fn assumes(&self) -> bool {
+        self.calls() || !self.inspected.is_empty()
     }
 }
 
@@ -258,29 +285,77 @@ fn plan(original: &[u8], candidate: &[u8]) -> Result<Plan> {
     })?;
     let env_at = |pc: usize| facts::env(&facts::joined(&first, pc));
     let sites = power_sites(original, candidate, &instructions, &starts, &env_at)?;
-    // Facts multiply the entries; use them only when some window needs them.
+    // Facts multiply the entries; use them only when some window needs them or a
+    // code copy must have a constant range.
     let precise = sites.iter().any(|site| match site {
         Site::Window(w) => !window_check(&w.old, &w.new, &[]),
         _ => false,
-    });
+    }) || first
+        .obligations
+        .values()
+        .any(|o| matches!(o, Obligation::CodeCopy | Obligation::ExtCode { .. }));
     let analysis = facts::analyze(original, &jumpdests, precise, &mut |pc| {
         obligation_at(original, &instructions, &starts, &sites, pc)
     })?;
+    let mut inspected = BTreeSet::new();
     for (pc, list) in &analysis.entries {
-        if let Some(Obligation::Window(site)) = analysis.obligations.get(pc) {
-            for fs in list {
-                ensure!(
-                    window_check(&site.old, &site.new, &facts::env(fs)),
-                    "the window at pc {pc} needs stack facts that do not hold on every path"
-                );
+        match analysis.obligations.get(pc) {
+            Some(Obligation::ExtCode { .. }) => {
+                for fs in list {
+                    let addr = constant(fs, 0).with_context(|| {
+                        format!(
+                            "external code read at pc {pc} needs a constant address on every path"
+                        )
+                    })?;
+                    inspected.insert(addr);
+                }
             }
+            Some(Obligation::Window(site)) => {
+                for fs in list {
+                    ensure!(
+                        window_check(&site.old, &site.new, &facts::env(fs)),
+                        "the window at pc {pc} needs stack facts that do not hold on every path"
+                    );
+                }
+            }
+            Some(Obligation::CodeCopy) => {
+                for fs in list {
+                    let (off, len) = codecopy_range(fs).with_context(|| {
+                        format!(
+                            "CODECOPY at pc {pc} needs a constant offset and size on every path"
+                        )
+                    })?;
+                    let lo = off.min(original.len());
+                    let hi = (off + len).min(original.len());
+                    ensure!(
+                        original[lo..hi] == candidate[lo..hi],
+                        "CODECOPY at pc {pc} copies bytes {off}..{} that a rewrite changes",
+                        off + len
+                    );
+                }
+            }
+            _ => {}
         }
     }
     Ok(Plan {
         analysis,
         jumpdests,
         precise,
+        inspected: inspected.into_iter().collect(),
     })
+}
+
+/// The constant value of slot `i`, from the facts about the inputs.
+fn constant(fs: &[facts::Abs], i: usize) -> Option<usize> {
+    match fs.get(i).and_then(|a| a.set.as_deref()) {
+        Some([v]) => usize::try_from(*v).ok(),
+        _ => None,
+    }
+}
+
+/// The constant offset and size a code copy reads, from the facts about its inputs.
+fn codecopy_range(fs: &[facts::Abs]) -> Option<(usize, usize)> {
+    Some((constant(fs, 1)?, constant(fs, 2)?))
 }
 
 /// The obligation at a pc that execution reaches. Bytes such as trailing
@@ -861,6 +936,9 @@ fn classify(instruction: &Instruction, next: Option<&Instruction>) -> Result<Obl
         0x56 => Obligation::Jump,
         0x57 => Obligation::Jumpi,
         0xf1 | 0xf2 | 0xf4 | 0xfa => call(op, false),
+        0x39 => Obligation::CodeCopy,
+        0x3f => Obligation::ExtCode { hash: true },
+        0x3c => Obligation::ExtCode { hash: false },
         0x5a => match next {
             Some(n) if matches!(n.bytes[0], 0xf1 | 0xf2 | 0xf4 | 0xfa) => call(n.bytes[0], true),
             _ => bail!(
@@ -871,17 +949,22 @@ fn classify(instruction: &Instruction, next: Option<&Instruction>) -> Result<Obl
         0x00 => Obligation::Halt {
             op: "Operation.STOP",
             which: "(Or.inl rfl)",
-            congruent: "congruent_stop",
+            congruent: "congruent_stop.at",
         },
         0xf3 => Obligation::Halt {
             op: "Operation.RETURN",
             which: "(Or.inr (Or.inl rfl))",
-            congruent: "congruent_return",
+            congruent: "congruent_return.at",
         },
         0xfd => Obligation::Halt {
             op: "Operation.REVERT",
-            which: "(Or.inr (Or.inr rfl))",
-            congruent: "congruent_revert",
+            which: "(Or.inr (Or.inr (Or.inl rfl)))",
+            congruent: "congruent_revert.at",
+        },
+        0xff => Obligation::Halt {
+            op: "Operation.SELFDESTRUCT",
+            which: "(Or.inr (Or.inr (Or.inr rfl)))",
+            congruent: "(selfdestruct_at size_pos.1 size_pos.2)",
         },
         0x0c..=0x0f
         | 0x1e..=0x1f
@@ -891,6 +974,7 @@ fn classify(instruction: &Instruction, next: Option<&Instruction>) -> Result<Obl
         | 0xf6..=0xf9
         | 0xfb..=0xfc
         | 0xfe => Obligation::Invalid,
+        // Creation, external code reads and stray GAS stay outside the profile.
         _ => match simple_name(op) {
             Some(name) => simple(name),
             None => bail!(
@@ -940,6 +1024,7 @@ fn simple_name(op: u8) -> Option<&'static str> {
         0x52 => "MSTORE",
         0x53 => "MSTORE8",
         0x5b => "JUMPDEST",
+        0x58 => "PC",
         0x20 => "KECCAK256",
         0x37 => "CALLDATACOPY",
         0x3d => "RETURNDATASIZE",
@@ -1101,9 +1186,10 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
     let mut index = format!("{table_imports}{HEADER}");
     writeln!(
         index,
-        "def table : List (Nat × List Abs) := {}\nabbrev Q : UInt256 → List UInt256 → Prop := Inv table\n/-- Call obligations need the call assumptions; a call-free runtime has none. -/\ndef HC : Prop := {}",
+        "def table : List (Nat × List Abs) := {}\nabbrev Q : UInt256 → List UInt256 → Prop := Inv table\n/-- Call and external code obligations need the environment assumptions; a runtime without them has none. -/\ndef HC : Prop := {}\n/-- Constant addresses read by EXTCODEHASH or EXTCODECOPY. -/\ndef inspected : List Nat := {}",
         nested(&point_names),
-        if plan.calls() { "True" } else { "False" }
+        if plan.assumes() { "True" } else { "False" },
+        nat_list(plan.inspected.iter().copied())
     )
     .unwrap();
     for k in 0..chunks.len() {
@@ -1210,7 +1296,7 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
     modules.push((
         "WholeJumps".to_owned(),
         format!(
-            "{block_imports}{HEADER}{jumps_proof}\n{any_targets}theorem size_eq : oldCode.size = newCode.size := by\n  show (ofBytes oldBytes).size = (ofBytes newBytes).size\n  simp only [ofBytes, ByteArray.size, List.size_toArray, List.length_map]\n  rw [show oldBytes = oldTail0 from rfl, show newBytes = newTail0 from rfl, oldLenT0, newLenT0]\nend GolfWholeCertificate\n"
+            "{block_imports}{HEADER}{jumps_proof}\n{any_targets}theorem len_eq : oldBytes.length = newBytes.length := by\n  rw [show oldBytes = oldTail0 from rfl, show newBytes = newTail0 from rfl, oldLenT0, newLenT0]\ntheorem size_pos : 0 < oldCode.size ∧ 0 < newCode.size := by\n  show 0 < (ofBytes oldBytes).size ∧ 0 < (ofBytes newBytes).size\n  simp only [ofBytes, ByteArray.size, List.size_toArray, List.length_map]\n  rw [show oldBytes = oldTail0 from rfl, show newBytes = newTail0 from rfl, oldLenT0, newLenT0]\n  decide\ntheorem size_eq : oldCode.size = newCode.size := by\n  show (ofBytes oldBytes).size = (ofBytes newBytes).size\n  simp only [ofBytes, ByteArray.size, List.size_toArray, List.length_map]\n  exact len_eq\nend GolfWholeCertificate\n"
         ),
     ));
     let mem = |pc: usize, fs: &[facts::Abs]| -> String {
@@ -1228,14 +1314,14 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
             let fs = &plan.analysis.entries[&pc][i];
             writeln!(
                 s,
-                "theorem point_{pc}_{i} : Point HC oldCode newCode jumps Q (Holds F{pc}_{i}) (UInt256.ofNat {pc}) :=\n  {}",
+                "theorem point_{pc}_{i} : Point HC inspected oldCode newCode jumps Q (Holds F{pc}_{i}) (UInt256.ofNat {pc}) :=\n  {}",
                 obligation_term(pc, obligation, fs, original, &plan.jumpdests, &mem)
             )
             .unwrap();
         }
         writeln!(
             s,
-            "\ntheorem cover{k} : ∀ p ∈ pointsChunk{k}, Point HC oldCode newCode jumps Q (Holds p.2) (UInt256.ofNat p.1) :="
+            "\ntheorem cover{k} : ∀ p ∈ pointsChunk{k}, Point HC inspected oldCode newCode jumps Q (Holds p.2) (UInt256.ofNat p.1) :="
         )
         .unwrap();
         for (pc, i) in *chunk {
@@ -1255,18 +1341,18 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
     let mut s = format!("{imports}{HEADER}");
     writeln!(
         s,
-        "theorem cover : ∀ p ∈ table, Point HC oldCode newCode jumps Q (Holds p.2) (UInt256.ofNat p.1) :=\n  {cover}"
+        "theorem cover : ∀ p ∈ table, Point HC inspected oldCode newCode jumps Q (Holds p.2) (UInt256.ofNat p.1) :=\n  {cover}"
     )
     .unwrap();
-    // With calls, the final theorems take the environment assumptions.
-    let (hyps, pass, env) = if plan.calls() {
+    // With calls or external code reads, the final theorems take the environment assumptions.
+    let (hyps, pass, env) = if plan.assumes() {
         (
-            "\n    (callees : CalleeSummary owner oldCode newCode) (reentry : Reentry owner oldCode)\n    (notPrecompile : owner ∉ π)",
-            " callees reentry notPrecompile",
-            "(fun _ => callees) (fun _ => reentry) (fun _ => notPrecompile)",
+            "\n    (callees : CalleeSummary owner oldCode newCode) (reentry : Reentry owner oldCode)\n    (notPrecompile : owner ∉ π)\n    (notInspected : ∀ a ∈ inspected, AccountAddress.ofUInt256 (UInt256.ofNat a) ≠ owner)",
+            " callees reentry notPrecompile notInspected",
+            "(fun _ => callees) (fun _ => reentry) (fun _ => notPrecompile) (fun _ => notInspected)",
         )
     } else {
-        ("", "", "False.elim False.elim False.elim")
+        ("", "", "False.elim False.elim False.elim False.elim")
     };
     writeln!(
         s,
@@ -1284,7 +1370,7 @@ theorem whole_certificate (owner : AccountAddress){hyps} (fuel surplus skipped :
       OutcomeRelated owner oldCode newCode t.gasAvailable.toNat r r' := by
   rw [old_jumps] at ok
   rw [new_jumps]
-  exact whole_refines owner oldCode newCode jumps jumps Q HC (cover_of cover) (fun _ h => h)
+  exact whole_refines owner oldCode newCode jumps jumps Q HC inspected (cover_of cover) (fun _ h => h)
     old_jumps.symm new_jumps.symm ⟨(0, F0_0), {start}, rfl, trivial⟩ {env}
     fuel s t surplus skipped r rel (by rw [start]; exact ⟨(0, F0_0), {start}, rfl, trivial⟩) ok
 
@@ -1527,7 +1613,7 @@ fn obligation_term(
             which,
             congruent,
         } => format!(
-            ".halt _ {op} none {congruent}.at {which} {} {}",
+            ".halt _ {op} none {congruent} {which} {} {}",
             get("old", pc),
             get("new", pc)
         ),
@@ -1612,6 +1698,35 @@ fn obligation_term(
                 )
             }
         }
+        Obligation::ExtCode { hash } => {
+            let addr = constant(fs, 0).expect("checked by the plan");
+            if *hash {
+                let mut next = vec![facts::top()];
+                next.extend(facts::drop(fs, 1));
+                format!(
+                    ".extcodehash _ {addr} (by decide) trivial (by decide) {} {} (addr_args rfl) (extcodehash_next {K} {} {K})",
+                    old(pc),
+                    new(pc),
+                    mem(pc + 1, &next)
+                )
+            } else {
+                format!(
+                    ".extcodecopy _ {addr} (by decide) trivial (by decide) {} {} (addr_args rfl) (extcodecopy_next {K} {} {K})",
+                    old(pc),
+                    new(pc),
+                    mem(pc + 1, &facts::drop(fs, 4))
+                )
+            }
+        }
+        Obligation::CodeCopy => {
+            let (off, len) = codecopy_range(fs).expect("checked by the plan");
+            format!(
+                ".codecopy _ {off} {len} (by decide) (by decide) {} {} (write_congr oldBytes newBytes {off} {len} len_eq {K}) (codecopy_args rfl rfl) (codecopy_next {K} {} {K})",
+                old(pc),
+                new(pc),
+                mem(pc + 1, &facts::drop(fs, 3))
+            )
+        }
         Obligation::Power(site) => {
             let mul = site.pc + site.width + 1;
             let mut next = vec![facts::top()];
@@ -1648,8 +1763,8 @@ mod tests {
         assert!(matches!(first(&planned, 6), Obligation::Power(_)));
         let wrong = hex::decode("34600a57600760031b005b600080fd").unwrap();
         assert!(plan_err(&original, &wrong).contains("unsupported difference"));
-        let destruct = hex::decode("ff00").unwrap();
-        assert!(plan_err(&destruct, &destruct).contains("unsupported opcode 0xff"));
+        let create = hex::decode("f000").unwrap();
+        assert!(plan_err(&create, &create).contains("unsupported opcode 0xf0"));
     }
 
     #[test]
@@ -1689,6 +1804,11 @@ mod tests {
                 ..
             })
         ));
+        // SELFDESTRUCT halts: nothing after it is reached.
+        let destruct = hex::decode("5fff00").unwrap();
+        let halting = plan(&destruct, &destruct).unwrap();
+        assert!(matches!(first(&halting, 1), Obligation::Halt { .. }));
+        assert!(!halting.analysis.obligations.contains_key(&2));
         // The call opcode after GAS is covered by the GAS point.
         assert!(!planned.analysis.obligations.contains_key(&7));
         let pcs: Vec<usize> = planned.points().map(|(pc, _)| *pc).collect();
@@ -1704,6 +1824,34 @@ mod tests {
         assert!(plan_err(&gas, &gas).contains("GAS at pc 0"));
         let plain = hex::decode("34600a576007600402005b600080fd").unwrap();
         assert!(!plan(&plain, &plain).unwrap().calls());
+    }
+
+    #[test]
+    fn plans_constant_code_copies() {
+        // PUSH1 4 PUSH1 2 MUL POP; PUSH1 2 PUSH1 15 PUSH0 CODECOPY; PC POP; STOP; two data bytes.
+        let original = hex::decode("6004600202506002600f5f39585000aabb").unwrap();
+        let candidate = hex::decode("600460011b506002600f5f39585000aabb").unwrap();
+        let planned = plan(&original, &candidate).unwrap();
+        assert!(matches!(first(&planned, 11), Obligation::CodeCopy));
+        assert!(planned.precise);
+        assert_eq!(
+            codecopy_range(&planned.analysis.entries[&11][0]),
+            Some((15, 2))
+        );
+        // A copy that reads the rewritten bytes is rejected before Lean.
+        let reads = hex::decode("600460020250600260025f39585000aabb").unwrap();
+        let reads_new = hex::decode("600460011b50600260025f39585000aabb").unwrap();
+        assert!(plan_err(&reads, &reads_new).contains("a rewrite changes"));
+        // A copy with a calldata offset has no constant range.
+        let dynamic = hex::decode("60025f355f3900").unwrap();
+        assert!(plan_err(&dynamic, &dynamic).contains("constant offset"));
+        // Code reads of constant addresses are collected; a CALLER address is rejected.
+        let reads = hex::decode("60013f505f5f5f60023c00").unwrap();
+        let planned = plan(&reads, &reads).unwrap();
+        assert_eq!(planned.inspected, vec![1, 2]);
+        assert!(planned.assumes());
+        let caller = hex::decode("333f5000").unwrap();
+        assert!(plan_err(&caller, &caller).contains("constant address"));
     }
 
     #[test]

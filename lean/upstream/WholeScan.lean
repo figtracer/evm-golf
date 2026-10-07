@@ -251,7 +251,63 @@ theorem length_block {a b : List Nat} {m n : Nat} (ha : a.length = m) (hb : b.le
     (a ++ b).length = m + n := by
   rw [List.length_append, ha, hb]
 
+/-! Copies from the code: two images agree on a copy when they agree on the copied bytes. -/
+
+theorem copySlice_congr (a a' b : ByteArray) (s d l : ℕ) (hs : a.data.size = a'.data.size)
+    (he : a.data.extract s (s + l) = a'.data.extract s (s + l)) :
+    a.copySlice s b d l = a'.copySlice s b d l := by
+  unfold ByteArray.copySlice
+  rw [he, hs]
+
+theorem append_data (a b : ByteArray) : (a ++ b).data = a.data ++ b.data := by
+  show (b.copySlice 0 a a.size b.size false).data = _
+  unfold ByteArray.copySlice
+  simp [ByteArray.size, Array.extract_empty_of_size_le_start]
+
+theorem ofBytes_get (l : List Nat) (j : ℕ) : (ofBytes l).data[j]? = (l[j]?).map UInt8.ofNat := by
+  simp [ofBytes]
+
+theorem extract_congr (x y : Array UInt8) (s k : ℕ) (h : ∀ i, i < k → x[s + i]? = y[s + i]?) :
+    x.extract s (s + k) = y.extract s (s + k) := by
+  apply Array.ext'
+  rw [Array.toList_extract, Array.toList_extract]
+  apply List.ext_getElem?
+  intro i
+  simp only [List.getElem?_take, List.getElem?_drop, Array.getElem?_toList]
+  by_cases hi : i < s + k - s
+  · simp only [hi, if_true]; exact h i (by omega)
+  · simp only [hi, if_false]
+
+/-- Two images of equal length that agree on `len` bytes from `off` write the same memory. -/
+theorem write_congr (o n : List Nat) (off len : ℕ) (hl : o.length = n.length)
+    (hs : (o.drop off).take len = (n.drop off).take len) (mem : ByteArray) (dst : ℕ) :
+    (ofBytes o).write off mem dst len = (ofBytes n).write off mem dst len := by
+  have hsize : (ofBytes o).size = (ofBytes n).size := by
+    simp [ofBytes, ByteArray.size, hl]
+  have hpt : ∀ i, i < len → o[off + i]? = n[off + i]? := by
+    intro i hi
+    have := congrArg (fun l => l[i]?) hs
+    simpa [List.getElem?_take, List.getElem?_drop, hi] using this
+  unfold ByteArray.write
+  rw [hsize]
+  split
+  · rfl
+  · split
+    · rfl
+    · apply copySlice_congr
+      · rw [append_data, append_data]; simp [ByteArray.size, hl, ofBytes]
+      · rw [append_data, append_data]
+        apply extract_congr
+        intro i hi
+        have hk : i < len := by
+          simp only [ByteArray.size] at hi ⊢
+          omega
+        simp only [Array.getElem?_append, ofBytes_get]
+        rw [hpt i hk]
+        simp [ByteArray.size, ofBytes, hl]
+
 #print axioms dj_scan
+#print axioms write_congr
 #print axioms decode_ofBytes
 
 end GolfWhole
