@@ -34,6 +34,7 @@ structure GenericLocal (site : Site) (required : Nat) (delta : Int)
    GolfBounded.run (site.before.length+1) site.before stack x y =
    GolfBounded.run (site.after.length+1) site.after stack x y
  context : GolfComposition.ContextEquivalent site.before site.after
+ gas : GolfGas.Improvement site.before site.after
  -- This is a sufficient-gas height-only abstraction, NOT revm correspondence.
  faultClasses : (List.range 1025).all (fun h => decide
    (GolfGeneratedFault.run (site.before.length+1) site.before h =

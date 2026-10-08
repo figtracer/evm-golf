@@ -165,6 +165,7 @@ fn prelude() -> Result<String> {
     for text in [
         include_str!("../../lean/Fragment.lean"),
         include_str!("../../lean/Stack.lean"),
+        include_str!("../../lean/Gas.lean"),
         include_str!("../../lean/Composition.lean"),
         include_str!("../../lean/LayoutScanner.lean"),
         include_str!("../../lean/Layout.lean"),
@@ -265,6 +266,24 @@ fn certificate_in(before: &[u8], after: &[u8], index: Option<usize>) -> Result<W
     emit_side(&mut source, "after", after, &new, b, &new_steps, &folds);
     emit_equal(&mut source, a);
     emit_wrappers(&mut source, a, output);
+    writeln!(
+        source,
+        "def gas_improvement : GolfGas.Improvement before after where
+ beforeCost := {}
+ afterCost := {}
+ beforeChecked := by decide +kernel
+ afterChecked := by decide +kernel
+ cheaper := by decide +kernel
+theorem gas_refinement (stack : List Golf.Word) (gas : Nat) (x y : Golf.Word)
+     (output : List Golf.Word) (budget : {} ≤ gas)
+     (success : GolfBounded.run (before.length+1) before stack x y = some output) :
+   GolfGas.run GolfGas.cancun (before.length+1) before stack gas x y = some (output, gas-{}) ∧
+   GolfGas.run GolfGas.cancun (after.length+1) after stack gas x y = some (output, gas-{}) ∧
+   gas-{} < gas-{} ∧ gas-{} ≤ gas :=
+  gas_improvement.refines all_height stack gas x y output budget success",
+        a.gas, b.gas, a.gas, a.gas, b.gas, a.gas, b.gas, b.gas
+    )
+    .unwrap();
     writeln!(source, "end {namespace}").unwrap();
     if index.is_none() {
         source.push_str(FAULT_MODEL);
@@ -281,6 +300,8 @@ fn certificate_in(before: &[u8], after: &[u8], index: Option<usize>) -> Result<W
         "all_height",
         "context",
         "fault_classes",
+        "gas_improvement",
+        "gas_refinement",
         "success",
         "underflow",
         "overflow",
@@ -753,7 +774,7 @@ mod tests {
                 (proof.required, proof.delta, proof.peak),
                 (required, delta, peak)
             );
-            assert_eq!(proof.names.len(), 10);
+            assert_eq!(proof.names.len(), 12);
             assert!(proof.source.contains("theorem success"));
             assert!(proof.source.contains("theorem underflow"));
             assert!(proof.source.contains("theorem overflow"));

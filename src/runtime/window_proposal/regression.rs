@@ -405,3 +405,123 @@ fn kernel_checks_exact_stack_permutation_artifacts() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn kernel_checks_static_gas_against_revm_and_budget_boundaries() {
+    use revm::{interpreter::instructions::gas_table_spec, primitives::hardfork::SpecId};
+    use std::fmt::Write as _;
+
+    let mut source = super::prelude().unwrap();
+    source.push_str("\nnamespace GolfGasRegression\n");
+    // These values come from the pinned interpreter, not the Rust proposal profiler.
+    // Equal pure costs do not establish support for each fork's transaction rules.
+    let mut costs = Vec::new();
+    for fork in [SpecId::CANCUN, SpecId::PRAGUE, SpecId::OSAKA] {
+        let table = gas_table_spec(fork);
+        for op in [0x01, 0x02, 0x03, 0x16, 0x17, 0x18, 0x19, 0x1b, 0x50]
+            .into_iter()
+            .chain(0x5f..=0x9f)
+        {
+            costs.push(format!("({op},{})", table[op]));
+        }
+    }
+    writeln!(source, "def costs : List (Nat × Nat) := [{}]\ntheorem revm_costs : costs.all (fun p => GolfGas.cancun p.1 == some p.2) = true := by decide +kernel", costs.join(",")).unwrap();
+    // Opcode-looking PUSH data must not be charged as instructions.
+    for width in 1u8..=32 {
+        let code = [vec![0x5f + width], vec![0x50; usize::from(width)]].concat();
+        writeln!(
+            source,
+            "example : GolfGas.cost {code:?} = some 3 := by decide +kernel"
+        )
+        .unwrap();
+    }
+    source.push_str("example : GolfGas.cost [95] = some 2 := by decide +kernel\nexample : GolfGas.cost [97,80] = none := by decide +kernel\nexample : GolfGas.cost [90] = none := by decide +kernel\nexample : GolfGas.cost [241] = none := by decide +kernel\n");
+    let before = from_hex("600050600050").unwrap();
+    let after = from_hex("630000000050").unwrap();
+    for gas in [0, 4, 5, 9, 10, 20] {
+        for (code, cost) in [(&before, 10), (&after, 5)] {
+            let executed = execute(
+                code,
+                &Case {
+                    calldata: String::new(),
+                    gas_limit: 21_000 + gas,
+                    value: String::new(),
+                    storage: BTreeMap::new(),
+                },
+            )
+            .unwrap()
+            .result;
+            assert_eq!(executed.is_success(), gas >= cost);
+            if executed.is_success() {
+                assert_eq!(executed.tx_gas_used(), 21_000 + cost);
+            }
+            let expected = if gas < cost {
+                "none".to_owned()
+            } else {
+                format!("some ([], {})", gas - cost)
+            };
+            writeln!(source, "example : GolfGas.run GolfGas.cancun {} {code:?} [] {gas} 0 0 = {expected} := by decide +kernel", code.len()+1).unwrap();
+        }
+    }
+    source.push_str("end GolfGasRegression\n#print axioms GolfGasRegression.revm_costs\n#print axioms GolfGas.sufficient\n#print axioms GolfGas.Improvement.refines\n");
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("Gas.lean");
+    fs::write(&path, &source).unwrap();
+    let names = [
+        "GolfGasRegression.revm_costs".to_owned(),
+        "GolfGas.sufficient".to_owned(),
+        "GolfGas.Improvement.refines".to_owned(),
+    ];
+    let checked = proof::verify_named(&path, &names);
+    assert!(
+        checked.is_ok(),
+        "{checked:?}\n{}",
+        fs::read_to_string(path.with_extension("log")).unwrap_or_default()
+    );
+
+    // Kernel rejection must not depend on the Rust cheaper-cost prefilter.
+    let local = certificate(&before, &after).unwrap();
+    let path = directory.path().join("LocalGas.lean");
+    fs::write(&path, &local.source).unwrap();
+    let checked = proof::verify_named(&path, &local.names);
+    assert!(
+        checked.is_ok(),
+        "{checked:?}\n{}",
+        fs::read_to_string(path.with_extension("log")).unwrap_or_default()
+    );
+    for (name, changed) in [
+        (
+            "FalseCost",
+            local
+                .source
+                .replacen("beforeCost := 10", "beforeCost := 9", 1),
+        ),
+        (
+            "EqualCost",
+            local
+                .source
+                .replacen("afterCost := 5", "afterCost := 10", 1),
+        ),
+        (
+            "FreePadding",
+            local.source.replace(
+                "if op = 80 ∨ op = 95 then some 2",
+                "if op = 80 ∨ op = 95 then some 0",
+            ),
+        ),
+    ] {
+        assert_ne!(changed, local.source);
+        let path = directory.path().join(format!("{name}.lean"));
+        fs::write(&path, changed).unwrap();
+        assert!(
+            proof::verify_named(&path, &local.names).is_err(),
+            "accepted {name}"
+        );
+        let log = fs::read_to_string(path.with_extension("log")).unwrap();
+        assert!(
+            log.contains("error:"),
+            "expected a Lean rejection, not a timeout: {log}"
+        );
+    }
+}

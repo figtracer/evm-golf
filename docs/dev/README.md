@@ -17,6 +17,7 @@
 | `src/runtime/whole.rs` | Developer whole-program certificates against upstream semantics |
 | `src/proof.rs`, `src/proof/upstream.rs` | Pinned Lean runners and axiom audit |
 | `lean/` | Model, stack, composition, layout, window and jump threading proofs |
+| `lean/Gas.lean` | Local gas costs and metered execution of pure proposal windows |
 | `lean/upstream/` | Upstream interpreter region and whole-program lemmas, templates |
 | `examples/quickstart/` | Minimal runnable project |
 | `tests/` | CLI, replay and proof regression tests |

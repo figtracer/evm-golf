@@ -76,6 +76,7 @@ Use `cargo run --locked --` in place of `evm-golf` if it is not installed.
 | Guarantee | |
 | --- | :---: |
 | Each rewritten piece of code gives the same result (Lean proof) | Yes |
+| Pure-window proposals use less static gas (Lean proof) | Yes |
 | Byte offsets, jump targets and code copies stay valid | Yes |
 | Your transactions give the same results and use no more gas (revm replay) | Yes |
 | Inputs and states that your transactions do not cover | No |

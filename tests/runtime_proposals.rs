@@ -118,7 +118,7 @@ fn batch_checks_adjacent_sites_limit_and_deterministic_order() {
                 format!("{}00", AFTER.repeat(count))
             );
             let source = fs::read_to_string(out.join("Rewrites.lean")).unwrap();
-            assert_eq!(source.matches("#print axioms").count(), 11);
+            assert_eq!(source.matches("#print axioms").count(), 13);
             if let Some(previous) = first_source {
                 assert_eq!(source, previous);
             }
@@ -159,7 +159,7 @@ fn batch_binds_heterogeneous_local_proofs() {
             .unwrap()
             .matches("#print axioms")
             .count(),
-        21
+        25
     );
     let report: Value =
         serde_json::from_slice(&fs::read(out.join("result.json")).unwrap()).unwrap();

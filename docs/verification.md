@@ -26,6 +26,13 @@ metadata is accepted. One certificate covers the whole runtime and proves:
   faults, for every input stack. Jump destinations are computed from the bytes
   and proved equal in both images, and each trampoline is unchanged.
 
+Submitted and discovered pure-window proposals also prove their decoded static
+costs in Lean. A local metered model preserves successful execution and leaves
+more gas when the original window has enough gas. PUSH data is not charged as
+instructions. The cost table is tested against pinned revm for Cancun, Prague
+and Osaka; replay still uses Cancun. This does not prove receipt-gas savings or
+equivalence below the original gas requirement.
+
 Only Lean's foundational axioms (`propext`, `Classical.choice`, `Quot.sound`)
 may appear in the axiom report, and every expected theorem must be reported.
 
@@ -39,7 +46,7 @@ does not affect `optimize` or `verify`.
 The pinned toolchain is Lean 4.34.0. Each certificate must check within 60
 seconds; any failure or timeout rejects the candidate.
 
-The models erase gas and do not interpret calls, storage or memory. It does not
+The local stack models do not interpret calls, storage or memory. They do not
 prove which stack heights the surrounding program reaches, or that the model
 matches revm for every instruction.
 

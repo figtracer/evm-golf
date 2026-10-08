@@ -579,6 +579,7 @@ pub(super) fn proposal_batch_certificate(
  overflow := {namespace}.overflow
  allHeight := {namespace}.all_height
  context := {namespace}.context
+ gas := {namespace}.gas_improvement
  faultClasses := {namespace}.fault_classes",proof.required,proof.required,proof.delta,proof.peak,proof.before_ops,proof.after_ops).unwrap();
     }
     for (site, (rewrite, &index)) in rewrites.iter().zip(&indexes).enumerate() {
@@ -921,7 +922,7 @@ mod tests {
             .collect();
         let (source, names) =
             proposal_batch_certificate(&original, &candidate, &rows, &[]).unwrap();
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 13);
         assert_eq!(source.matches("namespace Golf\n").count(), 1);
         assert_eq!(source.matches("namespace GolfGeneratedFault\n").count(), 1);
         assert!(!source.contains("namespace GolfGenerated.Pair1"));
