@@ -288,9 +288,9 @@ assumptions as hypotheses of the final theorems:
 
 The proof pairs each call: the candidate's call costs at most the surplus more,
 hands the callee exactly that much more gas, and the caller's remaining gas
-stays related afterwards. A call-free runtime gets a certificate without these
-hypotheses. `result.json` lists the hypotheses under `assumptions`, the call
-positions under `call_sites`, code copies under `codecopy_sites` and the read
+stays related afterwards. A runtime with no calls or inspected addresses needs
+none of these hypotheses. `result.json` lists the hypotheses under `assumptions`,
+the call positions under `call_sites`, code copies under `codecopy_sites` and the read
 addresses under `inspected`. `CalleeSummary` is an assumption, not a theorem,
 but [WholePrecompile.lean](../../lean/upstream/WholePrecompile.lean) proves that
 its conclusion holds for the ecrecover precompile whenever the original gives it
