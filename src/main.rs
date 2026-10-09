@@ -157,20 +157,7 @@ fn main() -> Result<()> {
             let candidate = runtime::input::read_bytecode(&candidate)?;
             prepare_parent(&out)?;
             let report = runtime::whole::certify(&original, &candidate, &out)?;
-            println!(
-                "Whole-program refinement proved for {} instructions ({} power, {} threading, {} window sites, {} calls); X, Ξ, Θ and Υ level, supported opcode profile, conditioned on original success or revert{}.\nEvidence: {}",
-                report.covered_instructions,
-                report.power_sites.len(),
-                report.thread_sites.len(),
-                report.window_sites.len(),
-                report.call_sites.len(),
-                if report.call_sites.is_empty() && report.inspected.is_empty() {
-                    ""
-                } else {
-                    " and on the environment assumptions listed in result.json"
-                },
-                out.display()
-            );
+            println!("{report}Evidence: {}", out.display());
         }
         Action::CertifyRuntimeRegion {
             original,
@@ -257,38 +244,9 @@ fn main() -> Result<()> {
 }
 
 fn report(result: project::ProjectResult, out: &std::path::Path) -> Result<()> {
-    for contract in &result.contracts {
-        if contract.accepted {
-            eprintln!(
-                "{}: {} -> {} gas over {} transactions ({} rewrites)",
-                contract.id,
-                contract.baseline_gas,
-                contract.candidate_gas,
-                contract.transactions,
-                contract.rewrites
-            );
-            for f in &contract.functions {
-                let saved = if f.saved_min == f.saved_max {
-                    f.saved_min.to_string()
-                } else {
-                    format!("{} to {}", f.saved_min, f.saved_max)
-                };
-                eprintln!(
-                    "  {}: {saved} gas saved per call ({} calls)",
-                    f.function, f.calls
-                );
-            }
-        } else {
-            eprintln!(
-                "{}: rejected: {}",
-                contract.id,
-                contract.error.as_deref().unwrap_or("")
-            );
-        }
-    }
     eprintln!(
-        "{}\nResults: {}\nNext baseline: {}",
-        result.scope,
+        "{result}Summary: {}\nResults: {}\nNext baseline: {}",
+        out.join("summary.txt").display(),
         out.join("result.json").display(),
         out.join("baseline/project.json").display()
     );

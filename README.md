@@ -36,10 +36,14 @@ The last command optimizes [a small example](examples/quickstart) and prints
 what it saved:
 
 ```text
-demo: 21030 -> 21024 gas over 1 transactions (1 rewrites)
-  fallback: 6 gas saved per call (1 calls)
-Results: runs/demo/result.json
-Next baseline: runs/demo/baseline/project.json
+demo optimization
+Accepted changes: 1; local Lean proofs and guarded replay passed
+Gas saved per operation (supplied transactions):
+  fallback: 6 gas (calls: 1)
+Total gas: 21030 -> 21024
+Supplied transactions: passed (1)
+Contract-wide proof: not run by this command
+Unsupported or unverified behavior: inputs and states outside the supplied transactions; arbitrary gas limits; deployment and code identity; forks beyond Cancun.
 ```
 
 ## Use your own contracts
@@ -66,8 +70,9 @@ evm-golf verify project.json --proposals proposals.json --out runs/check-1
 
 Each run prints the gas saved per call for each function. A function can save
 different amounts on different paths, so the report gives a range, for example
-`transfer(address,uint256): 0 to 15 gas saved per call (5 calls)`.
-`result.json` has the same data and the totals. `baseline/project.json` points
+`transfer(address,uint256): 0 to 15 gas (calls: 5)`.
+`summary.txt` records the readable report, including verification status and limits.
+`result.json` keeps the structured data and totals. `baseline/project.json` points
 at the accepted bytecode, so you can continue from it.
 `optimize` retries smaller built-in and proposal batches when a batch fails.
 A patch that fails alone is skipped.

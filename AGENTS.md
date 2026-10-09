@@ -21,6 +21,8 @@ replay with identical results and no more gas. Read docs/cli.md for the formats.
    Every site of a contract must pass, or that contract is rejected unchanged.
    Accepted results are in `result.json`; continue from `baseline/project.json`.
 
+Read `summary.txt` for accepted changes, gas savings, verification status and limits.
+The contract-wide proof is separate from local proofs and replay.
 Use a new `--out` directory every time. Failed runs keep diagnostics
 (`failure.log`, `Rewrites.log`) but no accepted candidate.
 

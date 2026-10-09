@@ -106,6 +106,7 @@ proposals carry no proof or metadata.
 ## Output
 
 ```text
+DIR/summary.txt              readable results, verification status and limits
 DIR/result.json              per contract: accepted, gas before/after, rewrites,
                              gas saved per call for each called function
 DIR/baseline/project.json    next project: accepted bytecode, same scenarios
@@ -114,3 +115,7 @@ DIR/<id>/                    evidence: candidate.hex, Rewrites.lean/.log,
 ```
 
 `optimize` stores one subdirectory per search stage under `DIR/<id>/`.
+
+`optimize` and `verify` report local proof and replay results separately from
+the contract-wide proof, which these commands do not run. A rejected contract
+has no accepted savings. JSON output and exit codes are unchanged.

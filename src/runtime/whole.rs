@@ -8,7 +8,12 @@
 use anyhow::{Context as _, Result, bail, ensure};
 use revm::primitives::{U256, hex, keccak256};
 use serde::Serialize;
-use std::{collections::BTreeSet, fmt::Write as _, fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    fmt::{self, Write as _},
+    fs,
+    path::Path,
+};
 
 use super::{Instruction, decode};
 
@@ -42,6 +47,21 @@ pub struct WholeCertificate {
     pub assumptions: Vec<&'static str>,
     pub unproved: Vec<&'static str>,
     pub lean_version: String,
+}
+
+impl fmt::Display for WholeCertificate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Contract-wide proof: passed under these assumptions:")?;
+        for assumption in &self.assumptions {
+            writeln!(f, "  - {assumption}")?;
+        }
+        writeln!(f, "Supplied transactions: not run by this command")?;
+        writeln!(f, "Unsupported or unverified behavior:")?;
+        for unproved in &self.unproved {
+            writeln!(f, "  - {unproved}")?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -234,6 +254,7 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
         out.join("result.json"),
         serde_json::to_string_pretty(&report)? + "\n",
     )?;
+    fs::write(out.join("summary.txt"), report.to_string())?;
     Ok(report)
 }
 

@@ -6,7 +6,7 @@ use revm::primitives::{hex, keccak256};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -158,6 +158,57 @@ fn functions(cases: &[CaseResult]) -> Vec<FunctionGas> {
 pub struct ProjectResult {
     pub scope: &'static str,
     pub contracts: Vec<ContractResult>,
+}
+
+impl fmt::Display for ProjectResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, contract) in self.contracts.iter().enumerate() {
+            if index > 0 {
+                writeln!(f)?;
+            }
+            writeln!(f, "{} optimization", contract.id)?;
+            if contract.accepted {
+                writeln!(
+                    f,
+                    "Accepted changes: {}; local Lean proofs and guarded replay passed",
+                    contract.rewrites
+                )?;
+                writeln!(f, "Gas saved per operation (supplied transactions):")?;
+                for operation in &contract.functions {
+                    write!(f, "  {}: {}", operation.function, operation.saved_min)?;
+                    if operation.saved_min != operation.saved_max {
+                        write!(f, " to {}", operation.saved_max)?;
+                    }
+                    writeln!(f, " gas (calls: {})", operation.calls)?;
+                }
+                writeln!(
+                    f,
+                    "Total gas: {} -> {}",
+                    contract.baseline_gas, contract.candidate_gas
+                )?;
+                writeln!(
+                    f,
+                    "Supplied transactions: passed ({})",
+                    contract.transactions
+                )?;
+            } else {
+                writeln!(f, "Accepted changes: none; contract rejected")?;
+                writeln!(f, "Gas saved per operation: unavailable")?;
+                writeln!(f, "Supplied transactions: not established")?;
+                writeln!(
+                    f,
+                    "Reason: {}",
+                    contract.error.as_deref().unwrap_or("unknown failure")
+                )?;
+            }
+            writeln!(f, "Contract-wide proof: not run by this command")?;
+            writeln!(
+                f,
+                "Unsupported or unverified behavior: inputs and states outside the supplied transactions; arbitrary gas limits; deployment and code identity; forks beyond Cancun."
+            )?;
+        }
+        Ok(())
+    }
 }
 
 fn valid_id(id: &str) -> bool {
@@ -397,5 +448,49 @@ fn finish(
         contracts: results,
     };
     fs::write(out.join("result.json"), serde_json::to_vec_pretty(&result)?)?;
+    fs::write(out.join("summary.txt"), result.to_string())?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summary_limits_savings_and_proof_claims_to_their_scope() {
+        let mut result = ProjectResult {
+            scope: SCOPE,
+            contracts: vec![ContractResult {
+                id: "vault".into(),
+                accepted: true,
+                error: None,
+                original_keccak256: "original".into(),
+                candidate_keccak256: Some("candidate".into()),
+                baseline_gas: 100,
+                candidate_gas: 94,
+                transactions: 2,
+                rewrites: 1,
+                failed_batches: 0,
+                functions: vec![FunctionGas {
+                    function: "fallback".into(),
+                    calls: 2,
+                    saved_min: 0,
+                    saved_max: 6,
+                }],
+            }],
+        };
+        let summary = result.to_string();
+        assert!(summary.contains("fallback: 0 to 6 gas (calls: 2)"));
+        assert!(summary.contains("Supplied transactions: passed (2)"));
+        assert!(summary.contains("Contract-wide proof: not run by this command"));
+        assert!(!summary.contains("Contract-wide proof: passed"));
+        // A successful identity run must not suggest that a rewrite was accepted.
+        result.contracts[0].rewrites = 0;
+        result.contracts[0].candidate_gas = 100;
+        result.contracts[0].functions[0].saved_max = 0;
+        let summary = result.to_string();
+        assert!(summary.contains("Accepted changes: 0;"));
+        assert!(summary.contains("fallback: 0 gas (calls: 2)"));
+        assert!(!summary.contains("Contract-wide proof: passed"));
+    }
 }

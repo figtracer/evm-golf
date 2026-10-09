@@ -228,6 +228,8 @@ The generator walks the program from pc 0 and emits one obligation per
 reached instruction, split across modules that each stay within the
 per-module budget ([WholeProgram.lean](../../lean/upstream/WholeProgram.lean)).
 Code that no execution reaches needs no obligation.
+After a successful check, `summary.txt` lists the proof assumptions and unproved
+behavior. This command does not replay supplied transactions.
 Images up to the EIP-170 limit are accepted. They may differ only at same-width
 `PUSHn 2^k; MUL` → `PUSHn k; SHL` sites and at one-hop threading sites
 `PUSHn X; JUMPI` → `PUSHn Y; JUMPI` where `X` holds the unchanged trampoline

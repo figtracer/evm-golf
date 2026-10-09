@@ -150,6 +150,12 @@ fn optimize_inspect_and_verify_form_one_workflow() {
             .unwrap()
             .contains("not a whole-contract")
     );
+    let summary = fs::read_to_string(out.join("summary.txt")).unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains(&summary));
+    assert!(summary.contains("local Lean proofs and guarded replay passed"));
+    assert!(summary.contains("Supplied transactions: passed (1)"));
+    assert!(summary.contains("Contract-wide proof: not run by this command"));
+    assert!(!summary.contains("Contract-wide proof: passed"));
     let baseline = out.join("baseline/project.json");
     let again = dir.path().join("again");
     let output = run(&[
@@ -189,7 +195,16 @@ fn optimize_inspect_and_verify_form_one_workflow() {
         verified.as_os_str(),
     ]);
     assert!(!reused.status.success());
+}
+
+#[test]
+fn rejected_contract_report_does_not_claim_verified_savings() {
+    let dir = tempdir().unwrap();
+    let path = project(dir.path(), manifest());
     // A stale hash rejects the contract unchanged and exits with an error.
+    let proposals = dir.path().join("proposals.json");
+    let inspected = run(&["inspect".as_ref(), path.as_os_str()]);
+    ok(&inspected);
     let mut stale: Value = serde_json::from_slice(&inspected.stdout).unwrap();
     stale["contracts"][0]["original_keccak256"] = format!("0x{}", "00".repeat(32)).into();
     fs::write(&proposals, serde_json::to_vec(&stale).unwrap()).unwrap();
@@ -212,4 +227,13 @@ fn optimize_inspect_and_verify_form_one_workflow() {
             .trim(),
         CODE
     );
+    let stdout: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stdout, result);
+    let summary = fs::read_to_string(rejected.join("summary.txt")).unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains(&summary));
+    assert!(summary.contains("Accepted changes: none; contract rejected"));
+    assert!(summary.contains("Gas saved per operation: unavailable"));
+    assert!(summary.contains("Supplied transactions: not established"));
+    assert!(summary.contains("Contract-wide proof: not run by this command"));
+    assert!(!summary.contains("passed"));
 }
