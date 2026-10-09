@@ -150,7 +150,7 @@ fn push_gas(width: usize) -> u64 {
 fn literal_placements(
     instructions: &[Instruction],
     tables: &[HashMap<State, Vec<Replacement>>; 2],
-    eligibility: &mut HashMap<(Vec<u8>, Vec<u8>), bool>,
+    eligibility: &mut HashMap<(Vec<u8>, Vec<u8>), Option<usize>>,
 ) -> Option<Candidate> {
     let first = instructions.first()?;
     let mut state = State::initial();
@@ -221,8 +221,8 @@ fn literal_placements(
             }
             let eligible = *eligibility
                 .entry((before.clone(), after.clone()))
-                .or_insert_with(|| window_proposal::check(&before, &after).is_ok());
-            if eligible {
+                .or_insert_with(|| window_proposal::check(&before, &after).ok());
+            if eligible.is_some() {
                 best = Some(Candidate {
                     start: first.pc,
                     end: first.pc + before.len(),
@@ -242,13 +242,13 @@ pub(super) fn discover(original: &[u8]) -> Result<RewriteProposalBatch> {
     let analysis = layout::analyze(original, true)?;
     let instructions = decode(original);
     let [table, literal_tables @ ..] = &*REPLACEMENTS;
-    let mut eligibility = HashMap::<(Vec<u8>, Vec<u8>), bool>::default();
+    let mut eligibility = HashMap::<(Vec<u8>, Vec<u8>), Option<usize>>::default();
     let mut candidates = Vec::new();
     for (index, first) in instructions.iter().enumerate() {
         if !analysis.reachable.contains(&first.pc) {
             continue;
         }
-        if let Some(candidate) = literal_candidate(&instructions[index..]) {
+        if let Some(candidate) = literal_candidate(&instructions[index..], &mut eligibility) {
             candidates.push(candidate);
         }
         if let Some(candidate) =
@@ -302,9 +302,9 @@ pub(super) fn discover(original: &[u8]) -> Result<RewriteProposalBatch> {
                     .or_insert_with(|| {
                         // Includes all 1,025 sufficient-gas fault heights. Matching
                         // aliases/profile alone does not equate DUP and SWAP faults.
-                        window_proposal::check(before, &after).is_ok()
+                        window_proposal::check(before, &after).ok()
                     });
-                if !eligible {
+                if eligible.is_none() {
                     continue;
                 }
                 candidates.push(Candidate {
@@ -378,7 +378,10 @@ pub(super) fn discover(original: &[u8]) -> Result<RewriteProposalBatch> {
 
 // Literal-bearing windows missed by the stack-only enumeration. Every proposal
 // still passes the shared symbolic/fault checker and the whole-image guards.
-fn literal_candidate(instructions: &[Instruction]) -> Option<Candidate> {
+fn literal_candidate(
+    instructions: &[Instruction],
+    eligibility: &mut HashMap<(Vec<u8>, Vec<u8>), Option<usize>>,
+) -> Option<Candidate> {
     let first = instructions.first()?;
     let second = instructions.get(1)?;
     let third = instructions.get(2)?;
@@ -466,7 +469,9 @@ fn literal_candidate(instructions: &[Instruction]) -> Option<Candidate> {
         .iter()
         .flat_map(|instruction| instruction.bytes.iter().copied())
         .collect();
-    let required = window_proposal::check(&before, &after).ok()?;
+    let required = (*eligibility
+        .entry((before.clone(), after.clone()))
+        .or_insert_with(|| window_proposal::check(&before, &after).ok()))?;
     Some(Candidate {
         start: first.pc,
         end: first.pc + before.len(),
@@ -529,7 +534,7 @@ mod tests {
                     let mut before = vec![0x5f + width as u8];
                     before.extend(std::iter::repeat_n(0xff, width));
                     before.extend(permutation);
-                    let candidate = literal_candidate(&decode(&before));
+                    let candidate = literal_candidate(&decode(&before), &mut HashMap::default());
                     if width <= 30 && swap <= 0x97 {
                         let candidate = candidate.unwrap();
                         assert_eq!(candidate.before.len(), candidate.after.len());
