@@ -6,17 +6,17 @@ replay with identical results and no more gas. Read docs/cli.md for the formats.
 
 ## Optimize a project
 
-1. `cargo run --locked -- optimize project.json --out runs/opt-1` applies the
+1. `cargo run --release --locked -- optimize project.json --out runs/opt-1` applies the
    built-in rewrites and discovery until nothing changes. Start from its
    `baseline/project.json` to avoid redoing that work.
-2. `cargo run --locked -- inspect project.json > proposals.json` prints
+2. `cargo run --release --locked -- inspect project.json > proposals.json` prints
    discovered patches. They are unverified suggestions.
 3. Edit or write your own `proposals.json`: per contract, `original_keccak256`
    from inspect plus `sites` of `{original_pc, before, after}` hex byte windows.
    `before` and `after` have equal length; keep offsets fixed by widening PUSH
    immediates. Supported window opcodes: PUSH, DUP, SWAP, POP, ADD, SUB, SHL,
    AND, OR, XOR and NOT.
-4. `cargo run --locked -- verify project.json --proposals proposals.json --out runs/check-1`.
+4. `cargo run --release --locked -- verify project.json --proposals proposals.json --out runs/check-1`.
    Every site of a contract must pass, or that contract is rejected unchanged.
    Accepted results are in `result.json`; continue from `baseline/project.json`.
 

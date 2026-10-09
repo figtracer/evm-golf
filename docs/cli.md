@@ -6,7 +6,7 @@ evm-golf optimize PROJECT [--contract ID]... [--rounds N] --out DIR
 evm-golf verify   PROJECT --proposals FILE --out DIR
 ```
 
-Use `cargo run --locked --` in place of `evm-golf` when running from a checkout.
+Use `cargo run --release --locked --` in place of `evm-golf` when running from a checkout.
 JSON results go to stdout and progress to stderr. Every `--out` must be a new
 directory. A command exits with an error if any contract is rejected; its
 `result.json` still records which ones passed.

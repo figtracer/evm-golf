@@ -28,8 +28,8 @@ only if Lean proves it and revm replays your transactions with the same results.
 git clone https://github.com/figtracer/evm-golf.git
 cd evm-golf
 bash scripts/setup-lean.sh   # pinned Lean 4.34.0 inside the checkout
-cargo build --locked
-cargo run --locked -- optimize examples/quickstart/project.json --out runs/demo
+cargo build --release --locked
+cargo run --release --locked -- optimize examples/quickstart/project.json --out runs/demo
 ```
 
 The last command optimizes [a small example](examples/quickstart) and prints
@@ -69,7 +69,7 @@ different amounts on different paths, so the report gives a range, for example
 `transfer(address,uint256): 0 to 15 gas saved per call (5 calls)`.
 `result.json` has the same data and the totals. `baseline/project.json` points
 at the accepted bytecode, so you can continue from it.
-Use `cargo run --locked --` in place of `evm-golf` if it is not installed.
+Use `cargo run --release --locked --` in place of `evm-golf` if it is not installed.
 
 ## What is and is not proven
 

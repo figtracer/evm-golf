@@ -1,6 +1,7 @@
 //! Bounded discovery produces unverified data for the existing proposal gate.
 use anyhow::Result;
 use revm::primitives::{HashMap, hex, keccak256};
+use std::sync::LazyLock;
 
 use super::{
     Instruction, MAX_PROPOSAL_SITES, Rewrite, RewriteProposalBatch, RewriteProposalSite, decode,
@@ -22,6 +23,16 @@ const MAX_PEAK: usize = 2;
 // Up to two PUSH literals per window, modelled as opaque words distinct from
 // inputs. In replacement op lists, these marker bytes place each literal.
 const LITERAL_OPS: [u8; 2] = [0x5f, 0x60];
+
+// These tables depend only on the search bounds. Share them across contracts
+// and rounds; proposal eligibility is still checked for each discovery call.
+static REPLACEMENTS: LazyLock<[HashMap<State, Vec<Replacement>>; 3]> = LazyLock::new(|| {
+    [0, 1, 2].map(|literals| {
+        let mut table = HashMap::default();
+        enumerate(State::initial(), &mut Vec::new(), 0, literals, &mut table);
+        table
+    })
+});
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 struct State {
@@ -230,12 +241,7 @@ fn literal_placements(
 pub(super) fn discover(original: &[u8]) -> Result<RewriteProposalBatch> {
     let analysis = layout::analyze(original, true)?;
     let instructions = decode(original);
-    let [table, one, two] = [0, 1, 2].map(|literals| {
-        let mut table = HashMap::default();
-        enumerate(State::initial(), &mut Vec::new(), 0, literals, &mut table);
-        table
-    });
-    let literal_tables = [one, two];
+    let [table, literal_tables @ ..] = &*REPLACEMENTS;
     let mut eligibility = HashMap::<(Vec<u8>, Vec<u8>), bool>::default();
     let mut candidates = Vec::new();
     for (index, first) in instructions.iter().enumerate() {
@@ -246,7 +252,7 @@ pub(super) fn discover(original: &[u8]) -> Result<RewriteProposalBatch> {
             candidates.push(candidate);
         }
         if let Some(candidate) =
-            literal_placements(&instructions[index..], &literal_tables, &mut eligibility)
+            literal_placements(&instructions[index..], literal_tables, &mut eligibility)
         {
             candidates.push(candidate);
         }
