@@ -4,8 +4,11 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{
     collections::BTreeSet,
-    env, fs,
+    env,
+    ffi::OsStr,
+    fs,
     io::Write as _,
+    num::NonZeroU64,
     path::{Path, PathBuf},
     process::Command,
     time::{Duration, Instant},
@@ -14,7 +17,7 @@ use std::{
 use super::{audit_axioms, run_command};
 
 const REVISION: &str = "047f63070309f436b66c61e276ab3b6d1169265a";
-// The curated corpus was checked under this cap; do not silently escalate failures.
+// The curated corpus used this default. Explicit overrides are recorded in the evidence.
 const MODULE_TIMEOUT: Duration = Duration::from_secs(45);
 const MODULES: &[(&str, &str, &[&str])] = &[
     (
@@ -1340,6 +1343,8 @@ fn check_output_separation(out: &Path, installation: &Path) -> Result<()> {
 
 /// Called only after the trusted generator writes its fixed certificate files.
 pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> {
+    let module_timeout =
+        parse_module_timeout(env::var_os("EVM_GOLF_UPSTREAM_MODULE_TIMEOUT_SECONDS").as_deref())?;
     let out = out.canonicalize()?;
     let planned = match kind {
         RegionKind::ChunkedSpan(plan) => {
@@ -1489,7 +1494,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
     let mut environment = json!({
         "lean_version": version.trim(), "lean": lean, "upstream_revision": REVISION,
         "semantics": semantics, "packages": packages, "lean_path": paths,
-        "module_timeout_seconds": MODULE_TIMEOUT.as_secs(),
+        "module_timeout_seconds": module_timeout.as_secs(),
         "claim_scope": if matches!(kind, RegionKind::Whole(_)) {
             "whole-program X refinement from pc 0 for the supported opcode profile, conditioned on original success or revert; no transaction-level, call, storage or log equivalence"
         } else if matches!(kind, RegionKind::CallEntry(_, TerminalKind::Revert)) {
@@ -1745,6 +1750,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             | RegionKind::MemoryJump(_, _)
             | RegionKind::PowerJump(_)
             | RegionKind::SpanJump(_, _)
+            | RegionKind::Whole(_)
     ) {
         Some(
             fs::OpenOptions::new()
@@ -1789,7 +1795,10 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
             .env("LEAN_PATH", &search_path)
             .args(["-o", &format!("{name}.olean"), &format!("{name}.lean")]);
         let started = Instant::now();
-        let compiled = run_command(&mut command, &log, started + MODULE_TIMEOUT)
+        let deadline = started
+            .checked_add(module_timeout)
+            .context("upstream module timeout is too large")?;
+        let compiled = run_command(&mut command, &log, deadline)
             .with_context(|| format!("upstream module {name} failed; see {}", log.display()));
         let compile_ms = started.elapsed().as_millis();
         let compilation_succeeded = compiled.is_ok();
@@ -1889,6 +1898,23 @@ fn validate_manifest(manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
+fn parse_module_timeout(value: Option<&OsStr>) -> Result<Duration> {
+    let Some(value) = value else {
+        return Ok(MODULE_TIMEOUT);
+    };
+    let seconds = value
+        .to_str()
+        .context("upstream module timeout must be UTF-8")?
+        .parse::<NonZeroU64>()
+        .context("upstream module timeout must be a positive integer in seconds")?;
+    let timeout = Duration::from_secs(seconds.get());
+    ensure!(
+        Instant::now().checked_add(timeout).is_some(),
+        "upstream module timeout is too large"
+    );
+    Ok(timeout)
+}
+
 fn sanitize(command: &mut Command) {
     for (name, _) in env::vars_os() {
         let name_text = name.to_string_lossy();
@@ -1935,9 +1961,24 @@ fn check_checkout(path: &Path, revision: &str, out: &Path, name: &str) -> Result
 mod tests {
     use super::{
         JumpPlan, JumpTerminal, Manifest, MemoryPlan, PathLeafKind, RegionKind, SpanNode, SpanPlan,
-        TerminalKind, check_output_separation, validate_manifest, verify_region,
+        TerminalKind, check_output_separation, parse_module_timeout, validate_manifest,
+        verify_region,
     };
-    use std::fs;
+    use std::{ffi::OsStr, fs};
+
+    #[test]
+    fn module_timeout_requires_an_explicit_valid_override() {
+        assert_eq!(parse_module_timeout(None).unwrap().as_secs(), 45);
+        assert_eq!(
+            parse_module_timeout(Some(OsStr::new("120")))
+                .unwrap()
+                .as_secs(),
+            120
+        );
+        for value in ["", "0", "-1", "1.5", "unlimited", "18446744073709551616"] {
+            assert!(parse_module_timeout(Some(OsStr::new(value))).is_err());
+        }
+    }
 
     #[test]
     fn call_entry_inventory_requires_own_root_and_rejects_cached_helpers() {

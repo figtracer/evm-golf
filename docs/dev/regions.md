@@ -33,10 +33,11 @@ changes; it does not rebuild or establish cache integrity.
 
 The checker validates the installed source revisions and Lean version, replaces
 ambient Lean import paths, and freshly compiles all embedded support modules and
-generated certificates. Each module has a 45-second wall-clock limit. Failure or
+generated certificates. Each module defaults to a 45-second wall-clock limit.
+Use `EVM_GOLF_UPSTREAM_MODULE_TIMEOUT_SECONDS` to set an explicit limit in seconds. Failure or
 timeout leaves diagnostics without an accepted `result.json`. Installed Lean and
 upstream/dependency compiled artifacts remain trusted, like the toolchain itself;
-source revision checks do not authenticate those compiled artifacts. The existing
+source revision checks do not authenticate those compiled artifacts.
 The Lean 4.34 runtime rewrite gates are unchanged.
 
 ## Through JUMP
@@ -205,6 +206,13 @@ bash scripts/setup-upstream.sh --checked-scanner
 cargo run --locked -- certify-runtime-whole \
   --original runs/original.hex --candidate runs/candidate.hex --out runs/whole-1
 ```
+
+Upstream modules default to a 45-second wall-clock limit. For an explicitly
+requested longer run, set `EVM_GOLF_UPSTREAM_MODULE_TIMEOUT_SECONDS=120`.
+The value must be a positive integer; `environment.json` records the applied
+limit. A timeout still rejects the proof. Whole-program runs also record each
+module's compilation time and axiom-audit result in `module-checks.jsonl`.
+This setting does not change the 60-second local-rewrite proof limit.
 
 Theorem `xi_certificate`: run the code-execution function Ξ from a fresh call
 frame whose current and original account maps differ only in the owner's

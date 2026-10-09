@@ -28,8 +28,9 @@ Use a new `--out` directory every time. Failed runs keep diagnostics
 
 ## Rules
 
-- Never edit generated Lean, the checker, or proof limits to get a patch through.
-  A timeout or failed proof is a rejection.
+- Never weaken generated Lean or the checker to get a patch through. Use an
+  upstream timeout override only at the user's explicit request; record it in
+  the proof evidence. A timeout or failed proof is still a rejection.
 - Gas is measured per supplied transaction; improve the fixtures you were given,
   do not weaken them.
 - Results cover the supplied transactions only, not whole-contract equivalence.

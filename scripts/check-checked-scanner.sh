@@ -22,6 +22,7 @@ for name in forward backward; do
     2>&1 | tee "$work/$name.log"
   python3 - "$work/$name-accepted" "$entry" "$destination" <<'PY'
 import json
+import os
 import pathlib
 import sys
 
@@ -49,7 +50,9 @@ manifest = json.loads(pathlib.Path(profile["manifest"]).read_text())
 assert profile["overlay_sha256"] == manifest["inputs"]["overlay_sha256"]
 assert profile["revised_source_sha256"] == manifest["inputs"]["revised_source_sha256"]
 assert profile["semantics_object_sha256"] == manifest["build"]["object_sha256"]
-assert environment["module_timeout_seconds"] == 45
+assert environment["module_timeout_seconds"] == int(
+    os.environ.get("EVM_GOLF_UPSTREAM_MODULE_TIMEOUT_SECONDS", "45")
+)
 assert len(bytes.fromhex((out / "original.hex").read_text())) == 14
 assert len(bytes.fromhex((out / "candidate.hex").read_text())) == 14
 PY
