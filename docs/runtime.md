@@ -46,10 +46,10 @@ Removed instructions are absorbed by widening a PUSH immediate. Discovery ranks
 sites by static gas saving and selects at most 32 disjoint sites per batch. It is
 a bounded search, not an optimality proof.
 
-Your own proposals may use PUSH, DUP, SWAP, POP, ADD, AND, SUB and SHL, up to 64
-bytes and 16 instructions per window, at most eight input words and two extra
-stack slots. Both windows need the same stack requirement, growth and peak, and
-the candidate must cost less static gas.
+Your own proposals may use PUSH, DUP, SWAP, POP, ADD, SUB, SHL, AND, OR, XOR
+and NOT. Each window allows up to 64 bytes, 16 instructions, eight input words
+and two extra stack slots. Both windows need the same stack requirement, growth
+and peak. The candidate must cost less static gas.
 
 ## Replay
 

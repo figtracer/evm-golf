@@ -525,3 +525,106 @@ fn kernel_checks_static_gas_against_revm_and_budget_boundaries() {
         );
     }
 }
+
+fn bitwise_pairs() -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut pairs = [
+        ("80600017", "80600050"),
+        ("80600018", "80600050"),
+        ("5f8117", "805f50"),
+        ("5f8118", "805f50"),
+        ("8017", "8050"),
+        ("80801850", "805f5050"),
+        ("805f501919", "8061000050"),
+        ("600f60f017", "6100ff5f50"),
+        ("60aa605518", "6100ff5f50"),
+    ]
+    .map(|(a, b)| (from_hex(a).unwrap(), from_hex(b).unwrap()))
+    .to_vec();
+    let literal: U256 = (U256::from(1) << 248) - U256::from(1);
+    pairs.push((
+        [vec![0x7e], vec![0xff; 31], vec![0x19]].concat(),
+        word_push(!literal),
+    ));
+    pairs
+}
+
+#[test]
+fn bitwise_proposals_preserve_words_and_stack_faults() {
+    for (before, after) in bitwise_pairs() {
+        let local = certificate(&before, &after).unwrap();
+        for word in [
+            U256::ZERO,
+            U256::MAX,
+            U256::from(1) << 255,
+            U256::from(0xdeadbeefu64),
+        ] {
+            let lower = word_push(!word);
+            let prefix = word_push(word);
+            // Return both the result and the unmodified word below it.
+            let suffix = from_hex("5f5260205260405ff3").unwrap();
+            let left = run(&[lower.as_slice(), prefix.as_slice(), &before, &suffix].concat());
+            let right = run(&[lower.as_slice(), prefix.as_slice(), &after, &suffix].concat());
+            assert!(left.is_success() && right.is_success());
+            assert_eq!(left.output(), right.output());
+            assert!(right.tx_gas_used() < left.tx_gas_used());
+        }
+        for height in [0, 1, 1022, 1023, 1024] {
+            let prefix = vec![0x5f; height];
+            let left = run(&[prefix.as_slice(), &before, &[0]].concat());
+            let right = run(&[prefix.as_slice(), &after, &[0]].concat());
+            assert_eq!(
+                left.is_halt(),
+                height < local.required || height + local.peak > 1024
+            );
+            if left.is_halt() {
+                assert_eq!(left, right);
+            } else {
+                assert!(right.is_success());
+                assert!(right.tx_gas_used() < left.tx_gas_used());
+            }
+        }
+    }
+    // XOR is not OR, and removing NOT's input requirement changes underflow.
+    assert!(certificate(&from_hex("8018").unwrap(), &from_hex("8050").unwrap()).is_err());
+    assert!(certificate(&from_hex("1919").unwrap(), &from_hex("5f50").unwrap()).is_err());
+}
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn kernel_checks_bitwise_proposals_and_rejects_wrong_results() {
+    let directory = tempdir().unwrap();
+    for (index, (before, after)) in bitwise_pairs().into_iter().enumerate() {
+        let local = certificate(&before, &after).unwrap();
+        let site = Rewrite {
+            original_pc: 1,
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: local.required,
+        };
+        let original = [vec![0x5b], before, vec![0]].concat();
+        let candidate = [vec![0x5b], after, vec![0]].concat();
+        let (source, names) =
+            artifact::proposal_batch_certificate(&original, &candidate, &[site], &[]).unwrap();
+        let path = directory.path().join(format!("Bitwise{index}.lean"));
+        fs::write(&path, &source).unwrap();
+        let checked = proof::verify_named(&path, &names);
+        assert!(
+            checked.is_ok(),
+            "{checked:?}\n{}",
+            fs::read_to_string(path.with_extension("log")).unwrap_or_default()
+        );
+        if index == 4 {
+            // Keep the claimed output and profile but replace OR with XOR in the model.
+            let changed = source.replace("(a ||| b)", "(a ^^^ b)");
+            assert_ne!(changed, source);
+            let path = directory.path().join("WrongBitwise.lean");
+            fs::write(&path, changed).unwrap();
+            assert!(proof::verify_named(&path, &names).is_err());
+            assert!(
+                fs::read_to_string(path.with_extension("log"))
+                    .unwrap()
+                    .contains("error:")
+            );
+        }
+    }
+}

@@ -14,7 +14,8 @@ replay with identical results and no more gas. Read docs/cli.md for the formats.
 3. Edit or write your own `proposals.json`: per contract, `original_keccak256`
    from inspect plus `sites` of `{original_pc, before, after}` hex byte windows.
    `before` and `after` have equal length; keep offsets fixed by widening PUSH
-   immediates. Supported window opcodes: PUSH, DUP, SWAP, POP, ADD, AND, SUB, SHL.
+   immediates. Supported window opcodes: PUSH, DUP, SWAP, POP, ADD, SUB, SHL,
+   AND, OR, XOR and NOT.
 4. `cargo run --locked -- verify project.json --proposals proposals.json --out runs/check-1`.
    Every site of a contract must pass, or that contract is rejected unchanged.
    Accepted results are in `result.json`; continue from `baseline/project.json`.

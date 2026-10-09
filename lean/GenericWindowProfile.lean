@@ -8,12 +8,12 @@ def supportedAux : Nat → List Nat → Bool
    if 95 ≤ op ∧ op ≤ 127 then
      let width := op-95
      width ≤ rest.length && supportedAux fuel (rest.drop width)
-   else (op == 1 || op == 3 || op == 22 || op == 27 || op == 80 ||
+   else (op == 1 || op == 3 || op == 22 || op == 23 || op == 24 || op == 25 || op == 27 || op == 80 ||
      (128 ≤ op && op ≤ 159)) && supportedAux fuel rest
 
 def supported (code : List Nat) : Bool := supportedAux (code.length+1) code
 
--- ADD, SUB, AND and SHL each consume2/produce1 independent of word values.
+-- Binary operations consume two words; NOT replaces one word.
 -- DUP requires its decoded depth and adds one word without consuming inputs.
 -- Like the legacy profiler, peak starts at0 and includes transient growth.
 def profileAux : Nat → List Nat → Int → Nat → Nat → Option (Nat × Int × Nat)
@@ -26,10 +26,12 @@ def profileAux : Nat → List Nat → Int → Nat → Nat → Option (Nat × Int
        let next := height+1
        profileAux fuel (rest.drop width) next required (max peak next.toNat)
      else none
-   else if op = 1 ∨ op = 3 ∨ op = 22 ∨ op = 27 then
+   else if op = 1 ∨ op = 3 ∨ op = 22 ∨ op = 23 ∨ op = 24 ∨ op = 27 then
      profileAux fuel rest (height-1) (max required (2-height).toNat) peak
    else if op = 80 then
      profileAux fuel rest (height-1) (max required (1-height).toNat) peak
+   else if op = 25 then
+     profileAux fuel rest height (max required (1-height).toNat) peak
    else if 128 ≤ op ∧ op ≤ 143 then
      let next := height+1
      profileAux fuel rest next (max required (Int.ofNat (op-127)-height).toNat)

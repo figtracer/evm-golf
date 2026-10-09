@@ -17,7 +17,7 @@ const MAX_OPS: usize = 16;
 const MAX_REQUIRED: usize = 8;
 const MAX_PEAK: usize = 2;
 const STACK_LIMIT: usize = 1024;
-const ALGEBRA: &str = "BitVec.and_assoc, BitVec.and_comm, GolfGenerated.and_left_comm, BitVec.and_self, BitVec.zero_add, BitVec.add_zero";
+const ALGEBRA: &str = "BitVec.and_assoc, BitVec.and_comm, GolfGenerated.and_left_comm, BitVec.and_self, BitVec.zero_add, BitVec.add_zero, BitVec.or_zero, BitVec.zero_or, BitVec.or_self, BitVec.xor_zero, BitVec.zero_xor, BitVec.xor_self, BitVec.not_not";
 
 pub(super) struct WindowProof {
     pub source: String,
@@ -34,6 +34,9 @@ enum Word {
     Constant(U256),
     Input(usize),
     And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
+    Xor(Box<Self>, Box<Self>),
+    Not(Box<Self>),
     Add(Box<Self>, Box<Self>),
     Sub(Box<Self>, Box<Self>),
     Shl(Box<Self>, Box<Self>),
@@ -58,6 +61,9 @@ impl Word {
             Self::Constant(value) => format!("(BitVec.ofNat 256 {value})"),
             Self::Input(index) => format!("a{index}"),
             Self::And(left, right) => format!("({} &&& {})", left.lean(), right.lean()),
+            Self::Or(left, right) => format!("({} ||| {})", left.lean(), right.lean()),
+            Self::Xor(left, right) => format!("({} ^^^ {})", left.lean(), right.lean()),
+            Self::Not(word) => format!("(~~~{})", word.lean()),
             Self::Add(top, next) => format!("({} + {})", top.lean(), next.lean()),
             Self::Sub(top, next) => format!("({} - {})", top.lean(), next.lean()),
             Self::Shl(value, shift) => format!("({} <<< ({}).toNat)", value.lean(), shift.lean()),
@@ -66,6 +72,18 @@ impl Word {
 
     fn folded(&self) -> Option<U256> {
         match self {
+            Self::Or(left, right) | Self::Xor(left, right) => match (&**left, &**right) {
+                (Self::Constant(a), Self::Constant(b)) => Some(if matches!(self, Self::Or(..)) {
+                    *a | *b
+                } else {
+                    *a ^ *b
+                }),
+                _ => None,
+            },
+            Self::Not(word) => match &**word {
+                Self::Constant(value) => Some(!*value),
+                _ => None,
+            },
             Self::Add(top, next) => match (&**top, &**next) {
                 (Self::Constant(a), Self::Constant(b)) => Some(a.wrapping_add(*b)),
                 _ => None,
@@ -123,6 +141,37 @@ impl Word {
                     Self::Shl(a, b)
                 };
                 node.folded().map(Self::Constant).unwrap_or(node)
+            }
+            Self::Or(left, right) | Self::Xor(left, right) => {
+                let a = left.normalize();
+                let b = right.normalize();
+                if a == Self::Constant(U256::ZERO) {
+                    b
+                } else if b == Self::Constant(U256::ZERO) {
+                    a
+                } else if a == b {
+                    if matches!(self, Self::Or(..)) {
+                        a
+                    } else {
+                        Self::Constant(U256::ZERO)
+                    }
+                } else {
+                    let node = if matches!(self, Self::Or(..)) {
+                        Self::Or(Box::new(a), Box::new(b))
+                    } else {
+                        Self::Xor(Box::new(a), Box::new(b))
+                    };
+                    node.folded().map(Self::Constant).unwrap_or(node)
+                }
+            }
+            Self::Not(word) => {
+                let word = word.normalize();
+                if let Self::Not(inner) = word {
+                    *inner
+                } else {
+                    let node = Self::Not(Box::new(word));
+                    node.folded().map(Self::Constant).unwrap_or(node)
+                }
             }
             Self::And(left, right) => {
                 let mut terms = BTreeSet::new();
@@ -343,12 +392,13 @@ fn inspect(code: &[u8]) -> Result<(Vec<Instruction>, Profile)> {
                 ensure!(push_value(&instruction.bytes).is_some(), "truncated PUSH");
                 (0, 1, if op == 0x5f { 2 } else { 3 })
             }
-            0x01 | 0x03 | 0x16 | 0x1b => (2, -1, 3),
+            0x01 | 0x03 | 0x16..=0x18 | 0x1b => (2, -1, 3),
+            0x19 => (1, 0, 3),
             0x50 => (1, -1, 2),
             0x80..=0x8f => (isize::from(op - 0x7f), 1, 3),
             0x90..=0x9f => (isize::from(op - 0x8e), 0, 3),
             _ => bail!(
-                "unsupported proposal opcode 0x{op:02x}; expected PUSH/AND/POP/SUB/SHL/DUP/ADD/SWAP"
+                "unsupported proposal opcode 0x{op:02x}; expected PUSH/AND/OR/XOR/NOT/POP/SUB/SHL/DUP/ADD/SWAP"
             ),
         };
         required = required.max((need - height).max(0) as usize);
@@ -378,7 +428,7 @@ fn fault(ops: &[Instruction], mut height: usize) -> u8 {
                 }
                 height += 1;
             }
-            0x01 | 0x03 | 0x16 | 0x1b => {
+            0x01 | 0x03 | 0x16..=0x18 | 0x1b => {
                 if height < 2 {
                     return 1;
                 }
@@ -394,6 +444,11 @@ fn fault(ops: &[Instruction], mut height: usize) -> u8 {
             }
             0x90..=0x9f => {
                 if height < usize::from(instruction.bytes[0] - 0x8e) {
+                    return 1;
+                }
+            }
+            0x19 => {
+                if height < 1 {
                     return 1;
                 }
             }
@@ -429,13 +484,19 @@ fn trace(ops: &[Instruction], input: &[Word]) -> (Vec<Step>, bool) {
                 }
                 stack.swap(0, index);
             }
+            0x19 => {
+                if stack.is_empty() {
+                    return (steps, true);
+                }
+                stack[0] = Word::Not(Box::new(stack[0].clone()));
+            }
             0x50 => {
                 if stack.is_empty() {
                     return (steps, true);
                 }
                 stack.remove(0);
             }
-            0x01 | 0x03 | 0x16 | 0x1b => {
+            0x01 | 0x03 | 0x16..=0x18 | 0x1b => {
                 if stack.len() < 2 {
                     return (steps, true);
                 }
@@ -446,6 +507,8 @@ fn trace(ops: &[Instruction], input: &[Word]) -> (Vec<Step>, bool) {
                     match instruction.bytes[0] {
                         0x01 => Word::Add(Box::new(a), Box::new(b)),
                         0x03 => Word::Sub(Box::new(a), Box::new(b)),
+                        0x17 => Word::Or(Box::new(a), Box::new(b)),
+                        0x18 => Word::Xor(Box::new(a), Box::new(b)),
                         0x1b => Word::Shl(Box::new(b), Box::new(a)),
                         _ => Word::And(Box::new(a), Box::new(b)),
                     },
@@ -471,10 +534,16 @@ fn emit_folds<'a>(out: &mut String, steps: impl Iterator<Item = &'a Step>) -> St
             nodes.insert(word.clone());
         }
         match word {
-            Word::And(a, b) | Word::Add(a, b) | Word::Sub(a, b) | Word::Shl(a, b) => {
+            Word::And(a, b)
+            | Word::Or(a, b)
+            | Word::Xor(a, b)
+            | Word::Add(a, b)
+            | Word::Sub(a, b)
+            | Word::Shl(a, b) => {
                 collect(a, nodes);
                 collect(b, nodes);
             }
+            Word::Not(word) => collect(word, nodes),
             _ => {}
         }
     }
@@ -689,10 +758,12 @@ def run : Nat → List Nat → Nat → Result
        let width := op-95
        if width > rest.length then .unsupported
        else if height ≥ 1024 then .overflow else run fuel (rest.drop width) (height+1)
-     else if op = 1 ∨ op = 3 ∨ op = 22 ∨ op = 27 then
+     else if op = 1 ∨ op = 3 ∨ op = 22 ∨ op = 23 ∨ op = 24 ∨ op = 27 then
        if height < 2 then .underflow else run fuel rest (height-1)
      else if op = 80 then
        if height < 1 then .underflow else run fuel rest (height-1)
+     else if op = 25 then
+       if height < 1 then .underflow else run fuel rest height
      else if 128 ≤ op ∧ op ≤ 143 then
        if height < op-127 ∨ height ≥ 1024 then .overflow else run fuel rest (height+1)
      else if 144 ≤ op ∧ op ≤ 159 then
@@ -724,7 +795,10 @@ theorem run_congr : ∀ (fuel : Nat) (code : List Nat) (h h' : Nat),
           · split
             · rw [if_neg (by omega), if_neg (by omega)]
               exact run_congr fuel _ _ _ (by omega) (by omega) (by omega) (by omega)
-            · rfl
+            · split
+              · rw [if_neg (by omega), if_neg (by omega)]
+                exact run_congr fuel _ _ _ (by omega) (by omega) (by omega) (by omega)
+              · rfl
 
 -- Equal fault classes at all 1,025 heights from the low and high boundary
 -- heights alone; every middle height behaves like the first middle height.
