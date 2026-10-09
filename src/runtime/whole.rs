@@ -1091,26 +1091,43 @@ fn nat_list(values: impl Iterator<Item = usize>) -> String {
     format!("[{}]", items.join(", "))
 }
 
-/// Right-nested concatenation of named lists.
+/// Balanced concatenation keeps generated terms shallow on large contracts.
 fn nested(names: &[String]) -> String {
     match names {
         [] => "[]".to_owned(),
         [one] => one.clone(),
-        [first, rest @ ..] => format!("{first} ++ ({})", nested(rest)),
+        _ => {
+            let (left, right) = names.split_at(names.len() / 2);
+            format!("({} ++ {})", nested(left), nested(right))
+        }
     }
 }
 
-/// Membership of chunk `k` in the right-nested concatenation of `n` chunks.
+/// Membership follows the same balanced tree as the table.
 fn in_chunk_term(k: usize, n: usize) -> String {
-    let mut term = if k + 1 == n {
-        "h".to_owned()
-    } else {
-        "List.mem_append.mpr (Or.inl h)".to_owned()
-    };
-    for _ in 0..k {
-        term = format!("List.mem_append.mpr (Or.inr ({term}))");
+    if n == 1 {
+        return "h".to_owned();
     }
-    term
+    let mid = n / 2;
+    let (side, term) = if k < mid {
+        ("inl", in_chunk_term(k, mid))
+    } else {
+        ("inr", in_chunk_term(k - mid, n - mid))
+    };
+    format!("List.mem_append.mpr (Or.{side} ({term}))")
+}
+
+/// Coverage must use the same grouping as table membership.
+fn cover_term(start: usize, n: usize) -> String {
+    if n == 1 {
+        return format!("cover{start}");
+    }
+    let mid = n / 2;
+    format!(
+        "entries_app ({}) ({})",
+        cover_term(start, mid),
+        cover_term(start + mid, n - mid)
+    )
 }
 
 fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String)> {
@@ -1153,7 +1170,6 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
             )
             .unwrap();
         }
-        let _ = nested;
     }
     writeln!(
         image,
@@ -1354,11 +1370,7 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
     let imports: String = (0..chunks.len())
         .map(|i| format!("import WholePoints{i}\n"))
         .collect();
-    let covers: Vec<String> = (0..chunks.len()).map(|k| format!("cover{k}")).collect();
-    let mut cover = covers.last().expect("at least one point").clone();
-    for name in covers.iter().rev().skip(1) {
-        cover = format!("entries_app {name} ({cover})");
-    }
+    let cover = cover_term(0, chunks.len());
     let mut s = format!("{imports}{HEADER}");
     writeln!(
         s,
