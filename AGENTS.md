@@ -23,6 +23,8 @@ replay with identical results and no more gas. Read docs/cli.md for the formats.
 
 Read `summary.txt` for accepted changes, gas savings, verification status and limits.
 The contract-wide proof is separate from local proofs and replay.
+Guarded replay writes `transaction-N.dependencies.json` beside each trace. These
+are observed calls, bytecode hashes and pending obligations, not all-input proofs.
 Use a new `--out` directory every time. Failed runs keep diagnostics
 (`failure.log`, `Rewrites.log`) but no accepted candidate.
 

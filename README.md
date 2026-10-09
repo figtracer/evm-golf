@@ -93,7 +93,9 @@ Use `cargo run --release --locked --` in place of `evm-golf` if it is not instal
 
 Only a subset of opcodes and control flow is supported. The developer command
 proves the whole contract against EVMYulLean, a formal model of the EVM; for
-calls it states its assumptions about the callees. Developer proofs record
+calls it proves the funded ecrecover case and states the remaining callee assumptions.
+Guarded replay lists observed dependencies and callbacks; it does not prove complete call coverage.
+Developer proofs record
 their configured time limit with the evidence. See
 [verification](docs/verification.md) for the exact boundary and
 [runtime support](docs/runtime.md) for what can be optimized.

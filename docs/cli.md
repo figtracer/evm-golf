@@ -115,6 +115,10 @@ DIR/<id>/                    evidence: candidate.hex, Rewrites.lean/.log,
 ```
 
 `optimize` stores one subdirectory per search stage under `DIR/<id>/`.
+Guarded replay writes `transaction-N.dependencies.json` beside each call trace.
+It records call sites, dependency bytecode hashes, callbacks and gas forwarded
+in both runs. `formal_status: not_proved` means the inventory does not prove
+complete call coverage or the dependency assumptions.
 
 `optimize` and `verify` report local proof and replay results separately from
 the contract-wide proof, which these commands do not run. A rejected contract

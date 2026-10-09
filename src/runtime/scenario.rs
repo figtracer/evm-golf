@@ -10,7 +10,7 @@ use revm::{
     database::InMemoryDB,
     primitives::{
         Address, B256, Bytes, TxKind, U256, eip4844::BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN,
-        hardfork::SpecId, hex,
+        hardfork::SpecId, hex, keccak256,
     },
     state::AccountInfo,
 };
@@ -84,6 +84,27 @@ pub fn check(
     scenarios: &[Scenario],
     out: &Path,
 ) -> Result<ReplayReport> {
+    check_with_guards(original, candidate, scenarios, out, false)
+}
+
+/// Guard external observations and report dependencies of the supplied transactions.
+/// Dependency reports do not discharge formal proof obligations.
+pub fn check_dependencies(
+    original: &[u8],
+    candidate: &[u8],
+    scenarios: &[Scenario],
+    out: &Path,
+) -> Result<ReplayReport> {
+    check_with_guards(original, candidate, scenarios, out, true)
+}
+
+fn check_with_guards(
+    original: &[u8],
+    candidate: &[u8],
+    scenarios: &[Scenario],
+    out: &Path,
+    guard_calls: bool,
+) -> Result<ReplayReport> {
     input::validate(
         &scenarios,
         scenarios
@@ -107,8 +128,13 @@ pub fn check(
         .iter()
         .enumerate()
         .map(|(i, scenario)| {
-            replay(original, candidate, scenario, ReplayPolicy::Transactions)
-                .with_context(|| format!("scenario {i}"))
+            let directory = out.join(format!("scenario-{i}-calls"));
+            let policy = if guard_calls {
+                ReplayPolicy::GuardedCalls(&directory)
+            } else {
+                ReplayPolicy::Transactions
+            };
+            replay(original, candidate, scenario, policy).with_context(|| format!("scenario {i}"))
         })
         .collect::<Result<Vec<_>>>();
     let cases = match checked {
@@ -153,6 +179,7 @@ pub(super) fn replay(
     );
     let mut left = InMemoryDB::default();
     let mut addresses = BTreeSet::new();
+    let mut code_hashes = BTreeMap::new();
     let mut total_balance = U256::ZERO;
     for (address, account) in &scenario.accounts {
         let address: Address = address.parse().context("invalid fixture account address")?;
@@ -167,6 +194,10 @@ pub(super) fn replay(
             "target fixture code must be empty; use the original and candidate inputs"
         );
         let bytecode = Bytecode::new_legacy(Bytes::from(code));
+        let code_hash = bytecode.hash_slow();
+        if matches!(policy, ReplayPolicy::GuardedCalls(_)) {
+            code_hashes.insert(address, code_hash);
+        }
         let balance = if account.balance.is_empty() {
             U256::ZERO
         } else {
@@ -182,7 +213,7 @@ pub(super) fn replay(
             AccountInfo {
                 balance,
                 nonce: account.nonce,
-                code_hash: bytecode.hash_slow(),
+                code_hash,
                 code: Some(bytecode),
                 ..Default::default()
             },
@@ -253,6 +284,9 @@ pub(super) fn replay(
         info.code_hash = code.hash_slow();
         info.code = Some(code);
         db.insert_account_info(target, info);
+    }
+    if matches!(policy, ReplayPolicy::GuardedCalls(_)) {
+        code_hashes.insert(target, keccak256(original));
     }
     let copies = if let ReplayPolicy::GuardedCalls(directory) = policy {
         let copies = layout::analyze(original, true)?.copies;
@@ -343,7 +377,13 @@ pub(super) fn replay(
                         Some(&mut candidate),
                     )?;
                     candidate.finish()?;
-                    compare_results(a, b).map(label)
+                    let result = compare_results(a, b)?;
+                    baseline.write_dependencies(
+                        &candidate,
+                        &code_hashes,
+                        &directory.join(format!("transaction-{i}.dependencies.json")),
+                    )?;
+                    Ok(label(result))
                 } else {
                     compare_results(
                         execute_env(
@@ -862,7 +902,38 @@ mod tests {
         original.extend(&body);
         candidate.extend(&body);
         assert_eq!(original[usize::from(body[4])], 0x5b);
-        assert_guarded_replay(&scenario, &original, &candidate, None);
+        let directory = tempdir().unwrap();
+        let out = directory.path().join("dependencies");
+        check_dependencies(&original, &candidate, &[scenario], &out).unwrap();
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(out.join("scenario-0-calls/transaction-0.dependencies.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["formal_status"], "not_proved");
+        let calls = report["calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0]["site"], serde_json::Value::Null);
+        assert_eq!(calls[1]["depth"], 1);
+        assert_eq!(calls[1]["code_address"], child.to_string());
+        assert_eq!(calls[1]["obligation"], "callee_summary_unproved");
+        assert_eq!(calls[1]["site"]["code_address"], target.to_string());
+        assert_eq!(calls[2]["depth"], 2);
+        assert_eq!(calls[2]["code_address"], target.to_string());
+        assert_eq!(calls[2]["site"]["code_address"], child.to_string());
+        assert_eq!(calls[2]["obligation"], "reentry_unproved");
+        assert_eq!(
+            calls[2]["original_code_keccak256"],
+            keccak256(&original).to_string()
+        );
+        assert_eq!(
+            calls[2]["candidate_code_keccak256"],
+            keccak256(&candidate).to_string()
+        );
+        assert!(
+            calls[1]["candidate_gas_limit"].as_u64().unwrap()
+                > calls[1]["original_gas_limit"].as_u64().unwrap()
+        );
     }
 
     #[test]

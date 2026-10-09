@@ -47,6 +47,9 @@ enum Action {
     /// Compare arbitrary Cancun runtimes on supplied account/transaction fixtures.
     /// This is concrete replay, not a Lean or whole-contract equivalence proof.
     CheckRuntime {
+        /// Compare external-call observations and report the observed dependency calls.
+        #[arg(long)]
+        guard_calls: bool,
         #[arg(long)]
         original: PathBuf,
         #[arg(long)]
@@ -132,6 +135,7 @@ fn main() -> Result<()> {
             report(project::verify(&contracts, &proposals, &out)?, &out)?;
         }
         Action::CheckRuntime {
+            guard_calls,
             original,
             candidate,
             scenarios,
@@ -142,7 +146,11 @@ fn main() -> Result<()> {
             let scenarios: Vec<runtime::scenario::Scenario> =
                 serde_json::from_str(&runtime::input::read_json(&scenarios)?)?;
             prepare_parent(&out)?;
-            runtime::scenario::check(&original, &candidate, &scenarios, &out)?;
+            if guard_calls {
+                runtime::scenario::check_dependencies(&original, &candidate, &scenarios, &out)?;
+            } else {
+                runtime::scenario::check(&original, &candidate, &scenarios, &out)?;
+            }
             println!(
                 "Supplied scenarios passed concrete replay. No whole-contract equivalence proof.\nEvidence: {}",
                 out.display()

@@ -237,3 +237,36 @@ fn rejected_contract_report_does_not_claim_verified_savings() {
     assert!(summary.contains("Contract-wide proof: not run by this command"));
     assert!(!summary.contains("passed"));
 }
+
+#[test]
+fn guarded_replay_reports_dependencies_without_claiming_a_proof() {
+    let dir = tempdir().unwrap();
+    project(dir.path(), manifest());
+    let code = dir.path().join("fixtures/token.hex");
+    let scenarios = dir.path().join("fixtures/token.scenarios.json");
+    let out = dir.path().join("guarded");
+    let output = run(&[
+        "check-runtime".as_ref(),
+        "--guard-calls".as_ref(),
+        "--original".as_ref(),
+        code.as_os_str(),
+        "--candidate".as_ref(),
+        code.as_os_str(),
+        "--scenarios".as_ref(),
+        scenarios.as_os_str(),
+        "--out".as_ref(),
+        out.as_os_str(),
+    ]);
+    ok(&output);
+    let dependencies: Value = serde_json::from_str(
+        &fs::read_to_string(out.join("scenario-0-calls/transaction-0.dependencies.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(dependencies["formal_status"], "not_proved");
+    assert_eq!(dependencies["calls"][0]["obligation"], "target_entry");
+    assert_eq!(
+        dependencies["calls"][0]["original_code_keccak256"],
+        keccak256(runtime::from_hex(CODE).unwrap()).to_string()
+    );
+    assert!(out.join("result.json").exists());
+}

@@ -301,10 +301,16 @@ hands the callee exactly that much more gas, and the caller's remaining gas
 stays related afterwards. A runtime with no calls or inspected addresses needs
 none of these hypotheses. `result.json` lists the hypotheses under `assumptions`,
 the call positions under `call_sites`, code copies under `codecopy_sites` and the read
-addresses under `inspected`. `CalleeSummary` is an assumption, not a theorem,
-but [WholePrecompile.lean](../../lean/upstream/WholePrecompile.lean) proves that
-its conclusion holds for the ecrecover precompile whenever the original gives it
-at least 3000 gas (`ecrecover_summary`).
+addresses under `inspected`. Generated theorems use `CalleeSummaryFor` for the remaining cases.
+[WholePrecompile.lean](../../lean/upstream/WholePrecompile.lean) discharges calls
+to ecrecover with at least 3000 original gas. Its `callee_summary_partition`
+theorem combines proved cases with obligations for their complement. Other calls,
+including underfunded ecrecover calls, and reentry still need assumptions.
+
+To inspect dependencies on supplied transactions, use `check-runtime` with
+`--guard-calls`. It writes `scenario-N-calls/transaction-N.dependencies.json`
+with observed call sites, code hashes, callbacks and gas budgets. This inventory
+is not a proof of reachable calls or model correspondence.
 
 ### Stack facts
 

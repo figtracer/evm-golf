@@ -230,8 +230,8 @@ pub fn certify(original: &[u8], candidate: &[u8], out: &Path) -> Result<WholeCer
                 list.push("the constant addresses read by EXTCODEHASH or EXTCODECOPY (result.json `inspected`) are not the owner");
             }
             if plan.calls() {
-                list.push("CalleeSummary: a callee other than the owner's code, run on related account maps with at least the original's gas, returns the same created set, substate, status and output, related account maps, no less gas than the original and no more than it was given; the original's callee keeps the owner's account");
-                list.push("Reentry: calls back into the owner's code return success or revert in the original run (ecrecover_summary shows CalleeSummary holds for the ecrecover precompile given at least 3000 gas)");
+                list.push("Remaining CalleeSummaryFor obligations: outside the proved ecrecover case (address 1 with at least 3000 original gas), a callee other than the owner's code, run on related account maps with at least the original's gas, returns the same created set, substate, status and output, related account maps, no less gas than the original and no more than it was given; the original's callee keeps the owner's account");
+                list.push("Reentry: calls back into the owner's code return success or revert in the original run");
                 list.push("the owner is not a precompile address");
             }
             list
@@ -1371,7 +1371,7 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
         .map(|i| format!("import WholePoints{i}\n"))
         .collect();
     let cover = cover_term(0, chunks.len());
-    let mut s = format!("{imports}{HEADER}");
+    let mut s = format!("{imports}import WholePrecompile\n{HEADER}");
     writeln!(
         s,
         "theorem cover : ∀ p ∈ table, Point HC inspected oldCode newCode jumps Q (Holds p.2) (UInt256.ofNat p.1) :=\n  {cover}"
@@ -1380,9 +1380,9 @@ fn render(original: &[u8], candidate: &[u8], plan: &Plan) -> Vec<(String, String
     // With calls or external code reads, the final theorems take the environment assumptions.
     let (hyps, pass, env) = if plan.assumes() {
         (
-            "\n    (callees : CalleeSummary owner oldCode newCode) (reentry : Reentry owner oldCode)\n    (notPrecompile : owner ∉ π)\n    (notInspected : ∀ a ∈ inspected, AccountAddress.ofUInt256 (UInt256.ofNat a) ≠ owner)",
+            "\n    (callees : CalleeSummaryFor owner oldCode newCode (fun _ address gas => ¬ EcrecoverCase address gas)) (reentry : Reentry owner oldCode)\n    (notPrecompile : owner ∉ π)\n    (notInspected : ∀ a ∈ inspected, AccountAddress.ofUInt256 (UInt256.ofNat a) ≠ owner)",
             " callees reentry notPrecompile notInspected",
-            "(fun _ => callees) (fun _ => reentry) (fun _ => notPrecompile) (fun _ => notInspected)",
+            "(fun _ => callee_summary_with_ecrecover owner oldCode newCode callees) (fun _ => reentry) (fun _ => notPrecompile) (fun _ => notInspected)",
         )
     } else {
         ("", "", "False.elim False.elim False.elim False.elim")

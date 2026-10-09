@@ -786,7 +786,12 @@ const WHOLE_MODULES: &[(&str, &str, &[&str])] = &[
     (
         "WholePrecompile",
         include_str!("../../lean/upstream/WholePrecompile.lean"),
-        &["GolfWhole.ecrecover_summary"],
+        &[
+            "GolfWhole.ecrecover_summary",
+            "GolfWhole.callee_summary_partition",
+            "GolfWhole.ecrecover_cases",
+            "GolfWhole.callee_summary_with_ecrecover",
+        ],
     ),
     (
         "WholeProgram",
@@ -1496,7 +1501,7 @@ pub(crate) fn verify_region(out: &Path, kind: RegionKind<'_>) -> Result<String> 
         "semantics": semantics, "packages": packages, "lean_path": paths,
         "module_timeout_seconds": module_timeout.as_secs(),
         "claim_scope": if matches!(kind, RegionKind::Whole(_)) {
-            "whole-program X refinement from pc 0 for the supported opcode profile, conditioned on original success or revert; no transaction-level, call, storage or log equivalence"
+            "conditional refinement of X, Ξ, Θ and Υ for the supported opcode profile and direct calls or transactions to the owner; original success or revert and the generated theorem hypotheses are required; no revm correspondence or deployment equivalence"
         } else if matches!(kind, RegionKind::CallEntry(_, TerminalKind::Revert)) {
             "conditional paired canonical Ξ revert from fresh call entry with equal output and related remaining gas; no caller rollback, transaction validation, arbitrary contextual, whole-contract or all-gas equivalence"
         } else if matches!(kind, RegionKind::CallEntry(_, _)) {

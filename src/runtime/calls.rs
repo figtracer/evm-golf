@@ -12,12 +12,12 @@ use revm::{
         Interpreter,
         interpreter_types::{Jumps, LegacyBytecode},
     },
-    primitives::{Address, Log, U256},
+    primitives::{Address, B256, Log, U256, keccak256},
 };
 use serde_json::json;
 use std::{
-    collections::BTreeSet,
-    fs::File,
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, File},
     io::{BufReader, BufWriter, Read, Write},
     path::Path,
 };
@@ -34,6 +34,24 @@ enum Stream {
     Compare(BufReader<File>),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct CallSite {
+    code_address: Address,
+    pc: usize,
+}
+
+struct ObservedCall {
+    depth: usize,
+    site: Option<CallSite>,
+    caller: Address,
+    code_address: Address,
+    storage_address: Address,
+    gas_limit: u64,
+    calldata_keccak256: B256,
+    scheme: CallScheme,
+    is_static: bool,
+}
+
 pub(super) struct Calls<'a> {
     stream: Stream,
     target: Address,
@@ -43,6 +61,8 @@ pub(super) struct Calls<'a> {
     depth: usize,
     bytes: usize,
     failure: Option<String>,
+    site: Option<CallSite>,
+    observed: Vec<ObservedCall>,
 }
 
 impl<'a> Calls<'a> {
@@ -62,6 +82,8 @@ impl<'a> Calls<'a> {
             depth: 0,
             bytes: 0,
             failure: None,
+            site: None,
+            observed: Vec::new(),
         })
     }
 
@@ -81,6 +103,8 @@ impl<'a> Calls<'a> {
             depth: 0,
             bytes: 0,
             failure: None,
+            site: None,
+            observed: Vec::new(),
         })
     }
 
@@ -101,6 +125,63 @@ impl<'a> Calls<'a> {
                 "external-call guard: candidate omitted events"
             );
         }
+        Ok(())
+    }
+
+    /// Observed calls guide the next proof obligations; they do not establish
+    /// which calls can occur for other inputs, states or gas budgets.
+    pub(super) fn write_dependencies(
+        &self,
+        candidate: &Self,
+        code_hashes: &BTreeMap<Address, B256>,
+        path: &Path,
+    ) -> Result<()> {
+        ensure!(
+            self.observed.len() == candidate.observed.len(),
+            "call inventory diverged"
+        );
+        let candidate_hash = keccak256(candidate.runtime);
+        let calls = self.observed.iter().zip(&candidate.observed).map(|(a, b)| {
+            ensure!(a.site == b.site, "call site diverged");
+            let code_hash = if a.code_address == Address::with_last_byte(1) {
+                None
+            } else {
+                Some(*code_hashes.get(&a.code_address).context("missing dependency code hash")?)
+            };
+            let candidate_hash = if a.code_address == self.target {
+                Some(candidate_hash)
+            } else {
+                code_hash
+            };
+            let obligation = if a.depth == 0 && a.code_address == self.target {
+                "target_entry"
+            } else if a.code_address == self.target {
+                "reentry_unproved"
+            } else if a.code_address == Address::with_last_byte(1) && a.gas_limit >= 3000 {
+                "ecrecover_model_lemma_available"
+            } else {
+                "callee_summary_unproved"
+            };
+            Ok(json!({
+                "depth": a.depth,
+                "site": a.site.as_ref().map(|site| json!({"code_address": site.code_address.to_string(), "pc": site.pc})),
+                "caller": a.caller.to_string(),
+                "code_address": a.code_address.to_string(), "storage_address": a.storage_address.to_string(),
+                "original_code_keccak256": code_hash.map(|hash| hash.to_string()),
+                "candidate_code_keccak256": candidate_hash.map(|hash| hash.to_string()),
+                "original_gas_limit": a.gas_limit, "candidate_gas_limit": b.gas_limit,
+                "calldata_keccak256": a.calldata_keccak256.to_string(),
+                "scheme": format!("{:?}", a.scheme), "static": a.is_static,
+                "obligation": obligation,
+            }))
+        }).collect::<Result<Vec<_>>>()?;
+        let report = json!({
+            "coverage": "Observed calls in this supplied transaction only, including reverted paths. Not a complete call graph or an all-input dependency proof.",
+            "formal_status": "not_proved",
+            "model_note": "An available model lemma does not prove correspondence between revm observations and EVMYulLean.",
+            "calls": calls,
+        });
+        fs::write(path, serde_json::to_string_pretty(&report)? + "\n")?;
         Ok(())
     }
 
@@ -171,6 +252,12 @@ impl<CTX: ContextTr> Inspector<CTX> for Calls<'_> {
             .input
             .bytecode_address
             .unwrap_or(interpreter.input.target_address);
+        if matches!(opcode, 0xf1 | 0xfa) {
+            self.site = Some(CallSite {
+                code_address,
+                pc: interpreter.bytecode.pc(),
+            });
+        }
         let forbidden = match opcode {
             0x5a => !matches!(
                 interpreter
@@ -259,6 +346,19 @@ impl<CTX: ContextTr> Inspector<CTX> for Calls<'_> {
                 "output_end":inputs.return_memory_offset.end}),
             &bytes,
         );
+        if self.failure.is_none() {
+            self.observed.push(ObservedCall {
+                depth: self.depth,
+                site: self.site.take(),
+                caller: inputs.caller,
+                code_address: inputs.bytecode_address,
+                storage_address: inputs.target_address,
+                gas_limit: inputs.gas_limit,
+                calldata_keccak256: keccak256(&*bytes),
+                scheme: inputs.scheme,
+                is_static: inputs.is_static,
+            });
+        }
         self.depth += 1;
         None
     }
