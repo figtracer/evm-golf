@@ -21,9 +21,10 @@ means the search found nothing.
 
 Runs up to `--rounds` (default 8) rounds per contract. Each round applies the
 built-in rewrites, threads jumps past trampolines, then discovers and verifies
-proposals. Every stage is proved
-and replayed, and the final bytecode is replayed against the original. A failed
-proposal batch is retried with half its sites; a site that fails alone is skipped.
+proposals. Every stage is proved and replayed. The final bytecode is replayed
+against the original. Failed built-in and proposal batches are retried with
+half their sites. A site that fails alone is
+skipped, and the remaining sites are tried.
 A failed threading stage is recorded and threading is not retried.
 Contracts are independent jobs.
 

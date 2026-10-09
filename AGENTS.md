@@ -8,7 +8,8 @@ replay with identical results and no more gas. Read docs/cli.md for the formats.
 
 1. `cargo run --release --locked -- optimize project.json --out runs/opt-1` applies the
    built-in rewrites and discovery until nothing changes. Start from its
-   `baseline/project.json` to avoid redoing that work.
+   `baseline/project.json` to avoid redoing that work. Failed built-in and
+   discovered batches are split; individual rejected patches are skipped.
 2. `cargo run --release --locked -- inspect project.json > proposals.json` prints
    discovered patches. They are unverified suggestions.
 3. Edit or write your own `proposals.json`: per contract, `original_keccak256`

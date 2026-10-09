@@ -117,3 +117,44 @@ fn identity_search_checks_both_stages_and_failure_is_not_accepted() {
     assert!(!failed.join("candidate.hex").exists());
     assert!(!failed.join("result.json").exists());
 }
+
+#[test]
+#[ignore = "requires Lean"]
+fn builtin_retries_cannot_bypass_call_guards() {
+    let dir = tempdir().unwrap();
+    let child = format!("0x{}", "33".repeat(20));
+    // One rewrite before the call and one after it. The guard rejects a GAS
+    // observation in the child even when the selected patch follows the call.
+    let code = runtime::from_hex(&format!(
+        "60026002025060205f5f5f5f73{}5af15060036002025060205ff3",
+        &child[2..]
+    ))
+    .unwrap();
+    let mut fixture = serde_json::to_value(scenarios()).unwrap();
+    fixture[0]["accounts"][&child] = json!({"code":"5a5f5260205ff3"});
+    let fixtures: Vec<Scenario> = serde_json::from_value(fixture).unwrap();
+    let out = dir.path().join("guarded-retry");
+    let error = runtime::search_scenarios(&code, &fixtures, 1, &out).unwrap_err();
+    assert!(format!("{error:#}").contains("external-call guard"));
+    for (name, count) in [
+        ("round-1-builtins", 2),
+        ("round-1-builtins-retry-1", 1),
+        ("round-1-builtins-retry-2", 1),
+        ("round-1-builtins-retry-3", 0),
+    ] {
+        let stage = out.join(name);
+        let rewrites: Value =
+            serde_json::from_slice(&fs::read(stage.join("rewrites.json")).unwrap()).unwrap();
+        assert_eq!(rewrites.as_array().unwrap().len(), count);
+        assert!(
+            fs::read_to_string(stage.join("failure.log"))
+                .unwrap()
+                .contains("external-call guard")
+        );
+        assert!(stage.join("Rewrites.log").exists());
+        assert!(!stage.join("candidate.hex").exists());
+        assert!(!stage.join("result.json").exists());
+    }
+    assert!(!out.join("candidate.hex").exists());
+    assert!(!out.join("result.json").exists());
+}

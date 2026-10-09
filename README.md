@@ -69,6 +69,8 @@ different amounts on different paths, so the report gives a range, for example
 `transfer(address,uint256): 0 to 15 gas saved per call (5 calls)`.
 `result.json` has the same data and the totals. `baseline/project.json` points
 at the accepted bytecode, so you can continue from it.
+`optimize` retries smaller built-in and proposal batches when a batch fails.
+A patch that fails alone is skipped.
 Use `cargo run --release --locked --` in place of `evm-golf` if it is not installed.
 
 ## What is and is not proven

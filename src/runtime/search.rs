@@ -3,7 +3,8 @@
 
 use super::{
     CaseResult, ReplayPolicy, Report, RewritePlan, RewriteProposalBatch, RewriteProposalSite,
-    RewriteSelection, discover_proposals, optimize_scenarios_selected, scenario, thread_sites,
+    RewriteSelection, discover_proposals, layout, optimize_scenarios_selected, scenario,
+    thread_sites,
 };
 use anyhow::{Context as _, Result, ensure};
 use revm::primitives::{hex, keccak256};
@@ -28,8 +29,8 @@ pub struct SearchStage {
     pub lean_version: Option<String>,
 }
 
-/// A rejected proposal batch. Its sites were not applied; the search retried
-/// with the first half of them, and excludes a site that failed alone.
+/// A rejected built-in, proposal or threading batch. Its sites were not applied.
+/// Built-in and proposal batches are halved; sites that fail alone are excluded.
 #[derive(Debug, Serialize)]
 pub struct SearchFailure {
     pub directory: String,
@@ -49,7 +50,7 @@ pub struct SearchReport {
     pub rounds_completed: usize,
     pub stop_reason: SearchStopReason,
     pub stages: Vec<SearchStage>,
-    /// Proposal batches that failed proof or replay (for example, a timeout).
+    /// Batches that failed proof or replay (for example, a timeout).
     pub failures: Vec<SearchFailure>,
     /// Direct original/final guarded replay, in scenario then transaction order.
     pub cases: Vec<CaseResult>,
@@ -58,8 +59,9 @@ pub struct SearchReport {
 
 /// Alternate the existing fixed-layout optimizer and bounded proposal discovery.
 /// Every stage (including identity stages) uses the existing proof/replay gate.
-/// A failed proposal batch is recorded and retried with its first half; a site
-/// that fails alone is excluded. Other stage failures abort the search.
+/// Failed built-in and proposal batches are recorded and halved. A site that
+/// fails alone is excluded, then the remaining sites are tried. Identity failures
+/// abort the search; a threading failure disables further threading attempts.
 /// Final acceptance additionally requires direct original/final guarded replay.
 /// Output must be fresh; failures retain stage evidence but no root acceptance.
 /// Files are not a crash-atomic transaction: result.json is written last.
@@ -104,7 +106,8 @@ fn search_with(
         };
         let mut candidate = code.to_vec();
         // Sites that failed alone; layout-preserving stages keep their offsets.
-        let mut excluded: Vec<(usize, String, String)> = Vec::new();
+        let mut excluded_builtins: Vec<(usize, String, String)> = Vec::new();
+        let mut excluded_proposals: Vec<(usize, String, String)> = Vec::new();
         let key = |site: &RewriteProposalSite| {
             (site.original_pc, site.before.clone(), site.after.clone())
         };
@@ -124,56 +127,75 @@ fn search_with(
                 if threads && thread_count == 0 {
                     continue;
                 }
-                let mut sites: Vec<RewriteProposalSite> = if proposals {
-                    discover_proposals(&candidate)?
-                        .sites
-                        .into_iter()
-                        .filter(|site| !excluded.contains(&key(site)))
-                        .collect()
+                let excluded = if proposals {
+                    &mut excluded_proposals
                 } else {
-                    Vec::new()
+                    &mut excluded_builtins
                 };
+                let mut sites = if proposals {
+                    discover_proposals(&candidate)?.sites
+                } else if threads {
+                    Vec::new()
+                } else {
+                    // Only the PCs select built-ins. The acceptance gate derives
+                    // their bytes again from its own trusted catalog.
+                    layout::opportunities(&layout::analyze(&candidate, true)?)?
+                        .into_iter()
+                        .map(|site| RewriteProposalSite {
+                            original_pc: site.original_pc,
+                            before: site.before,
+                            after: site.after,
+                        })
+                        .collect()
+                };
+                sites.retain(|site| !excluded.contains(&key(site)));
+                // Keep the untried tail when an attempted prefix is halved.
+                let mut count = sites.len();
+                let input = keccak256(&candidate).to_string();
                 for attempt in 0.. {
                     let mut directory = format!("round-{round}-{kind}");
                     if attempt > 0 {
                         directory.push_str(&format!("-retry-{attempt}"));
                     }
-                    let input = keccak256(&candidate).to_string();
                     // Empty proposal batches are intentionally invalid at the batch API.
                     // An empty plan checks the identical artifact through the same gate.
-                    let identity = RewritePlan {
+                    let plan = RewritePlan {
                         original_keccak256: input.clone(),
-                        selected_pcs: Vec::new(),
+                        selected_pcs: if proposals {
+                            Vec::new()
+                        } else {
+                            sites[..count].iter().map(|site| site.original_pc).collect()
+                        },
                     };
                     let batch = RewriteProposalBatch {
                         original_keccak256: input.clone(),
-                        sites: sites.clone(),
+                        sites: if proposals {
+                            sites[..count].to_vec()
+                        } else {
+                            Vec::new()
+                        },
                     };
                     let selection = if threads {
                         RewriteSelection::Threads
-                    } else if !proposals {
-                        RewriteSelection::All
-                    } else if sites.is_empty() {
-                        RewriteSelection::Plan(&identity)
+                    } else if !proposals || count == 0 {
+                        RewriteSelection::Plan(&plan)
                     } else {
                         RewriteSelection::Proposals(&batch)
                     };
                     let (stage, accepted) =
                         match run_stage(&candidate, scenarios, &out.join(&directory), selection) {
                             Ok(result) => result,
-                            // Only discovered batches are retried; every other
-                            // stage failure still aborts without acceptance.
-                            Err(error) if !sites.is_empty() => {
+                            Err(error) if count > 0 => {
                                 report.failures.push(SearchFailure {
                                     directory,
-                                    sites: sites.len(),
+                                    sites: count,
                                     error: format!("{error:#}"),
                                 });
-                                if sites.len() == 1 {
-                                    excluded.push(key(&sites[0]));
-                                    sites.clear();
+                                if count == 1 {
+                                    excluded.push(key(&sites.remove(0)));
+                                    count = sites.len();
                                 } else {
-                                    sites.truncate(sites.len() / 2);
+                                    count /= 2;
                                 }
                                 continue;
                             }
@@ -309,6 +331,67 @@ mod tests {
         Ok((report(code, Vec::new()), code.to_vec()))
     }
 
+    fn reject_first_proposal(
+        code: &[u8],
+        fixtures: &[scenario::Scenario],
+        out: &Path,
+        selection: RewriteSelection<'_>,
+    ) -> Result<(Report, Vec<u8>)> {
+        if let RewriteSelection::Proposals(batch) = selection {
+            let first = discover_proposals(&from_hex(CODE)?)?.sites[0].original_pc;
+            if batch.sites.iter().any(|site| site.original_pc == first) {
+                bail!("injected first-site rejection");
+            }
+        }
+        singletons_only(code, fixtures, out, selection)
+    }
+
+    fn builtin_singletons(
+        code: &[u8],
+        _: &[scenario::Scenario],
+        _: &Path,
+        selection: RewriteSelection<'_>,
+    ) -> Result<(Report, Vec<u8>)> {
+        let RewriteSelection::Plan(plan) = selection else {
+            return Ok((report(code, Vec::new()), code.to_vec()));
+        };
+        assert_eq!(plan.original_keccak256, keccak256(code).to_string());
+        if plan.selected_pcs.len() > 1 || plan.selected_pcs.contains(&2) {
+            bail!("injected built-in rejection");
+        }
+        let (candidate, rewrites) =
+            layout::transform_selected(&layout::analyze(code, true)?, &plan.selected_pcs)?;
+        Ok((report(code, rewrites), candidate))
+    }
+
+    fn reject_builtins(
+        code: &[u8],
+        fixtures: &[scenario::Scenario],
+        out: &Path,
+        selection: RewriteSelection<'_>,
+    ) -> Result<(Report, Vec<u8>)> {
+        if let RewriteSelection::Plan(plan) = selection
+            && !plan.selected_pcs.is_empty()
+        {
+            bail!("injected built-in rejection");
+        }
+        always_fails(code, fixtures, out, selection)
+    }
+
+    fn reject_identity(
+        code: &[u8],
+        fixtures: &[scenario::Scenario],
+        out: &Path,
+        selection: RewriteSelection<'_>,
+    ) -> Result<(Report, Vec<u8>)> {
+        if let RewriteSelection::Plan(plan) = selection
+            && plan.selected_pcs.is_empty()
+        {
+            bail!("injected identity rejection");
+        }
+        reject_builtins(code, fixtures, out, selection)
+    }
+
     // Two independent swap windows; each discovered site saves gas.
     const CODE: &str = "5f5f5f5f5f5f5f5f90925090506122709092509050612270505050505000";
 
@@ -345,8 +428,116 @@ mod tests {
         let report = search_with(&code, &scenarios(), 8, &out, always_fails).unwrap();
         assert_eq!(report.stop_reason, SearchStopReason::Converged);
         assert_eq!(report.failures.last().unwrap().sites, 1);
+        assert_eq!(
+            report
+                .failures
+                .iter()
+                .filter(|failure| failure.sites == 1)
+                .count(),
+            discover_proposals(&code).unwrap().sites.len()
+        );
         assert!(report.stages.iter().all(|stage| stage.rewrites == 0));
         assert_eq!(report.candidate_keccak256, report.original_keccak256);
         assert_eq!(report.cases[0].candidate_gas, report.cases[0].baseline_gas);
+    }
+    #[test]
+    fn rejected_first_proposal_does_not_hide_the_remaining_sites() {
+        let code = from_hex(CODE).unwrap();
+        let sites = discover_proposals(&code).unwrap().sites.len();
+        let dir = tempfile::tempdir().unwrap();
+        let report = search_with(
+            &code,
+            &scenarios(),
+            8,
+            &dir.path().join("tail"),
+            reject_first_proposal,
+        )
+        .unwrap();
+        assert_eq!(report.stop_reason, SearchStopReason::Converged);
+        assert_eq!(
+            report
+                .stages
+                .iter()
+                .map(|stage| stage.rewrites)
+                .sum::<usize>(),
+            sites - 1
+        );
+        assert_eq!(
+            report
+                .failures
+                .iter()
+                .filter(|failure| failure.sites == 1)
+                .count(),
+            1
+        );
+        assert!(report.cases[0].candidate_gas < report.cases[0].baseline_gas);
+    }
+
+    #[test]
+    fn builtin_retries_keep_the_tail_and_exclude_only_failed_sites() {
+        // Trusted built-in sites at PCs 2 and 8. Only PC 2 is rejected.
+        let code = from_hex("600760020260030260ff601f16015f5260205ff3").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("builtins");
+        let report = search_with(&code, &scenarios(), 8, &out, builtin_singletons).unwrap();
+        assert_eq!(report.stop_reason, SearchStopReason::Converged);
+        assert_eq!(report.failures.len(), 2);
+        assert_eq!(report.failures[0].sites, 2);
+        assert_eq!(report.failures[1].sites, 1);
+        assert_eq!(report.stages[0].directory, "round-1-builtins-retry-2");
+        assert_eq!(report.stages[0].rewrites, 1);
+        assert_eq!(
+            report
+                .stages
+                .iter()
+                .map(|stage| stage.rewrites)
+                .sum::<usize>(),
+            1
+        );
+        let expected = layout::transform_selected(&layout::analyze(&code, true).unwrap(), &[8])
+            .unwrap()
+            .0;
+        assert_eq!(report.candidate_keccak256, keccak256(expected).to_string());
+        assert!(report.cases[0].candidate_gas < report.cases[0].baseline_gas);
+        let limited = search_with(
+            &code,
+            &scenarios(),
+            1,
+            &dir.path().join("limited"),
+            builtin_singletons,
+        )
+        .unwrap();
+        assert_eq!(limited.stop_reason, SearchStopReason::RoundsLimit);
+    }
+
+    #[test]
+    fn rejected_builtins_require_a_successful_identity_gate() {
+        let code = from_hex("600760020260030260ff601f16015f5260205ff3").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let report = search_with(
+            &code,
+            &scenarios(),
+            1,
+            &dir.path().join("excluded"),
+            reject_builtins,
+        )
+        .unwrap();
+        assert_eq!(report.stop_reason, SearchStopReason::Converged);
+        assert_eq!(
+            report
+                .failures
+                .iter()
+                .filter(|failure| failure.directory.contains("builtins") && failure.sites == 1)
+                .count(),
+            2
+        );
+        assert_eq!(report.candidate_keccak256, report.original_keccak256);
+        assert_eq!(report.cases[0].candidate_gas, report.cases[0].baseline_gas);
+        let out = dir.path().join("rejected");
+        let error = search_with(&code, &scenarios(), 1, &out, reject_identity).unwrap_err();
+        assert!(format!("{error:#}").contains("identity rejection"));
+        assert!(out.join("failure.log").exists());
+        assert!(!out.join("candidate.hex").exists());
+        assert!(!out.join("result.json").exists());
     }
 }

@@ -92,8 +92,8 @@ pub struct Rewrite {
     pub required_stack: usize,
 }
 
-/// Built-in sites selected by PC, bound to the exact runtime. Search uses an
-/// empty plan to check an unchanged image through the same gate.
+/// Built-in sites selected by PC, bound to the exact runtime. An empty plan
+/// checks an unchanged image through the same gate.
 pub(crate) struct RewritePlan {
     pub(crate) original_keccak256: String,
     pub(crate) selected_pcs: Vec<usize>,
