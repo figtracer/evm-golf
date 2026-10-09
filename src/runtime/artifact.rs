@@ -49,7 +49,7 @@ pub(super) fn certificate(
     );
     // Local soundness is proved once; the kernel checks every actual site below.
     // Compact-mode certificates still emit their individual fragment theorems.
-    let mut source = prelude();
+    let mut source = with_byte_literals(prelude());
     writeln!(
         source,
         "\n{FRAGMENT_MODEL}\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_SCANNER}\n{LAYOUT_MODEL}\n{LITERAL_MODEL}\n{ZERO_CHAIN_MODEL}"
@@ -74,12 +74,12 @@ pub(super) fn certificate(
     // image literals avoids compiling ~24K-element lists for every proof.
     writeln!(
         source,
-        "noncomputable def original : List Nat := {original:?}"
+        "noncomputable def original : List Nat := golf_bytes%{original:?}"
     )
     .unwrap();
     writeln!(
         source,
-        "noncomputable def candidate : List Nat := {candidate:?}"
+        "noncomputable def candidate : List Nat := golf_bytes%{candidate:?}"
     )
     .unwrap();
     source.push_str("def sites : List GolfLayout.Site := [\n");
@@ -206,6 +206,14 @@ pub(super) fn certificate(
     Ok((source, names))
 }
 
+// Large byte literals need no per-element type inference. The elaborator builds
+// ordinary List Nat expressions; all structural proofs still check in the kernel.
+fn with_byte_literals(mut source: String) -> String {
+    source.insert_str(0, "import Lean.Elab.Term\nimport Lean.Meta.AppBuilder\n");
+    source.push_str(include_str!("../../lean/ByteLiterals.lean"));
+    source
+}
+
 /// Emit `originalShared`/`candidateShared`: both independent images split into
 /// the same symbolic unchanged gaps and per-site window rows. Requires the
 /// LayoutChunks model and `original`/`candidate` definitions in scope. The
@@ -251,7 +259,7 @@ fn shared_scan(
             // The final gap may contain a truncated PUSH, like canonical scan.
             gap.len()
         };
-        writeln!(source, "noncomputable def gap_{site} : List Nat := {gap:?}\ntheorem gap_{site}_length : gap_{site}.length = {} := by decide +kernel", gap.len()).unwrap();
+        writeln!(source, "noncomputable def gap_{site} : List Nat := golf_bytes%{gap:?}\ntheorem gap_{site}_length : gap_{site}.length = {} := by decide +kernel", gap.len()).unwrap();
         if site < count {
             writeln!(source, "theorem gap_{site}_complete : CompleteScanPrefix gap_{site} {fuel} := completeCount_sound (gap_{site}.length+1) gap_{site} {fuel} (by decide +kernel)\nnoncomputable def gapChunk_{site} : CompleteChunk := ⟨gap_{site}, {fuel}, gap_{site}_complete⟩").unwrap();
         }
@@ -350,7 +358,7 @@ pub(super) fn thread_certificate(
         (1..=MAX_PROPOSAL_SITES).contains(&threads.len()),
         "thread artifact requires 1..={MAX_PROPOSAL_SITES} sites"
     );
-    let mut source = prelude();
+    let mut source = with_byte_literals(prelude());
     writeln!(
         source,
         "\n{FRAGMENT_MODEL}\n{STACK_MODEL}\n{COMPOSITION_MODEL}\n{LAYOUT_SCANNER}\n{LAYOUT_MODEL}\n{LAYOUT_CHUNKS}\n{THREADING}\nset_option maxRecDepth {ARTIFACT_RECURSION_LIMIT}\nset_option maxHeartbeats {ARTIFACT_HEARTBEATS}\nnamespace GolfThreadArtifact\nopen GolfLayout GolfThread"
@@ -358,12 +366,12 @@ pub(super) fn thread_certificate(
     .unwrap();
     writeln!(
         source,
-        "noncomputable def original : List Nat := {original:?}"
+        "noncomputable def original : List Nat := golf_bytes%{original:?}"
     )
     .unwrap();
     writeln!(
         source,
-        "noncomputable def candidate : List Nat := {candidate:?}"
+        "noncomputable def candidate : List Nat := golf_bytes%{candidate:?}"
     )
     .unwrap();
     let rewrites: Vec<_> = threads
@@ -547,7 +555,7 @@ pub(super) fn proposal_batch_certificate(
         indexes.push(index);
         previous_end = end;
     }
-    let mut source = window_proposal::batch_prelude()?;
+    let mut source = with_byte_literals(window_proposal::batch_prelude()?);
     let mut names = Vec::new();
     for (_, _, proof) in &proofs {
         source.push_str(&proof.source);
@@ -610,7 +618,7 @@ pub(super) fn proposal_batch_certificate(
     }
     source.push('\n');
     // Both complete arrays are independent inputs, not an application-defined candidate.
-    writeln!(source,"noncomputable def original : List Nat := {original:?}\nnoncomputable def candidate : List Nat := {candidate:?}\ndef copies : List GolfLayout.CodeCopy := [").unwrap();
+    writeln!(source,"noncomputable def original : List Nat := golf_bytes%{original:?}\nnoncomputable def candidate : List Nat := golf_bytes%{candidate:?}\ndef copies : List GolfLayout.CodeCopy := [").unwrap();
     for (i, copy) in copies.iter().enumerate() {
         writeln!(
             source,
@@ -816,8 +824,8 @@ mod tests {
                 for (label, correct, wrong) in [
                     (
                         "Suffix",
-                        "def gap_1 : List Nat := [0, 97, 255]",
-                        "def gap_1 : List Nat := [0, 97, 254]",
+                        "def gap_1 : List Nat := golf_bytes%[0, 97, 255]",
+                        "def gap_1 : List Nat := golf_bytes%[0, 97, 254]",
                     ),
                     ("Pc", "scanAux 3 7 gap_1", "scanAux 3 8 gap_1"),
                     (
@@ -863,8 +871,8 @@ mod tests {
             ("Trampoline", "trampolineWidth := 1", "trampolineWidth := 2"),
             (
                 "Candidate",
-                "def candidate : List Nat := [96, 1, 96, 13, 87, 0, 0, 0",
-                "def candidate : List Nat := [96, 1, 96, 13, 87, 0, 1, 0",
+                "def candidate : List Nat := golf_bytes%[96, 1, 96, 13, 87, 0, 0, 0",
+                "def candidate : List Nat := golf_bytes%[96, 1, 96, 13, 87, 0, 1, 0",
             ),
             (
                 "Dests",
@@ -1636,8 +1644,8 @@ theorem zero_dup_controls :
             let mut changed = bytes.clone();
             changed[1] = 8;
             let tampered = isolated.replace(
-                &format!("def {image} : List Nat := {bytes:?}"),
-                &format!("def {image} : List Nat := {changed:?}"),
+                &format!("def {image} : List Nat := golf_bytes%{bytes:?}"),
+                &format!("def {image} : List Nat := golf_bytes%{changed:?}"),
             );
             assert!(check(name, &tampered, &names).is_err());
         }
@@ -1645,8 +1653,8 @@ theorem zero_dup_controls :
         let mut changed = candidate.clone();
         changed[10] = 0x30; // ADDRESS is not the certified PUSH0 destination.
         let tampered = isolated.replace(
-            &format!("def candidate : List Nat := {candidate:?}"),
-            &format!("def candidate : List Nat := {changed:?}"),
+            &format!("def candidate : List Nat := golf_bytes%{candidate:?}"),
+            &format!("def candidate : List Nat := golf_bytes%{changed:?}"),
         );
         assert!(check("ChangedPrefix", &tampered, &names).is_err());
         // Matching literal bytes inside another PUSH are not instruction edges.
@@ -1655,8 +1663,8 @@ theorem zero_dup_controls :
             let mut changed = bytes.clone();
             changed[0] = 0x6b;
             embedded = embedded.replace(
-                &format!("def {image} : List Nat := {bytes:?}"),
-                &format!("def {image} : List Nat := {changed:?}"),
+                &format!("def {image} : List Nat := golf_bytes%{bytes:?}"),
+                &format!("def {image} : List Nat := golf_bytes%{changed:?}"),
             );
         }
         assert!(check("EmbeddedPrefix", &embedded, &names).is_err());
@@ -1668,8 +1676,8 @@ theorem zero_dup_controls :
             changed[7] = 32;
             changed[9] = 32;
             bounds = bounds.replace(
-                &format!("def {image} : List Nat := {bytes:?}"),
-                &format!("def {image} : List Nat := {changed:?}"),
+                &format!("def {image} : List Nat := golf_bytes%{bytes:?}"),
+                &format!("def {image} : List Nat := golf_bytes%{changed:?}"),
             );
         }
         bounds = bounds.replace("⟨11, 6, 0, 2, 0⟩", "⟨11, 6, 32, 32, 0⟩");
