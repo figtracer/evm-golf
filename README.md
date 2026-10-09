@@ -20,7 +20,7 @@ only if Lean proves it and revm replays your transactions with the same results.
 - Every change is proved in Lean and replayed in revm before it is accepted.
 - Byte offsets never move, so jump tables and code copies stay valid.
 - Bring your own agents: they propose byte patches, and the checker keeps
-  only what it can prove and replay, including pure arithmetic and bitwise windows.
+  only what it can prove and replay, including multiplication and bitwise windows.
 
 ## Quick start
 

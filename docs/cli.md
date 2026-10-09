@@ -31,7 +31,7 @@ Contracts are independent jobs.
 
 Checks the exact patches in `--proposals`. Every site for a contract must pass
 the proof and replay, otherwise that contract is rejected unchanged. Contracts
-not listed in the file are not loaded.
+not listed in the file are not loaded. See [supported proposal opcodes](runtime.md#rewrites).
 
 ## Project
 

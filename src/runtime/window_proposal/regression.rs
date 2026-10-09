@@ -628,3 +628,101 @@ fn kernel_checks_bitwise_proposals_and_rejects_wrong_results() {
         }
     }
 }
+
+fn multiplication_pairs() -> Vec<(Vec<u8>, Vec<u8>, u64)> {
+    let mut pairs = [
+        ("600102", "600001", 2),
+        ("60018102", "60008101", 2),
+        ("805f02", "5f8150", 3),
+        ("5f8102", "5f8150", 3),
+        ("6002600302", "6006600050", 3),
+        ("8090026001", "8002610001", 3),
+        ("819090026001", "810262000001", 6),
+    ]
+    .map(|(before, after, saving)| (from_hex(before).unwrap(), from_hex(after).unwrap(), saving))
+    .to_vec();
+    for (value, expected) in [
+        (U256::MAX, U256::MAX - U256::ONE),
+        (U256::ONE << 255, U256::ZERO),
+    ] {
+        pairs.push((
+            [vec![0x60, 2], word_push(value), vec![0x02]].concat(),
+            [word_push(expected), vec![0x60, 0, 0x50]].concat(),
+            3,
+        ));
+    }
+    pairs
+}
+
+#[test]
+fn multiplication_proposals_preserve_words_gas_and_stack_faults() {
+    for (before, after, saving) in multiplication_pairs() {
+        let local = certificate(&before, &after).unwrap();
+        for word in [U256::ZERO, U256::ONE, U256::MAX, U256::ONE << 255] {
+            let lower = word_push(!word);
+            let prefix = word_push(word);
+            let suffix = from_hex("5f5260205260405ff3").unwrap();
+            let left = run(&[lower.as_slice(), prefix.as_slice(), &before, &suffix].concat());
+            let right = run(&[lower.as_slice(), prefix.as_slice(), &after, &suffix].concat());
+            assert!(left.is_success() && right.is_success());
+            assert_eq!(left.output(), right.output());
+            assert_eq!(left.tx_gas_used() - right.tx_gas_used(), saving);
+        }
+        for height in [0, 1, 1022, 1023, 1024] {
+            let prefix = vec![0x5f; height];
+            let left = run(&[prefix.as_slice(), &before, &[0]].concat());
+            let right = run(&[prefix.as_slice(), &after, &[0]].concat());
+            assert_eq!(
+                left.is_halt(),
+                height < local.required || height + local.peak > 1024
+            );
+            if left.is_halt() {
+                assert_eq!(left, right);
+            } else {
+                assert!(right.is_success());
+                assert_eq!(left.tx_gas_used() - right.tx_gas_used(), saving);
+            }
+        }
+    }
+    assert!(certificate(&from_hex("600202").unwrap(), &from_hex("600001").unwrap()).is_err());
+    assert!(certificate(&from_hex("5f02").unwrap(), &from_hex("505f").unwrap()).is_err());
+}
+
+#[test]
+#[ignore = "requires Lean 4.34.0"]
+fn kernel_checks_multiplication_proposals_and_rejects_wrong_semantics() {
+    let directory = tempdir().unwrap();
+    for (index, (before, after, _)) in multiplication_pairs().into_iter().enumerate() {
+        let local = certificate(&before, &after).unwrap();
+        let site = Rewrite {
+            original_pc: 1,
+            before: hex::encode(&before),
+            after: hex::encode(&after),
+            required_stack: local.required,
+        };
+        let original = [vec![0x5b], before, vec![0]].concat();
+        let candidate = [vec![0x5b], after, vec![0]].concat();
+        let (source, names) =
+            artifact::proposal_batch_certificate(&original, &candidate, &[site], &[]).unwrap();
+        let path = directory.path().join(format!("Multiplication{index}.lean"));
+        fs::write(&path, &source).unwrap();
+        let checked = proof::verify_named(&path, &names);
+        assert!(
+            checked.is_ok(),
+            "{checked:?}\n{}",
+            fs::read_to_string(path.with_extension("log")).unwrap_or_default()
+        );
+        if index == 0 {
+            let wrong = source.replace("(a * b)", "(a + b)");
+            assert_ne!(source, wrong);
+            let path = directory.path().join("WrongMultiplication.lean");
+            fs::write(&path, wrong).unwrap();
+            assert!(proof::verify_named(&path, &names).is_err());
+            assert!(
+                fs::read_to_string(path.with_extension("log"))
+                    .unwrap()
+                    .contains("error:")
+            );
+        }
+    }
+}
